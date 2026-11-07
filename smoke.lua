@@ -1,10 +1,10 @@
 local here = (arg[0]:match("^(.*)[/\\]") or ".")
 dofile(here .. "/wowmock.lua")
-local addonPath = arg[1] or (here .. "/../CacheForQuest.lua")
+local addonPath = arg[1] or (here .. "/../Handkerquest.lua")
 
 -- Expose the addon's locals to the test (test copy only)
 local src = assert(io.open(addonPath), "cannot open " .. addonPath):read("*a") .. "\n_G.__CFQ = CFQ\n_G.__LAYOUT = function() LayoutObjectiveTrackerWithStacks() end\n_G.__STATE = function() return { lvl = levelSortMode, dist = distSortMode, primary = primarySortKey, incomp = incompleteStackEnabled, turnin = turnInStackEnabled } end\n"
-local chunk = assert(loadstring(src, "CacheForQuest.lua"))
+local chunk = assert(loadstring(src, "Handkerquest.lua"))
 chunk()
 local CFQ, P = __CFQ, __CFQ.P
 
@@ -65,7 +65,7 @@ Fire = function(event, ...)
     end
 end
 
-Fire("ADDON_LOADED", "CacheForQuest")
+Fire("ADDON_LOADED", "Handkerquest")
 Fire("PLAYER_ENTERING_WORLD")
 for _, t in ipairs(TIMERS or {}) do t() end; TIMERS = {}
 
@@ -263,14 +263,14 @@ for _ = 1, #P.FONT_STYLES - 1 do P.CycleFontStyle() end
 check(CFQ.parchmentFont == before, "handwriting style cycles back around")
 
 -- 5) Sorting
-SlashCmdList["CACHEFORQUEST"]("dist")
+SlashCmdList["HANDKERQUEST"]("dist")
 local st = __STATE()
 check(st.dist == "ASC" and st.primary == "DIST", "dist cycles to ASC and becomes primary")
-SlashCmdList["CACHEFORQUEST"]("lvl")
+SlashCmdList["HANDKERQUEST"]("lvl")
 st = __STATE()
 check(st.lvl == "ASC" and st.primary == "LVL", "lvl cycles to ASC and becomes primary")
 check(CFQ.GetSortSummary():find("^lvl"), "summary leads with primary sort")
-SlashCmdList["CACHEFORQUEST"]("lvl"); SlashCmdList["CACHEFORQUEST"]("lvl")
+SlashCmdList["HANDKERQUEST"]("lvl"); SlashCmdList["HANDKERQUEST"]("lvl")
 st = __STATE()
 check(st.lvl == "NONE" and st.primary == "DIST", "lvl cycles ASC->DESC->off and primary falls back to dist")
 local menu = QRF_SharedDropdownMenu
@@ -327,17 +327,17 @@ bar.turnInToggle:GetScript("OnClick")(bar.turnInToggle)
 bar.turnInToggle:GetScript("OnClick")(bar.turnInToggle)
 check(nativeUpdates == 2, "each stack toggle requests a native tracker rebuild (got " .. nativeUpdates .. ")")
 
--- /cfq debug dump runs cleanly
+-- /hanky debug dump runs cleanly
 local printed = 0
 local realPrint = print
 print = function(...) printed = printed + 1 end
-local okDbg, errDbg = pcall(SlashCmdList["CACHEFORQUEST"], "debug")
+local okDbg, errDbg = pcall(SlashCmdList["HANDKERQUEST"], "debug")
 print = realPrint
-check(okDbg, "/cfq debug runs without error: " .. tostring(errDbg))
-check(printed >= 3, "/cfq debug prints the tracker state")
+check(okDbg, "/hanky debug runs without error: " .. tostring(errDbg))
+check(printed >= 3, "/hanky debug prints the tracker state")
 
 -- 7) Options panel
-SlashCmdList["CACHEFORQUEST"]("options")
+SlashCmdList["HANDKERQUEST"]("options")
 check(OPENED_SETTINGS == 99, "options open in Settings > AddOns")
 check(QRF_OptionsPanel:IsShown(), "options panel shown")
 check(QRF_TrackerOptionsButton ~= nil and QRF_TrackerOptionsButton:IsShown(), "tracker gear exists")
@@ -401,9 +401,11 @@ if prr then
 end
 
 -- ticker with distance sort
-SlashCmdList["CACHEFORQUEST"]("dist")
+SlashCmdList["HANDKERQUEST"]("dist")
 for _ = 1, 4 do TICKER() end
 
+check(SLASH_HANDKERQUEST1 == "/hanky" and SLASH_HANDKERQUEST2 == "/handkerquest" and SLASH_HANDKERQUEST3 == "/cfq", "slash commands: /hanky, /handkerquest, old /cfq")
+check(QRF_OptionsPanel and true, "options panel exists under the new name")
 check(#ERRORS == 0, "no Lua errors reported (" .. #ERRORS .. ")")
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

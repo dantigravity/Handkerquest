@@ -1,15 +1,15 @@
-# Cache ForQuest test harness
+# Handkerquest test harness
 
 Runs the addon outside WoW against a mocked WoW API (`wowmock.lua`) and checks the main paths:
 parchment rows (items only, no redundant "/N", strike only through the item text, quill ticks),
-one page per area with the dog-eared page-turn corner, area-change page return, handwriting cycle,
-lvl/dist sort cycling, menu Reset, stacking toggles never changing the watch list, options panel,
-`/cfq debug`.
+the "Near me" page and area pages (map areas / zones / distance, same names merged), the dog-eared
+page-turn corner, area-change page return, handwriting cycle, lvl/dist sort cycling, menu Reset,
+stacking toggles never changing the watch list, options panel, slash commands, `/hanky debug`.
 
 ## Run
-From the repo root (needs Lua 5.1 — WoW's Lua version):
+From the addon folder (needs Lua 5.1 — WoW's Lua version):
 
-    lua5.1 tests/smoke.lua CacheForQuest.lua
+    "C:\Program Files (x86)\Lua\5.1\lua.exe" smoke.lua Handkerquest.lua
 
 Prints any failures, then "N passed, N failed". Exit code is 0 only if everything passed.
 

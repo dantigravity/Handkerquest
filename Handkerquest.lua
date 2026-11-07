@@ -1,16 +1,20 @@
 -- ============================================================================
--- CacheForQuest.lua (v1.2.0 - WoW Forever Edition)
--- Fixed Tracker Block/Filter Layout + Collapse-Delayed Stack Top Promotion
--- + Dynamic Parchment "Shopping List" for Local Cluster Quantity Quests
--- v1.2.0: Single-button lvl / dist cycle sorts, filter-menu Reset, stack toggle
---         no longer drops quests, rough-cut parchment sheet stack with physics
---         ribbon area tabs, chat-side default position, Cache ForQuest options
---         panel (parchment gear, tracker gear, Options > AddOns).
--- v1.3.0: Field Tally pages per area with a dog-eared page-turn corner (no ribbons, no
---         Area/Zone/All cycle), handwritten ink, quill ticks, strike only through the item text.
+-- Handkerquest.lua (v1.3.0 - WoW Forever Edition)
+-- "Don't go off on an adventure without your handkerchief." (the name: handkerchief + quest)
+-- Objective Tracker sorting, filters & (?)/(•••) quest stacks, plus the Field Tally:
+-- a pile of handwritten parchment pages listing the quest items still to gather.
+-- (Formerly "Cache ForQuest". Internal names keep the old CFQ / QRF_ prefixes so saved
+--  settings and frame names carry over.)
+--
+-- v1.2.x: single-button lvl / dist cycle sorts, filter-menu Reset, options panel
+--         (parchment gear, tracker gear, Options > AddOns), chat-side default position.
+-- v1.3.0: renamed to Handkerquest (/hanky). Stacking is visual only; tally lists item
+--         objectives only; "Near me" page + area pages (map areas / zones / distance) with a
+--         dog-eared page-turn corner; handwritten ink, quill ticks, per-line strike-through.
 -- ============================================================================
 local CONFIG = {
-    ADDON_NAME          = "Cache ForQuest",
+    ADDON_NAME          = "Handkerquest",
+    VERSION             = "1.3.0",
     REWARD_BTN_ALL      = "Rewards: All",
     LEVEL_BTN_ALL       = "Levels: All",
     TRACKER_BTN_ALL     = "Filter: All",
@@ -2397,7 +2401,7 @@ local function EnsureShoppingListFrame()
         self.txt:SetTextColor(P.INK_RED[1], P.INK_RED[2], P.INK_RED[3])
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
         GameTooltip:AddLine("Put the Field Tally away", 1, 0.82, 0)
-        GameTooltip:AddLine("Bring it back in Cache ForQuest Options (gear above the tracker) or with /cfq list", 0.85, 0.85, 0.85, true)
+        GameTooltip:AddLine("Bring it back in Handkerquest Options (gear above the tracker) or with /hanky list", 0.85, 0.85, 0.85, true)
         GameTooltip:Show()
     end)
     closeBtn:SetScript("OnLeave", function(self)
@@ -2411,7 +2415,7 @@ local function EnsureShoppingListFrame()
         if CFQ.RefreshOptionsPanel then CFQ.RefreshOptionsPanel() end
     end)
 
-    -- Options gear -> Cache ForQuest options panel
+    -- Options gear -> Handkerquest options panel
     local optBtn = CreateFrame("Button", nil, chrome)
     optBtn:SetSize(13, 13)
     optBtn:SetPoint("RIGHT", closeBtn, "LEFT", -3, 0)
@@ -2422,7 +2426,7 @@ local function EnsureShoppingListFrame()
     optBtn:SetScript("OnEnter", function(self)
         CFQ.SetGearHover(self, true)
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:AddLine("Cache ForQuest Options", 1, 0.82, 0)
+        GameTooltip:AddLine("Handkerquest Options", 1, 0.82, 0)
         GameTooltip:AddLine("Parchment, handwriting, tracker & map settings", 0.85, 0.85, 0.85)
         GameTooltip:AddLine("Right-Click: reset the parchment's size & position", 0.65, 0.65, 0.65)
         GameTooltip:Show()
@@ -3842,9 +3846,9 @@ function CFQ.ReportError(err)
     CFQ.reportedErrors[msg] = true
     local handler = geterrorhandler and geterrorhandler()
     if handler then
-        handler("Cache ForQuest: " .. msg)
+        handler("Handkerquest: " .. msg)
     else
-        print("|cFFFF5555Cache ForQuest error:|r " .. msg)
+        print("|cFFFF5555Handkerquest error:|r " .. msg)
     end
 end
 
@@ -3869,7 +3873,7 @@ function CFQ.RequestNativeTrackerUpdate()
     end
 end
 
--- /cfq debug: prints what the tracker contents frame holds so in-game layout problems can be diagnosed
+-- /hanky debug: prints what the tracker contents frame holds so in-game layout problems can be diagnosed
 function CFQ.DebugDumpTracker()
     local out = function(s) print("|cFFFFD100CFQ|r " .. s) end
     local mod = QuestObjectiveTracker
@@ -5516,7 +5520,7 @@ local function EnsureSharedMenu()
     end
     optionsRow.label = optionsRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     optionsRow.label:SetPoint("LEFT", optionsRow.gear, "RIGHT", 5, 0)
-    optionsRow.label:SetText("|cFFFFD100Cache ForQuest Options...|r |cFF888888(parchment & more)|r")
+    optionsRow.label:SetText("|cFFFFD100Handkerquest Options...|r |cFF888888(parchment & more)|r")
     local optHl = optionsRow:CreateTexture(nil, "HIGHLIGHT")
     optHl:SetAllPoints()
     optHl:SetColorTexture(1, 1, 1, 0.08)
@@ -5611,9 +5615,9 @@ local function CreateObjectiveTrackerButton()
     end)
     optBtn:SetScript("OnEnter", function(self)
         CFQ.SetGearHover(self, true)
-        self.label:SetText("|cFFFFD100Cache ForQuest|r")
+        self.label:SetText("|cFFFFD100Handkerquest|r")
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:AddLine("Cache ForQuest Options", 1, 0.82, 0)
+        GameTooltip:AddLine("Handkerquest Options", 1, 0.82, 0)
         GameTooltip:AddLine("Parchment pages, handwriting, tracker & map settings", 0.85, 0.85, 0.85, true)
         GameTooltip:Show()
     end)
@@ -5766,7 +5770,7 @@ end
 -- ============================================================================
 -- CACHE FORQUEST OPTIONS PANEL
 -- Lives in Options > AddOns (Settings canvas), opens from the parchment gear, the gear
--- above "All Objectives", the filter menu, or /cfq options. Falls back to a standalone
+-- above "All Objectives", the filter menu, or /hanky options. Falls back to a standalone
 -- window on clients without the Settings API.
 -- ============================================================================
 CFQ.UpdateTrackerOptionsButton = function()
@@ -5792,7 +5796,7 @@ function CFQ.BuildOptionsPanel()
 
     local title = p:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
     title:SetPoint("TOPLEFT", p, "TOPLEFT", 16, y)
-    title:SetText(CONFIG.ADDON_NAME .. " |cFF888888v1.2.0|r")
+    title:SetText(CONFIG.ADDON_NAME .. " |cFF888888v" .. CONFIG.VERSION .. "|r")
     y = y - 22
     local sub = p:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
     sub:SetPoint("TOPLEFT", p, "TOPLEFT", 16, y)
@@ -6067,7 +6071,7 @@ function CFQ.BuildOptionsPanel()
     hint:SetPoint("TOPLEFT", p, "TOPLEFT", 20, y)
     hint:SetPoint("RIGHT", p, "RIGHT", -24, 0)
     hint:SetJustifyH("LEFT")
-    hint:SetText("Slash: /cfq (filter menu), /cfq options, /cfq lvl, /cfq dist, /cfq list, /cfq resetlist, /cfq reset")
+    hint:SetText("Slash: /hanky (filter menu), /hanky options, /hanky lvl, /hanky dist, /hanky list, /hanky resetlist, /hanky reset")
 
     p:SetScript("OnShow", function() CFQ.RefreshOptionsPanel() end)
     CFQ.optionsPanel = p
@@ -6131,7 +6135,7 @@ CFQ.OpenOptions = function()
     CFQ.RegisterOptions()
     if CFQ.optionsCategory and Settings and Settings.OpenToCategory then
         if InCombatLockdown() then
-            print("|cFFFFD100Cache ForQuest:|r options will open after combat.")
+            print("|cFFFFD100Handkerquest:|r options will open after combat.")
             CFQ.openOptionsAfterCombat = true
             return
         end
@@ -6146,10 +6150,11 @@ CFQ.OpenOptions = function()
     CFQ.ShowStandaloneOptions()
 end
 
--- Slash Commands (/cfq or /cacheforquest)
-SLASH_CACHEFORQUEST1 = "/cfq"
-SLASH_CACHEFORQUEST2 = "/cacheforquest"
-SlashCmdList["CACHEFORQUEST"] = function(msg)
+-- Slash Commands (/hanky, /handkerquest, and the old /cfq)
+SLASH_HANDKERQUEST1 = "/hanky"
+SLASH_HANDKERQUEST2 = "/handkerquest"
+SLASH_HANDKERQUEST3 = "/cfq"           -- old Cache ForQuest command, kept so muscle memory still works
+SlashCmdList["HANDKERQUEST"] = function(msg)
     local cmd = string.lower(strtrim(msg or ""))
     if cmd == "reset" then
         ResetAllFilters()
@@ -6204,7 +6209,7 @@ loader:SetScript("OnEvent", function(self, event, arg1)
         end
         return
     end
-    if event == "ADDON_LOADED" and arg1 == "CacheForQuest" then
+    if event == "ADDON_LOADED" and arg1 == "Handkerquest" then
         LoadState()
     elseif event == "PLAYER_ENTERING_WORLD" then
         LoadState()

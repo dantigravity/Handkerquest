@@ -1,4 +1,4 @@
-package-as: CacheForQuest
+package-as: Handkerquest
 ignore:
   - README.md
   - tests

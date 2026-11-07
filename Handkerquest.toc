@@ -1,0 +1,10 @@
+## Interface: 16001
+## Title: Handkerquest
+## Notes: Never set off without it. Sort your Objective Tracker by level or distance, stack nearby (?) and (•••) quests into card decks, filter by rewards or levels, and keep a handwritten Field Tally of the quest items left to gather. /hanky
+## Author: Dantigravity
+## Version: 1.3.0
+## SavedVariables: QRF_SavedState
+## IconTexture: Interface\MoneyFrame\UI-GoldIcon
+## Category-enUS: Quests
+
+Handkerquest.lua

@@ -1,4 +1,4 @@
--- Minimal WoW API mock: enough surface for CacheForQuest to load and run its main paths.
+-- Minimal WoW API mock: enough surface for Handkerquest to load and run its main paths.
 ERRORS = {}
 local function noop() end
 
