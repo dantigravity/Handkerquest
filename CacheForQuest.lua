@@ -6,6 +6,8 @@
 --         no longer drops quests, rough-cut parchment sheet stack with physics
 --         ribbon area tabs, chat-side default position, Cache ForQuest options
 --         panel (parchment gear, tracker gear, Options > AddOns).
+-- v1.3.0: Field Tally pages per area with a dog-eared page-turn corner (no ribbons, no
+--         Area/Zone/All cycle), handwritten ink, quill ticks, strike only through the item text.
 -- ============================================================================
 local CONFIG = {
     ADDON_NAME          = "Cache ForQuest",
@@ -31,12 +33,16 @@ local primarySortKey = "LVL"        -- "LVL" or "DIST": whichever sort was switc
 -- Namespaced state for v1.2 features (keeps the main chunk well under Lua's 200-local limit)
 local CFQ = {
     parchmentOpts = {
-        showTabs = true,                -- ribbon tabs for other areas
-        ribbonPhysics = true,           -- ribbons sway when dragged / resized / selected
+        showTabs = true,                -- a page for every other area with items to gather
+        pagesFollowTracker = true,      -- page radius follows the tracker's (•••) stacking slider
         autoFrontOnAreaChange = true,   -- current-area sheet jumps to the top when you enter a new area
         hideWhenNothingNearby = false,  -- hide the parchment entirely when the current area has nothing to gather
         showTrackerOptionsButton = true,-- gear button above "All Objectives"
     },
+    parchmentFont = "QUILL",            -- handwriting on the parchment: "QUILL", "SCRAWL" or "PLAIN"
+    pageRadiusPercent = 16,             -- own page radius (% of the zone map) when not following the tracker
+    nearRadiusPercent = 10,             -- "Near me" page: how close (% of the zone map) the items must be
+    pageGrouping = "AREA",              -- area pages by "AREA" (map areas), "ZONE" or "RADIUS" (distance)
     learnedQuestAreas = {},             -- [questID] = "Subzone name" where the quest's objectives were last worked
     stackHiddenRegistry = setmetatable({}, { __mode = "k" }), -- every native tracker frame we have hidden
     reportedErrors = {},
@@ -50,7 +56,7 @@ local incompleteStackEnabled = false-- (•••) Incomplete quest stacking tog
 local incompleteRadiusPercent = 16  -- 1% to 50% of zone map
 
 local showShoppingList = true       -- Dynamic Parchment Shopping List for local quantity quests
-local shoppingListScope = "AREA"    -- "AREA" (Local radius/cluster), "ZONE" (Current zone), or "ALL"
+local shoppingListScope = "AREA"    -- fixed: the current area is always the top page (saved for older versions only)
 local shoppingListCfg = {
     width = 230,
     height = 175,
@@ -331,6 +337,10 @@ local function SaveState()
     QRF_SavedState.mapFilterHideMode = mapFilterHideMode
     QRF_SavedState.showShoppingList = showShoppingList
     QRF_SavedState.shoppingListScope = shoppingListScope
+    QRF_SavedState.parchmentFont = CFQ.parchmentFont
+    QRF_SavedState.pageRadiusPercent = CFQ.pageRadiusPercent
+    QRF_SavedState.nearRadiusPercent = CFQ.nearRadiusPercent
+    QRF_SavedState.pageGrouping = CFQ.pageGrouping
     QRF_SavedState.shoppingListCfg = shoppingListCfg
     QRF_SavedState.lastSelectedQuestID = lastSelectedQuestID
     QRF_SavedState.distSortMode = distSortMode
@@ -375,7 +385,16 @@ local function LoadState()
         if QRF_SavedState.filterMapPins ~= nil then filterMapPins = QRF_SavedState.filterMapPins end
         if QRF_SavedState.mapFilterHideMode ~= nil then mapFilterHideMode = QRF_SavedState.mapFilterHideMode end
         if QRF_SavedState.showShoppingList ~= nil then showShoppingList = QRF_SavedState.showShoppingList end
-        if QRF_SavedState.shoppingListScope then shoppingListScope = QRF_SavedState.shoppingListScope end
+        if type(QRF_SavedState.parchmentFont) == "string" then CFQ.parchmentFont = QRF_SavedState.parchmentFont end
+        if QRF_SavedState.pageGrouping == "AREA" or QRF_SavedState.pageGrouping == "ZONE" or QRF_SavedState.pageGrouping == "RADIUS" then
+            CFQ.pageGrouping = QRF_SavedState.pageGrouping
+        end
+        if type(QRF_SavedState.nearRadiusPercent) == "number" then
+            CFQ.nearRadiusPercent = math.max(1, math.min(50, math.floor(QRF_SavedState.nearRadiusPercent + 0.5)))
+        end
+        if type(QRF_SavedState.pageRadiusPercent) == "number" then
+            CFQ.pageRadiusPercent = math.max(1, math.min(50, math.floor(QRF_SavedState.pageRadiusPercent + 0.5)))
+        end
         if type(QRF_SavedState.shoppingListCfg) == "table" then
             local sc = QRF_SavedState.shoppingListCfg
             shoppingListCfg.width    = math.max(185, math.min(520, tonumber(sc.width) or 230))
@@ -505,6 +524,34 @@ function CFQ.FormatObjectiveLine(text, numFulfilled, numRequired)
     return text
 end
 
+-- The quest API tags every objective with a type: "item" means an item that has to be looted /
+-- gathered into your bags. Everything else is a goal, not loot: "monster" (kills), "object"
+-- (click / use something in the world), "event" (explore, escort, speak), "reputation",
+-- "progressbar", "spell", "player", "log", ... Only "item" objectives belong on the tally.
+-- Some clients return no type through GetQuestLogLeaderBoard; fall back to the objective's wording.
+CFQ.NON_ITEM_WORDS = {
+    "slain", "killed", "defeated", "destroyed", "rescued", "freed", "saved", "escorted",
+    "explored", "discovered", "visited", "located", "investigated", "entrance", "speak with",
+    "talk to", "used", "activated", "lit", "burned", "captured", "subdued", "tamed", "cleansed",
+    "placed", "planted", "bombed", "slay", "kill", "defeat", "destroy", "protect", "reach",
+}
+function CFQ.IsCollectItemObjective(objType, name)
+    if objType and objType ~= "" then
+        return objType == "item"
+    end
+    local lower = string.lower(name or "")
+    if lower == "" then return false end
+    for _, w in ipairs(CFQ.NON_ITEM_WORDS) do
+        local s, e = string.find(lower, w, 1, true)
+        if s then
+            local before = (s == 1) or not string.find(string.sub(lower, s - 1, s - 1), "%a")
+            local after = (e == string.len(lower)) or not string.find(string.sub(lower, e + 1, e + 1), "%a")
+            if before and after then return false end
+        end
+    end
+    return true
+end
+
 -- Extracts structured quantity/collection/kill objectives for the Shopping List
 local function ExtractQuestQuantityObjectives(questID, logIndex, isComplete)
     local results = {}
@@ -572,6 +619,7 @@ local function ExtractQuestQuantityObjectives(questID, logIndex, isComplete)
                 numFulfilled = cur,
                 numRequired = max,
                 finished = isDone,
+                isItem = CFQ.IsCollectItemObjective(objType, itemName),
             })
         end
     end
@@ -1217,6 +1265,10 @@ ScanQuestLogRewards = function()
             local mapID, x, y = QueryQuestCoordinates(questID)
             local objText = GetFirstQuestObjectiveText(questID, logIndex, isComplete, header)
             local qtyObjs = (not isFromMap) and ExtractQuestQuantityObjectives(questID, logIndex, isComplete) or {}
+            local itemObjs = {}   -- the subset the parchment tally shows: things you actually collect
+            for _, o in ipairs(qtyObjs) do
+                if o.isItem then table.insert(itemObjs, o) end
+            end
 
             local entry = {
                 questID = questID,
@@ -1233,6 +1285,7 @@ ScanQuestLogRewards = function()
                 isComplete = isComplete or false,
                 objectiveText = objText,
                 quantityObjectives = qtyObjs,
+                itemObjectives = itemObjs,
                 mapID = mapID,
                 x = x,
                 y = y,
@@ -1535,34 +1588,21 @@ end
 -- ============================================================================
 -- DYNAMIC PARCHMENT "SHOPPING LIST" FOR CLUSTER QUANTITY / COLLECTION QUESTS
 -- Checks off & crosses out completed items with an ink line until turned in!
--- v1.2: a stack of rough-cut parchment sheets (one per area) with hanging
---       ribbon tabs that sway when the stack is dragged, resized or shuffled.
+-- v1.3: a pile of rough-cut parchment pages, one per area that has items to gather.
+--       The current area's page is on top; a dog-eared corner turns to the next page.
 -- ============================================================================
 local P = {
     CURRENT_KEY = "__HERE__",
-    MAX_AREAS = 6,              -- current area + up to 5 other-area sheets
+    MAX_AREAS = 8,              -- current area + up to 7 other-area pages
     MAX_BACK_SHEETS = 3,
-    RIBBON_N = 5,               -- ribbon segments (root -> swallowtail)
-    RIBBON_W = 15,
-    RIBBON_REST  = { 0.05, 0.11, 0.42, 0.80, 1.10 },   -- radians below horizontal (progressive droop)
-    RIBBON_K     = { 170, 140, 85, 58, 42 },           -- stiffer near the root, floppier at the tail
-    RIBBON_LEVER = { 0.35, 0.60, 1.00, 1.35, 1.60 },
-    RIBBON_COLORS = {
-        { 0.58, 0.11, 0.09 },   -- oxblood (always the current area)
-        { 0.14, 0.27, 0.55 },   -- lapis
-        { 0.16, 0.42, 0.19 },   -- forest
-        { 0.42, 0.17, 0.50 },   -- royal purple
-        { 0.64, 0.42, 0.09 },   -- ochre
-        { 0.09, 0.42, 0.44 },   -- teal
-        { 0.50, 0.25, 0.12 },   -- umber
-    },
+    INK       = { 0.17, 0.10, 0.05 },   -- iron-gall ink
+    INK_RED   = { 0.48, 0.15, 0.06 },   -- counts / fresh entries
+    INK_GREEN = { 0.18, 0.36, 0.13 },   -- "(turn in)" notes
     BACK_SLOTS = {
         { angle =  0.026, dx =  2, dy = -3 },
         { angle = -0.040, dx = -3, dy = -6 },
         { angle =  0.055, dx =  4, dy = -9 },
     },
-    ribbonPool = {},
-    ribbonByKey = {},
     areas = {},
     selectedKey = "__HERE__",
     lastAreaSig = nil,
@@ -1766,7 +1806,6 @@ local function ResetShoppingListPosition()
     shoppingListCfg.useDefaultAnchor = true
     if shoppingListFrame then
         P.ApplyPosition(shoppingListFrame)
-        P.UpdateRibbonSide(shoppingListFrame, true)
     end
     SaveState()
     if UpdateShoppingListUI then UpdateShoppingListUI() end
@@ -1774,481 +1813,287 @@ end
 CFQ.ResetShoppingListPosition = ResetShoppingListPosition
 
 -- ----------------------------------------------------------------------------
--- HANGING RIBBON TABS (one per area) WITH ANGULAR-SPRING PHYSICS
+-- INK & QUILL HELPERS
 -- ----------------------------------------------------------------------------
-function P.SetLine(ln, r, x0, y0, x1, y1)
-    ln:SetStartPoint("CENTER", r, x0, y0)
-    ln:SetEndPoint("CENTER", r, x1, y1)
-end
+-- Handwriting faces built into the client (no font files shipped with the addon).
+-- Morpheus is the calligraphic face Blizzard uses for books & letters.
+P.FONT_STYLES = {
+    { key = "QUILL",  label = "Quill script", path = "Fonts\\MORPHEUS.TTF", item = 13, title = 15, small = 11 },
+    { key = "SCRAWL", label = "Rough scrawl", path = "Fonts\\SKURRI.TTF",   item = 12, title = 14, small = 10 },
+    { key = "PLAIN",  label = "Plain print",  path = nil,                   item = 11, title = 12, small = 9 },
+}
 
-function P.ResetRibbonPhysics(r)
-    for i = 1, P.RIBBON_N do
-        r.ang[i] = P.RIBBON_REST[i]
-        r.vel[i] = 0
+function P.GetFontStyle()
+    for _, st in ipairs(P.FONT_STYLES) do
+        if st.key == CFQ.parchmentFont then return st end
     end
-    r.prevX, r.prevY, r.prevVX, r.prevVY = nil, nil, 0, 0
-    r.ax, r.ay = 0, 0
-    r.atRest = false
-    r.dirty = true
+    return P.FONT_STYLES[1]
 end
 
-function P.KickRibbon(r, amount)
-    if not r or not r.inUse then return end
-    for i = 1, P.RIBBON_N do
-        r.vel[i] = (r.vel[i] or 0) + amount * (0.5 + 0.25 * i)
+function P.CycleFontStyle()
+    local idx = 1
+    for i, st in ipairs(P.FONT_STYLES) do
+        if st.key == CFQ.parchmentFont then idx = i end
     end
-    r.atRest = false
-    r.dirty = true
+    CFQ.parchmentFont = P.FONT_STYLES[(idx % #P.FONT_STYLES) + 1].key
 end
 
-function P.AcquireRibbon(f)
-    for _, r in ipairs(P.ribbonPool) do
-        if not r.inUse then
-            r.inUse = true
-            return r
+-- Applies the chosen handwriting face; falls back to the standard UI font if the client can't load it
+function P.SetInkFont(fs, kind, flags)
+    local st = P.GetFontStyle()
+    if fs.inkKey == st.key and fs.inkKind == kind then return end
+    local ok = st.path and fs:SetFont(st.path, st[kind] or st.item, flags or "")
+    if not st.path or ok == false then
+        fs:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", P.FONT_STYLES[3][kind] or 11, flags or "")
+    end
+    if fs.SetShadowColor then fs:SetShadowColor(0, 0, 0, 0) end   -- ink doesn't cast drop shadows
+    fs.inkKey, fs.inkKind = st.key, kind
+end
+
+-- A quill stroke: a crisp core line plus a wider, faint "bleed" line so the ink looks absorbed by the paper
+function P.NewStroke(parent, layer, sub)
+    sub = sub or 4
+    return {
+        bleed = parent:CreateLine(nil, layer or "OVERLAY", nil, sub - 1),
+        main = parent:CreateLine(nil, layer or "OVERLAY", nil, sub),
+    }
+end
+
+function P.DrawStroke(s, rel, x0, y0, x1, y1, thick, alpha, ink)
+    ink = ink or P.INK
+    s.main:SetStartPoint("TOPLEFT", rel, x0, y0)
+    s.main:SetEndPoint("TOPLEFT", rel, x1, y1)
+    s.main:SetThickness(thick)
+    s.main:SetColorTexture(ink[1], ink[2], ink[3], alpha)
+    s.bleed:SetStartPoint("TOPLEFT", rel, x0 + 0.4, y0 - 0.4)
+    s.bleed:SetEndPoint("TOPLEFT", rel, x1 - 0.3, y1 - 0.3)
+    s.bleed:SetThickness(thick + 1.0)
+    s.bleed:SetColorTexture(ink[1], ink[2], ink[3], alpha * 0.25)
+    s.main:Show()
+    s.bleed:Show()
+end
+
+function P.HideStroke(s)
+    s.main:Hide()
+    s.bleed:Hide()
+end
+
+-- Greedy word wrap with a measuring FontString, so each struck-through line gets a strike of its own width
+function P.WrapLines(measureFS, text, maxW)
+    local lines, widths = {}, {}
+    local cur, gap = "", ""
+    local function Width(s)
+        measureFS:SetText(s)
+        return measureFS:GetStringWidth() or 0
+    end
+    -- keep the original spacing between words (e.g. the double space after the count)
+    for word, space in string.gmatch(text, "(%S+)(%s*)") do
+        local candidate = (cur == "") and word or (cur .. gap .. word)
+        if cur ~= "" and Width(candidate) > maxW then
+            table.insert(lines, cur)
+            cur = word
+        else
+            cur = candidate
+        end
+        gap = space
+    end
+    if cur ~= "" then table.insert(lines, cur) end
+    if #lines == 0 then lines[1] = "" end
+    for i, ln in ipairs(lines) do
+        widths[i] = math.min(maxW, Width(ln))
+    end
+    return lines, widths
+end
+
+-- ----------------------------------------------------------------------------
+-- PAGES (one per area) & PAGE ORDER
+-- ----------------------------------------------------------------------------
+function P.GetAreaIndex(key)
+    for i, a in ipairs(P.areas) do
+        if a.key == key then return i end
+    end
+    return 1
+end
+
+function P.GetSelectedArea()
+    return P.areas[P.GetAreaIndex(P.selectedKey)]
+end
+
+function P.GetNeighborArea(dir)
+    local n = #P.areas
+    if n < 2 then return nil end
+    local i = P.GetAreaIndex(P.selectedKey)
+    return P.areas[((i - 1 + (dir or 1)) % n) + 1]
+end
+
+-- ----------------------------------------------------------------------------
+-- DOG-EARED PAGE CORNER (hot corner that turns to the next area's page)
+-- Built from 1px scanline strips so it needs no art files or vertex offsets:
+--   * the folded-over flap (upper-left triangle, paper underside, shaded toward the fold)
+--   * the gap the fold leaves (lower-right triangle), showing the page underneath
+-- Hovering lifts the corner further, like a thumb about to turn the page.
+-- ----------------------------------------------------------------------------
+P.CORNER_MAX = 34
+P.CORNER_REST = 15
+P.CORNER_HOVER = 30
+
+function P.HGradient(tex, r1, g1, b1, a1, r2, g2, b2, a2)
+    tex:SetColorTexture(1, 1, 1, 1)
+    if tex.SetGradient and CreateColor then
+        tex:SetGradient("HORIZONTAL", CreateColor(r1, g1, b1, a1), CreateColor(r2, g2, b2, a2))
+    else
+        tex:SetColorTexture((r1 + r2) * 0.5, (g1 + g2) * 0.5, (b1 + b2) * 0.5, (a1 + a2) * 0.5)
+    end
+end
+
+function P.DrawCorner(c)
+    local S = math.max(2, math.min(P.CORNER_MAX, c.size or P.CORNER_REST))
+    local key = math.floor(S * 4 + 0.5)
+    if c.drawnKey == key then return end
+    c.drawnKey = key
+
+    local ox = P.CORNER_MAX - S              -- the active corner sits in the bottom-right of the button
+    local lift = (S - P.CORNER_REST) / (P.CORNER_HOVER - P.CORNER_REST)   -- 0 at rest, 1 fully lifted
+    if lift < 0 then lift = 0 elseif lift > 1 then lift = 1 end
+    local n = math.floor(S + 0.5)
+    for j = 1, P.CORNER_MAX do
+        local under, flap = c.under[j], c.flap[j]
+        if j <= n then
+            local y = -(ox + j - 1)
+            local cut = S - (j - 0.5)              -- where the fold line crosses this row
+            if cut < 0 then cut = 0 end
+            local uw = S - cut
+            under:ClearAllPoints()
+            under:SetPoint("TOPLEFT", c, "TOPLEFT", ox + cut, y)
+            under:SetSize(math.max(0.5, uw), 1)
+            -- the page beneath, darkened right under the fold where the flap shades it
+            P.HGradient(under, 0.42, 0.30, 0.16, 1, 0.78, 0.68, 0.50, 1)
+            under:Show()
+
+            if cut > 0.4 then
+                flap:ClearAllPoints()
+                flap:SetPoint("TOPLEFT", c, "TOPLEFT", ox, y)
+                flap:SetSize(cut, 1)
+                -- underside of the parchment: lighter at the tip, shading into the crease
+                local tipShade = 0.98 - 0.06 * lift
+                P.HGradient(flap, tipShade, tipShade * 0.94, tipShade * 0.80, 1,
+                    0.70 - 0.08 * lift, 0.58 - 0.08 * lift, 0.38 - 0.06 * lift, 1)
+                flap:Show()
+            else
+                flap:Hide()
+            end
+        else
+            under:Hide()
+            flap:Hide()
         end
     end
 
-    local fontPath = STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
-    local W = P.RIBBON_W
-    local r = CreateFrame("Frame", nil, f)
-    r:SetSize(1, 1)
-    r.inUse = true
-    r.ang, r.vel, r.lens, r.pts = {}, {}, {}, {}
-    for i = 0, P.RIBBON_N do r.pts[i] = { 0, 0 } end
-    r.lines = { shadow = {}, glow = {}, edge = {}, main = {}, sheen = {}, jEdge = {}, jMain = {}, pEdge = {}, pMain = {} }
+    -- crease, cast shadow and the flap's cut edges
+    c.foldShadow:SetStartPoint("TOPLEFT", c, ox + S + 1.2, -ox - 1.2)
+    c.foldShadow:SetEndPoint("TOPLEFT", c, ox + 1.2, -(ox + S) - 1.2)
+    c.foldShadow:SetThickness(2.5 + 2 * lift)
+    c.foldShadow:SetColorTexture(0.10, 0.05, 0.01, 0.20 + 0.15 * lift)
+    c.foldEdge:SetStartPoint("TOPLEFT", c, ox + S, -ox)
+    c.foldEdge:SetEndPoint("TOPLEFT", c, ox, -(ox + S))
+    c.foldEdge:SetThickness(1)
+    c.foldEdge:SetColorTexture(0.33, 0.21, 0.08, 0.75)
+    c.flapTop:SetStartPoint("TOPLEFT", c, ox, -ox)
+    c.flapTop:SetEndPoint("TOPLEFT", c, ox + S, -ox)
+    c.flapTop:SetThickness(1)
+    c.flapTop:SetColorTexture(0.45, 0.31, 0.14, 0.70)
+    c.flapLeft:SetStartPoint("TOPLEFT", c, ox, -ox)
+    c.flapLeft:SetEndPoint("TOPLEFT", c, ox, -(ox + S))
+    c.flapLeft:SetThickness(1)
+    c.flapLeft:SetColorTexture(0.45, 0.31, 0.14, 0.70)
+end
 
-    local function NewLine(list, layer, sub, thick)
-        local ln = r:CreateLine(nil, layer, nil, sub)
-        ln:SetThickness(thick)
-        table.insert(list, ln)
+function P.CreateCorner(f, parent)
+    local c = CreateFrame("Button", nil, parent)
+    c:SetSize(P.CORNER_MAX, P.CORNER_MAX)
+    c:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", 3, -3)   -- also covers the torn rim at the corner
+    c:SetFrameLevel((f.baseLevel or 30) + 22)
+    c:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    c.size, c.target = P.CORNER_REST, P.CORNER_REST
+    c.under, c.flap = {}, {}
+    for j = 1, P.CORNER_MAX do
+        c.under[j] = c:CreateTexture(nil, "ARTWORK", nil, 1)
+        c.flap[j] = c:CreateTexture(nil, "ARTWORK", nil, 3)
     end
-    for _ = 1, P.RIBBON_N do
-        NewLine(r.lines.shadow, "BACKGROUND", 0, W + 1)
-        NewLine(r.lines.glow, "BACKGROUND", 1, W + 9)
-        NewLine(r.lines.edge, "ARTWORK", 0, W)
-        NewLine(r.lines.main, "ARTWORK", 1, W - 3)
-        NewLine(r.lines.sheen, "ARTWORK", 3, 2)
-    end
-    for _ = 1, P.RIBBON_N - 1 do
-        NewLine(r.lines.jEdge, "ARTWORK", 0, W)
-        NewLine(r.lines.jMain, "ARTWORK", 2, W - 3)
-    end
-    for _ = 1, 2 do
-        NewLine(r.lines.pEdge, "ARTWORK", 0, W * 0.5 + 1)
-        NewLine(r.lines.pMain, "ARTWORK", 1, W * 0.5 - 1.5)
-    end
-    for _, ln in ipairs(r.lines.shadow) do ln:SetColorTexture(0, 0, 0, 0.32) end
+    c.foldShadow = c:CreateLine(nil, "ARTWORK", nil, 2)
+    c.foldEdge = c:CreateLine(nil, "ARTWORK", nil, 5)
+    c.flapTop = c:CreateLine(nil, "ARTWORK", nil, 4)
+    c.flapLeft = c:CreateLine(nil, "ARTWORK", nil, 4)
 
-    -- Brass tack pinning the selected ribbon onto the top sheet
-    r.tackRim = r:CreateTexture(nil, "OVERLAY", nil, 1)
-    r.tackRim:SetSize(8, 8)
-    r.tackRim:SetColorTexture(0.18, 0.10, 0.02, 1)
-    r.tack = r:CreateTexture(nil, "OVERLAY", nil, 2)
-    r.tack:SetSize(5.5, 5.5)
-    r.tack:SetColorTexture(0.95, 0.77, 0.26, 1)
-    for _, t in ipairs({ r.tackRim, r.tack }) do
-        local m = r:CreateMaskTexture()
-        m:SetAllPoints(t)
-        m:SetTexture(CIRCLE_MASK_TEX, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
-        t:AddMaskTexture(m)
-    end
-
-    r.text = r:CreateFontString(nil, "OVERLAY", nil, 4)
-    r.text:SetFont(fontPath, 10, "")
-    r.text:SetShadowOffset(1, -1)
-    r.text:SetShadowColor(0, 0, 0, 0.9)
-    r.text:SetWordWrap(false)
-
-    r.btn = CreateFrame("Button", nil, f)
-    r.btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-    r.btn.ribbon = r
-    r.btn:SetScript("OnClick", function(self)
-        if self.ribbon.key then P.SelectArea(self.ribbon.key, true) end
+    c:SetScript("OnEnter", function(self)
+        self.target = P.CORNER_HOVER
+        local nxt, prev = P.GetNeighborArea(1), P.GetNeighborArea(-1)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Turn the page", 1, 0.82, 0)
+        if nxt then
+            GameTooltip:AddLine(string.format("Next: %s  (%d to gather)", nxt.title or "Elsewhere", nxt.remaining or 0), 0.9, 0.9, 0.9)
+        end
+        if prev and prev ~= nxt then
+            GameTooltip:AddLine(string.format("Back: %s", prev.title or "Elsewhere"), 0.75, 0.75, 0.75)
+        end
+        GameTooltip:AddLine("Left-Click: next page  |  Right-Click: previous page", 0.65, 0.65, 0.65)
+        GameTooltip:Show()
     end)
-    r.btn:SetScript("OnEnter", function(self) P.OnRibbonEnter(self.ribbon, self) end)
-    r.btn:SetScript("OnLeave", function(self)
-        self.ribbon.hover = false
-        P.ApplyRibbonColors(self.ribbon)
+    c:SetScript("OnLeave", function(self)
+        self.target = P.CORNER_REST
         GameTooltip:Hide()
     end)
+    c:SetScript("OnClick", function(_, button)
+        P.TurnPage((button == "RightButton") and -1 or 1)
+    end)
 
-    P.ResetRibbonPhysics(r)
-    table.insert(P.ribbonPool, r)
-    return r
+    P.DrawCorner(c)
+    return c
 end
 
-function P.ApplyRibbonColors(r)
-    local c = r.color or P.RIBBON_COLORS[1]
-    local m = r.isSelected and 1.15 or 0.78
-    if r.hover then m = m + 0.18 end
-    local cr, cg, cb = math.min(1, c[1] * m), math.min(1, c[2] * m), math.min(1, c[3] * m)
-    local L = r.lines
-    for _, ln in ipairs(L.main) do ln:SetColorTexture(cr, cg, cb, 1) end
-    for _, ln in ipairs(L.jMain) do ln:SetColorTexture(cr, cg, cb, 1) end
-    for _, ln in ipairs(L.pMain) do ln:SetColorTexture(cr, cg, cb, 1) end
-    for _, ln in ipairs(L.edge) do ln:SetColorTexture(cr * 0.45, cg * 0.45, cb * 0.45, 1) end
-    for _, ln in ipairs(L.jEdge) do ln:SetColorTexture(cr * 0.45, cg * 0.45, cb * 0.45, 1) end
-    for _, ln in ipairs(L.pEdge) do ln:SetColorTexture(cr * 0.45, cg * 0.45, cb * 0.45, 1) end
-    for _, ln in ipairs(L.sheen) do
-        ln:SetColorTexture(math.min(1, cr * 1.6 + 0.10), math.min(1, cg * 1.6 + 0.10), math.min(1, cb * 1.6 + 0.10), 0.35)
-    end
-    if r.isSelected then
-        r.text:SetTextColor(1.0, 0.95, 0.80, 1)
-        r.tack:Show()
-        r.tackRim:Show()
-    else
-        r.text:SetTextColor(0.90, 0.84, 0.70, 0.95)
-        r.tack:Hide()
-        r.tackRim:Hide()
-    end
-end
-
-function P.AnchorRibbon(r, f)
-    local s = f.ribbonSide or 1
-    r.side = s
-    r:ClearAllPoints()
-    if s > 0 then
-        r:SetPoint("CENTER", f, "TOPRIGHT", -8, r.rootY or -30)
-    else
-        r:SetPoint("CENTER", f, "TOPLEFT", 8, r.rootY or -30)
-    end
-end
-
-function P.RibbonTargetY(f, slotIndex, slotCount)
-    local h = f:GetHeight() or 175
-    local spacing = math.max(12, math.min(19, (h - 44) / math.max(1, slotCount)))
-    return -30 - (slotIndex - 1) * spacing
-end
-
-function P.ConfigureRibbon(r, f, area, slotIndex, slotCount, isSelected)
-    r.key = area.key
-    r.area = area
-    r.isSelected = isSelected
-    r.color = area.color
-    r.slotIndex, r.slotCount = slotIndex, slotCount
-    r.glowUntil = area.isCurrent and (P.currentGlowUntil or 0) or 0
-
-    local title = area.title or "Area"
-    if string.len(title) > 22 then title = string.sub(title, 1, 20) .. ".." end
-    local label = (area.remaining or 0) > 0 and string.format("%s |cFFFFE7A0%d|r", title, area.remaining) or title
-    if r.label ~= label then
-        r.label = label
-        r.text:SetText(label)
-        local tw = math.min(120, math.max(24, r.text:GetStringWidth() or 40))
-        r.textW = tw
-        r.lens[1] = 8 + tw * 0.5 + 7
-        r.lens[2] = tw * 0.5 + 9
-        r.lens[3] = 13
-        r.lens[4] = 11
-        r.lens[5] = 9
-        r.dirty = true
-    end
-
-    local base = f.baseLevel or 30
-    r:SetFrameLevel(isSelected and (base + 15) or (base + 5 + slotIndex))
-    r.btn:SetFrameLevel(base + 22)
-
-    r.targetRootY = P.RibbonTargetY(f, slotIndex, slotCount)
-    if not r.rootY or r.side ~= (f.ribbonSide or 1) then
-        r.rootY = r.targetRootY
-        P.AnchorRibbon(r, f)
-        P.ResetRibbonPhysics(r)
-    end
-
-    r:Show()
-    r.btn:Show()
-    P.ApplyRibbonColors(r)
-end
-
-function P.UpdateRibbons(f, areas)
-    local used = {}
-    if CFQ.parchmentOpts.showTabs then
-        for idx, area in ipairs(areas) do
-            local r = P.ribbonByKey[area.key]
-            if not r or not r.inUse then
-                r = P.AcquireRibbon(f)
-                P.ribbonByKey[area.key] = r
-                r.rootY = nil
-                r.label = nil
-                P.ResetRibbonPhysics(r)
-            end
-            used[r] = true
-            P.ConfigureRibbon(r, f, area, idx, #areas, area.key == P.selectedKey)
-        end
-    end
-    for _, r in ipairs(P.ribbonPool) do
-        if r.inUse and not used[r] then
-            r.inUse = false
-            r:Hide()
-            r.btn:Hide()
-            if r.key and P.ribbonByKey[r.key] == r then P.ribbonByKey[r.key] = nil end
-            r.key, r.label, r.rootY = nil, nil, nil
-        end
-    end
-end
-
-function P.RefreshRibbonTargets(f)
-    for _, r in ipairs(P.ribbonPool) do
-        if r.inUse and r.slotIndex then
-            r.targetRootY = P.RibbonTargetY(f, r.slotIndex, r.slotCount or 1)
-        end
-    end
-end
-
-function P.UpdateRibbonSide(f, force)
-    local cx = f:GetCenter()
-    local uiW = UIParent:GetWidth()
-    local side = 1
-    if cx and uiW and uiW > 0 then
-        local fx = cx * (f:GetEffectiveScale() or 1)
-        local mid = uiW * (UIParent:GetEffectiveScale() or 1) * 0.5
-        side = (fx < mid) and 1 or -1     -- left half of the screen: ribbons hang off the right edge
-    end
-    if force or side ~= f.ribbonSide then
-        f.ribbonSide = side
-        for _, r in ipairs(P.ribbonPool) do
-            if r.inUse then
-                P.AnchorRibbon(r, f)
-                P.ResetRibbonPhysics(r)
-            end
-        end
-        if f.SetClampRectInsets then
-            if side > 0 then f:SetClampRectInsets(0, 60, 0, 0) else f:SetClampRectInsets(-60, 0, 0, 0) end
-        end
-        P.ApplyStackLayout(f)
-    end
-end
-
--- Returns true when the ribbon's angles changed and it needs redrawing
-function P.StepRibbon(r, dt, physicsOn)
-    local N, REST = P.RIBBON_N, P.RIBBON_REST
-
-    -- Root motion (drag, resize, slot slide) measured in screen space
-    local cx, cy = r:GetCenter()
-    if cx and cy then
-        if r.prevX then
-            local vx, vy = (cx - r.prevX) / dt, (cy - r.prevY) / dt
-            local ax = (vx - (r.prevVX or 0)) / dt
-            local ay = (vy - (r.prevVY or 0)) / dt
-            if ax > 15000 then ax = 15000 elseif ax < -15000 then ax = -15000 end
-            if ay > 15000 then ay = 15000 elseif ay < -15000 then ay = -15000 end
-            local blend = math.min(1, dt * 30)
-            r.ax = (r.ax or 0) + (ax - (r.ax or 0)) * blend
-            r.ay = (r.ay or 0) + (ay - (r.ay or 0)) * blend
-            r.prevVX, r.prevVY = vx, vy
-        else
-            r.ax, r.ay, r.prevVX, r.prevVY = 0, 0, 0, 0
-        end
-        r.prevX, r.prevY = cx, cy
-    end
-
-    if not physicsOn then
-        local changed = false
-        for i = 1, N do
-            if r.ang[i] ~= REST[i] or r.vel[i] ~= 0 then
-                r.ang[i], r.vel[i] = REST[i], 0
-                changed = true
-            end
-        end
-        return changed
-    end
-
-    local ax, ay = r.ax or 0, r.ay or 0
-    if r.atRest and math.abs(ax) < 5 and math.abs(ay) < 5 then
-        return false
-    end
-
-    local K, LEV = P.RIBBON_K, P.RIBBON_LEVER
-    local s = r.side or 1
-    local h = dt * 0.5
-    for _ = 1, 2 do
-        for i = 1, N do
-            local a = r.ang[i]
-            local acc = -K[i] * (a - REST[i]) - 7.5 * r.vel[i]
-            if i > 1 then acc = acc - 45 * ((a - r.ang[i - 1]) - (REST[i] - REST[i - 1])) end
-            if i < N then acc = acc + 22 * ((r.ang[i + 1] - a) - (REST[i + 1] - REST[i])) end
-            -- inertia: the ribbon lags behind whatever the root is doing
-            acc = acc + LEV[i] * (s * ax * math.sin(a) + ay * math.cos(a)) * 0.012
-            r.vel[i] = r.vel[i] + acc * h
-        end
-        for i = 1, N do
-            local na = r.ang[i] + r.vel[i] * h
-            if na < -0.9 then na, r.vel[i] = -0.9, 0
-            elseif na > 1.65 then na, r.vel[i] = 1.65, 0 end
-            r.ang[i] = na
-        end
-    end
-
-    local energy = 0
-    for i = 1, N do
-        energy = energy + math.abs(r.vel[i]) + math.abs(r.ang[i] - REST[i])
-    end
-    if energy < 0.004 and math.abs(ax) < 5 and math.abs(ay) < 5 then
-        for i = 1, N do r.ang[i], r.vel[i] = REST[i], 0 end
-        r.atRest = true
-    else
-        r.atRest = false
-    end
-    return true
-end
-
-function P.DrawRibbon(r, now)
-    local N, W = P.RIBBON_N, P.RIBBON_W
-    local s = r.side or 1
-    local pts = r.pts
-    local L = r.lines
-    local SL = P.SetLine
-
-    local x, y = 0, 0
-    pts[0][1], pts[0][2] = 0, 0
-    for i = 1, N do
-        local a = r.ang[i]
-        local len = r.lens[i] or 10
-        x = x + s * math.cos(a) * len
-        y = y - math.sin(a) * len
-        pts[i][1], pts[i][2] = x, y
-    end
-
-    for i = 1, N do
-        local x0, y0, x1, y1 = pts[i - 1][1], pts[i - 1][2], pts[i][1], pts[i][2]
-        local dx, dy = x1 - x0, y1 - y0
-        local len = math.max(0.01, math.sqrt(dx * dx + dy * dy))
-        local ux, uy = dx / len, dy / len
-        local nx, ny = -uy, ux
-        if ny < 0 then nx, ny = -nx, -ny end
-        local ex, ey = x1, y1
-        if i == N then ex, ey = x1 - ux * 4, y1 - uy * 4 end   -- leave room for the swallowtail
-        SL(L.edge[i], r, x0, y0, ex, ey)
-        SL(L.main[i], r, x0, y0, ex, ey)
-        SL(L.glow[i], r, x0, y0, x1, y1)
-        SL(L.shadow[i], r, x0 + 1.5, y0 - 2, x1 + 1.5, y1 - 2)
-        SL(L.sheen[i], r, x0 + nx * 3, y0 + ny * 3, ex + nx * 3, ey + ny * 3)
-    end
-
-    -- Joint caps hide the wedge gaps where segments bend
-    for i = 1, N - 1 do
-        local px, py = pts[i][1], pts[i][2]
-        local dx, dy = pts[i + 1][1] - pts[i - 1][1], pts[i + 1][2] - pts[i - 1][2]
-        local len = math.max(0.01, math.sqrt(dx * dx + dy * dy))
-        local ux, uy = dx / len, dy / len
-        local hl = W * 0.32
-        SL(L.jEdge[i], r, px - ux * hl, py - uy * hl, px + ux * hl, py + uy * hl)
-        SL(L.jMain[i], r, px - ux * hl, py - uy * hl, px + ux * hl, py + uy * hl)
-    end
-
-    -- Swallowtail prongs
-    do
-        local dx, dy = pts[N][1] - pts[N - 1][1], pts[N][2] - pts[N - 1][2]
-        local len = math.max(0.01, math.sqrt(dx * dx + dy * dy))
-        local ux, uy = dx / len, dy / len
-        local nx, ny = -uy, ux
-        local bx, by = pts[N][1] - ux * 5, pts[N][2] - uy * 5
-        for k = 1, 2 do
-            local sg = (k == 1) and 1 or -1
-            local sx, sy = bx + nx * (W * 0.22) * sg, by + ny * (W * 0.22) * sg
-            local tx, ty = pts[N][1] + ux * 6 + nx * (W * 0.42) * sg, pts[N][2] + uy * 6 + ny * (W * 0.42) * sg
-            SL(L.pEdge[k], r, sx, sy, tx, ty)
-            SL(L.pMain[k], r, sx, sy, tx, ty)
-        end
-    end
-
-    -- Title text rides the first joint (tilts with it where the client supports rotated text)
-    r.text:ClearAllPoints()
-    r.text:SetPoint("CENTER", r, "CENTER", pts[1][1], pts[1][2] + 0.5)
-    if r.text.SetRotation then
-        local a = (r.ang[1] + r.ang[2]) * 0.5
-        pcall(r.text.SetRotation, r.text, (s > 0) and -a or a)
-    end
-
-    r.btn:ClearAllPoints()
-    r.btn:SetPoint("CENTER", r, "CENTER", pts[1][1], pts[1][2])
-    r.btn:SetSize((r.textW or 40) + 18, W + 4)
-
-    r.tackRim:ClearAllPoints()
-    r.tackRim:SetPoint("CENTER", r, "CENTER", s * 2, 0)
-    r.tack:ClearAllPoints()
-    r.tack:SetPoint("CENTER", r, "CENTER", s * 2, 0)
-
-    local glowA = 0
-    if (r.glowUntil or 0) > now then
-        glowA = (0.30 + 0.25 * math.sin(now * 5.5)) * math.min(1, r.glowUntil - now)
-    end
-    for _, ln in ipairs(L.glow) do
-        if glowA > 0.01 then
-            ln:SetColorTexture(1.0, 0.80, 0.25, glowA)
-            ln:Show()
-        else
-            ln:Hide()
-        end
-    end
-end
-
-function P.OnRibbonEnter(r, btn)
-    r.hover = true
-    P.ApplyRibbonColors(r)
-    P.KickRibbon(r, -0.9)
-    GameTooltip:SetOwner(btn, ((r.side or 1) > 0) and "ANCHOR_RIGHT" or "ANCHOR_LEFT")
-    local a = r.area
-    GameTooltip:AddLine((a and a.title) or "Area", 1, 0.82, 0)
-    if a then
-        local qn = a.quests and #a.quests or 0
-        GameTooltip:AddLine(string.format("%d of %d still to gather  •  %d %s",
-            a.remaining or 0, a.items and #a.items or 0, qn, qn == 1 and "quest" or "quests"), 0.9, 0.9, 0.9)
-        if a.isCurrent then
-            GameTooltip:AddLine("Where you are now. Rises to the top whenever you enter a new area.", 0.7, 0.7, 0.7, true)
-        end
-    end
-    if r.isSelected then
-        GameTooltip:AddLine("This sheet is on top", 0.55, 0.85, 0.55)
-    else
-        GameTooltip:AddLine("Click: shuffle this sheet to the top", 0.65, 0.65, 0.65)
-    end
-    GameTooltip:Show()
+function P.UpdateCorner(f)
+    if not f.corner then return end
+    local multi = #P.areas > 1
+    f.corner:SetShown(multi)
+    if multi then P.DrawCorner(f.corner) end
 end
 
 -- ----------------------------------------------------------------------------
--- STACK LAYOUT, SHUFFLE ANIMATION & PER-FRAME DRIVER
+-- STACK LAYOUT, PAGE-TURN ANIMATION & PER-FRAME DRIVER
 -- ----------------------------------------------------------------------------
 function P.ApplyStackLayout(f)
     if not f.topSheet then return end
     local w, h = f:GetWidth(), f:GetHeight()
     if not w or w < 20 or not h or h < 20 then return end
-    local s = f.ribbonSide or 1
-    local t = f.shuffle and math.min(1, f.shuffle.t) or 0
+    local sh = f.shuffle
+    local t = sh and math.min(1, sh.t) or 0
+    local dir = (sh and sh.dir) or 1
     local pulse = math.sin(math.pi * t)
     local wob = math.sin(2 * math.pi * t)
 
     f.shadowSheet:Layout(w, h, 0.004, 3, -4)
-    local visible = f.visibleBackSheets or 1
+    local visible = f.visibleBackSheets or 0
     for k = 1, P.MAX_BACK_SHEETS do
-        local sh = f.backSheets[k]
+        local s = f.backSheets[k]
         if k <= visible then
             local slot = P.BACK_SLOTS[k]
             local sign = (k % 2 == 0) and -1 or 1
-            sh:Show()
-            -- back sheets fan out toward the ribbons while the top sheet is pulled the other way
-            sh:Layout(w, h, slot.angle + wob * 0.025 * sign, slot.dx + pulse * s * 6 * k, slot.dy)
+            s:Show()
+            s:Layout(w, h, slot.angle + wob * 0.02 * sign, slot.dx - pulse * dir * 3 * k, slot.dy)
         else
-            sh:Hide()
+            s:Hide()
         end
     end
-    f.topSheet:Layout(w, h, s * 0.06 * pulse, -s * 30 * pulse, 6 * pulse)
-    f.chrome:SetAlpha(f.shuffle and math.abs(1 - 2 * t) or 1)
+    -- Page turn: the top sheet is lifted by its corner and slid aside, then the next one settles in
+    f.topSheet:Layout(w, h, -dir * 0.09 * pulse, dir * 38 * pulse, -10 * pulse)
+    f.chrome:SetAlpha(sh and math.abs(1 - 2 * t) or 1)
 end
 
-function P.SelectArea(key, animate)
+function P.SelectArea(key, animate, dir)
     local f = shoppingListFrame
     if not f or not key then return end
-    if key == P.selectedKey and not f.shuffle then
-        P.KickRibbon(P.ribbonByKey[key], -2.2)
-        return
-    end
-    for _, r in ipairs(P.ribbonPool) do
-        if r.inUse then P.KickRibbon(r, (r.key == key) and -3.2 or 1.2) end
-    end
+    if key == P.selectedKey and not f.shuffle then return end
     if animate and f:IsShown() then
-        f.shuffle = { t = 0, dur = 0.42, key = key, swapped = false }
+        f.shuffle = { t = 0, dur = 0.55, key = key, swapped = false, dir = dir or 1 }
     else
         P.selectedKey = key
         shoppingScrollOffset = 0
@@ -2256,9 +2101,15 @@ function P.SelectArea(key, animate)
     end
 end
 
+function P.TurnPage(dir)
+    local f = shoppingListFrame
+    if not f or f.shuffle then return end
+    local a = P.GetNeighborArea(dir or 1)
+    if a then P.SelectArea(a.key, true, dir or 1) end
+end
+
 function P.OnUpdate(f, elapsed)
     local dt = math.min(math.max(elapsed or 0, 0.001), 0.05)
-    local now = GetTime()
 
     if f.shuffle then
         local sh = f.shuffle
@@ -2277,33 +2128,22 @@ function P.OnUpdate(f, elapsed)
         P.ApplyStackLayout(f)
     end
 
-    local physicsOn = CFQ.parchmentOpts.ribbonPhysics
-    for _, r in ipairs(P.ribbonPool) do
-        if r.inUse and r:IsShown() then
-            local need = r.dirty
-            if r.targetRootY and r.rootY and r.rootY ~= r.targetRootY then
-                local d = r.targetRootY - r.rootY
-                if math.abs(d) < 0.25 then
-                    r.rootY = r.targetRootY
-                else
-                    r.rootY = r.rootY + d * math.min(1, dt * 9)
-                end
-                P.AnchorRibbon(r, f)
-                need = true
+    local c = f.corner
+    if c and c:IsShown() then
+        local d = (c.target or P.CORNER_REST) - (c.size or P.CORNER_REST)
+        if math.abs(d) > 0.01 then
+            if math.abs(d) < 0.25 then
+                c.size = c.target
+            else
+                c.size = c.size + d * math.min(1, dt * 12)
             end
-            if P.StepRibbon(r, dt, physicsOn) then need = true end
-            local glowing = (r.glowUntil or 0) > now
-            if glowing or r.wasGlowing then need = true end
-            r.wasGlowing = glowing
-            if need then
-                P.DrawRibbon(r, now)
-                r.dirty = false
-            end
+            P.DrawCorner(c)
         end
     end
 end
 
--- When the player enters a new area: the current-area sheet glows and (optionally) shuffles to the top
+-- When the player enters a new area, its page is fresh ink (red title for a few seconds) and,
+-- optionally, gets turned back to the top of the pile.
 function P.CheckAreaChange(f)
     local zone = (GetRealZoneText and GetRealZoneText()) or ""
     local sub = (GetSubZoneText and GetSubZoneText()) or ""
@@ -2318,80 +2158,108 @@ function P.CheckAreaChange(f)
 
     if CFQ.parchmentOpts.autoFrontOnAreaChange and P.selectedKey ~= P.CURRENT_KEY then
         if f:IsShown() and not f.shuffle then
-            f.shuffle = { t = 0, dur = 0.42, key = P.CURRENT_KEY, swapped = false }
-            for _, r in ipairs(P.ribbonPool) do
-                if r.inUse then P.KickRibbon(r, (r.key == P.CURRENT_KEY) and -3.2 or 1.2) end
-            end
+            f.shuffle = { t = 0, dur = 0.55, key = P.CURRENT_KEY, swapped = false, dir = -1 }
         elseif not f.shuffle then
             P.selectedKey = P.CURRENT_KEY
             shoppingScrollOffset = 0
         end
-    else
-        P.KickRibbon(P.ribbonByKey[P.CURRENT_KEY], -2.4)
     end
 end
 
 -- ----------------------------------------------------------------------------
--- CHECKLIST ROWS
+-- CHECKLIST ROWS (hand-inked box, quill tick, per-line strike-through)
 -- ----------------------------------------------------------------------------
 local function AcquireShoppingListRow(idx, parent)
     local row = shoppingListRowPool[idx]
     if row then return row end
 
-    local fontPath = STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
     row = CreateFrame("Button", nil, parent)
     row:SetHeight(20)
     row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    row.seed = idx * 13.7
 
     row.highlight = row:CreateTexture(nil, "HIGHLIGHT")
     row.highlight:SetAllPoints()
-    row.highlight:SetColorTexture(0.45, 0.30, 0.08, 0.14)
+    row.highlight:SetColorTexture(0.45, 0.30, 0.08, 0.10)
 
-    -- Hand-drawn style ink checkbox [ ] / [✓]
+    -- Hand-drawn box: four slightly crooked quill strokes that overshoot their corners
     local box = CreateFrame("Frame", nil, row)
-    box:SetSize(12, 12)
-    box:SetPoint("TOPLEFT", row, "TOPLEFT", 2, -3)
+    box:SetSize(11, 11)
+    box:SetPoint("TOPLEFT", row, "TOPLEFT", 3, -4)
+    box.wash = box:CreateTexture(nil, "BACKGROUND")
+    box.wash:SetAllPoints()
+    box.wash:SetColorTexture(0.55, 0.40, 0.18, 0.06)
 
-    box.border = box:CreateTexture(nil, "BACKGROUND")
-    box.border:SetAllPoints()
-    box.border:SetColorTexture(0.24, 0.15, 0.06, 0.90)
+    local function J(k) return (P.Hash01(row.seed, k, 3) - 0.5) * 1.2 end
+    local corners = {
+        { 0 + J(1), 0 + J(2) }, { 11 + J(3), 0 + J(4) }, { 11 + J(5), -11 + J(6) }, { 0 + J(7), -11 + J(8) },
+    }
+    box.sides = {}
+    for k = 1, 4 do
+        local a, b = corners[k], corners[(k % 4) + 1]
+        local dx, dy = b[1] - a[1], b[2] - a[2]
+        local len = math.max(0.1, math.sqrt(dx * dx + dy * dy))
+        local ux, uy = dx / len, dy / len
+        local s = P.NewStroke(box, "ARTWORK", 3)
+        P.DrawStroke(s, box, a[1] - ux * 0.4, a[2] - uy * 0.4, b[1] + ux * 1.1, b[2] + uy * 1.1, 1.05, 0.72)
+        box.sides[k] = s
+    end
 
-    box.bg = box:CreateTexture(nil, "ARTWORK")
-    box.bg:SetPoint("TOPLEFT", 1, -1)
-    box.bg:SetPoint("BOTTOMRIGHT", -1, 1)
-    box.bg:SetColorTexture(0.92, 0.84, 0.66, 0.85)
-
-    box.checkMark = box:CreateFontString(nil, "OVERLAY")
-    box.checkMark:SetFont(fontPath, 11, "OUTLINE")
-    box.checkMark:SetPoint("CENTER", box, "CENTER", 0, 0)
-    box.checkMark:SetText("|cFF1F6E1F✓|r")
-    box.checkMark:Hide()
+    -- Quill tick: heavy short down-stroke, then a long flick up and out past the box's top-right
+    box.tick = { P.NewStroke(box, "OVERLAY", 5), P.NewStroke(box, "OVERLAY", 5), P.NewStroke(box, "OVERLAY", 5) }
+    for _, s in ipairs(box.tick) do P.HideStroke(s) end
     row.box = box
 
-    -- Objective text (wraps dynamically when the parchment is resized!)
     row.itemText = row:CreateFontString(nil, "OVERLAY")
-    row.itemText:SetFont(fontPath, 11, "")
-    row.itemText:SetPoint("TOPLEFT", box, "TOPRIGHT", 5, 1)
+    P.SetInkFont(row.itemText, "item")
+    row.itemText:SetPoint("TOPLEFT", box, "TOPRIGHT", 6, 2)
     row.itemText:SetJustifyH("LEFT")
     row.itemText:SetJustifyV("TOP")
     row.itemText:SetWordWrap(true)
-    row.itemText:SetTextColor(0.16, 0.09, 0.03, 1.0)
+    row.itemText:SetTextColor(P.INK[1], P.INK[2], P.INK[3], 1)
 
-    -- Horizontal ink strikethrough line across completed items
-    row.strikeLine = row:CreateTexture(nil, "OVERLAY", nil, 4)
-    row.strikeLine:SetHeight(1.5)
-    row.strikeLine:SetColorTexture(0.25, 0.16, 0.07, 0.88)
-    row.strikeLine:Hide()
+    -- "(turn in)" note: separate so the strike-through never runs through it
+    row.suffixText = row:CreateFontString(nil, "OVERLAY")
+    P.SetInkFont(row.suffixText, "small")
+    row.suffixText:SetJustifyH("LEFT")
+    row.suffixText:SetTextColor(P.INK_GREEN[1], P.INK_GREEN[2], P.INK_GREEN[3], 1)
+    row.suffixText:Hide()
 
-    -- Subtle divider under each item
+    row.strikes = {}
+
+    -- Faint ruled line under each entry, like a ledger
     row.divider = row:CreateTexture(nil, "BACKGROUND")
     row.divider:SetHeight(1)
     row.divider:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 2, 0)
     row.divider:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -2, 0)
-    row.divider:SetColorTexture(0.45, 0.32, 0.15, 0.22)
+    row.divider:SetColorTexture(0.45, 0.32, 0.15, 0.14)
 
     shoppingListRowPool[idx] = row
     return row
+end
+
+function P.ShowTick(box, seed)
+    local w = (P.Hash01(seed, 9, 1) - 0.5) * 1.6
+    P.DrawStroke(box.tick[1], box, 1.5, -5.0 + w * 0.3, 4.6, -9.6, 2.1, 0.93)        -- down-stroke
+    P.DrawStroke(box.tick[2], box, 4.6, -9.6, 10.6 + w, 0.4, 1.6, 0.93)              -- up-stroke
+    P.DrawStroke(box.tick[3], box, 10.6 + w, 0.4, 14.2 + w, 4.2, 0.8, 0.70)          -- tapering flick
+end
+
+function P.HideTick(box)
+    for _, s in ipairs(box.tick) do P.HideStroke(s) end
+end
+
+function P.GetStrike(row, k)
+    local s = row.strikes[k]
+    if not s then
+        s = P.NewStroke(row, "OVERLAY", 6)
+        row.strikes[k] = s
+    end
+    return s
+end
+
+function P.HideStrikes(row)
+    for _, s in ipairs(row.strikes) do P.HideStroke(s) end
 end
 
 -- Gear icon with a safe text fallback (no custom art files required)
@@ -2443,10 +2311,20 @@ local function EnsureShoppingListFrame()
     f:EnableMouseWheel(true)
     f:SetMovable(true)
     f:RegisterForDrag("LeftButton")
-    f.ribbonSide = 1
-    f.visibleBackSheets = 1
+    f.visibleBackSheets = 0
     shoppingListFrame = f
     P.ApplyPosition(f)
+
+    local function SavePoint(self)
+        local pt, _, relPt, xOfs, yOfs = self:GetPoint(1)
+        if pt then
+            shoppingListCfg.point = pt
+            shoppingListCfg.relPoint = relPt or pt
+            shoppingListCfg.x = math.floor((xOfs or 0) + 0.5)
+            shoppingListCfg.y = math.floor((yOfs or 0) + 0.5)
+            shoppingListCfg.useDefaultAnchor = false
+        end
+    end
 
     f:SetScript("OnDragStart", function(self)
         if not self.isResizing then
@@ -2455,19 +2333,11 @@ local function EnsureShoppingListFrame()
     end)
     f:SetScript("OnDragStop", function(self)
         self:StopMovingOrSizing()
-        local pt, _, relPt, xOfs, yOfs = self:GetPoint(1)
-        if pt then
-            shoppingListCfg.point = pt
-            shoppingListCfg.relPoint = relPt or pt
-            shoppingListCfg.x = math.floor((xOfs or 0) + 0.5)
-            shoppingListCfg.y = math.floor((yOfs or 0) + 0.5)
-            shoppingListCfg.useDefaultAnchor = false
-            SaveState()
-        end
-        P.UpdateRibbonSide(self)
+        SavePoint(self)
+        SaveState()
     end)
 
-    -- Sheet stack (bottom to top): drop shadow, up to 3 back sheets, top sheet
+    -- Page pile (bottom to top): drop shadow, up to 3 pages underneath, the top page
     local base = f.baseLevel
     f.shadowSheet = P.CreateSheet(f, 11, {
         paper = { 0, 0, 0, 0.36 }, depth = 4, minDepth = 1, segW = 14, overlap = 0,
@@ -2475,9 +2345,9 @@ local function EnsureShoppingListFrame()
     f.shadowSheet:SetFrameLevel(base + 1)
 
     local backPaper = {
-        { 0.86, 0.77, 0.58, 0.98 },
-        { 0.80, 0.71, 0.53, 0.98 },
-        { 0.74, 0.65, 0.48, 0.98 },
+        { 0.84, 0.75, 0.56, 0.98 },
+        { 0.78, 0.69, 0.51, 0.98 },
+        { 0.72, 0.63, 0.46, 0.98 },
     }
     f.backSheets = {}
     for k = 1, P.MAX_BACK_SHEETS do
@@ -2494,13 +2364,13 @@ local function EnsureShoppingListFrame()
     })
     f.topSheet:SetFrameLevel(base + 12)
 
-    -- Chrome: everything printed on the top sheet (moves & fades with it during a shuffle)
+    -- Chrome: everything written on the top page (moves & fades with it during a page turn)
     local chrome = CreateFrame("Frame", nil, f.topSheet)
     chrome:SetAllPoints(f.topSheet)
     chrome:SetFrameLevel(base + 17)
     f.chrome = chrome
 
-    -- Decorative Brass Tack at Top Center
+    -- Brass tack pinning the pile together
     local tack = CreateFrame("Frame", nil, chrome)
     tack:SetSize(10, 10)
     tack:SetPoint("TOP", chrome, "TOP", 0, 3)
@@ -2513,24 +2383,25 @@ local function EnsureShoppingListFrame()
     tackHead:SetPoint("BOTTOMRIGHT", -1, 1)
     tackHead:SetColorTexture(0.92, 0.74, 0.24, 1.0)
 
-    -- Close Button (Top-Right)
+    -- Close (×), inked
     local closeBtn = CreateFrame("Button", nil, chrome)
     closeBtn:SetSize(14, 14)
-    closeBtn:SetPoint("TOPRIGHT", chrome, "TOPRIGHT", -4, -4)
+    closeBtn:SetPoint("TOPRIGHT", chrome, "TOPRIGHT", -5, -5)
     closeBtn:SetFrameLevel(base + 19)
     closeBtn.txt = closeBtn:CreateFontString(nil, "OVERLAY")
-    closeBtn.txt:SetFont(fontPath, 12, "OUTLINE")
+    closeBtn.txt:SetFont(fontPath, 13, "")
     closeBtn.txt:SetPoint("CENTER")
-    closeBtn.txt:SetText("|cFF6E4720×|r")
+    closeBtn.txt:SetText("×")
+    closeBtn.txt:SetTextColor(0.40, 0.25, 0.11)
     closeBtn:SetScript("OnEnter", function(self)
-        self.txt:SetText("|cFFFFD100×|r")
+        self.txt:SetTextColor(P.INK_RED[1], P.INK_RED[2], P.INK_RED[3])
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:AddLine("Hide Field Tally Parchment", 1, 0.82, 0)
-        GameTooltip:AddLine("Turn it back on in Cache ForQuest Options (gear above the tracker) or with /cfq list", 0.85, 0.85, 0.85, true)
+        GameTooltip:AddLine("Put the Field Tally away", 1, 0.82, 0)
+        GameTooltip:AddLine("Bring it back in Cache ForQuest Options (gear above the tracker) or with /cfq list", 0.85, 0.85, 0.85, true)
         GameTooltip:Show()
     end)
     closeBtn:SetScript("OnLeave", function(self)
-        self.txt:SetText("|cFF6E4720×|r")
+        self.txt:SetTextColor(0.40, 0.25, 0.11)
         GameTooltip:Hide()
     end)
     closeBtn:SetScript("OnClick", function()
@@ -2540,59 +2411,29 @@ local function EnsureShoppingListFrame()
         if CFQ.RefreshOptionsPanel then CFQ.RefreshOptionsPanel() end
     end)
 
-    -- Scope Pill Button ([Area] / [Zone] / [All])
-    local scopeBtn = CreateFrame("Button", nil, chrome)
-    scopeBtn:SetSize(44, 14)
-    scopeBtn:SetPoint("RIGHT", closeBtn, "LEFT", -2, 0)
-    scopeBtn:SetFrameLevel(base + 19)
-    scopeBtn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-    scopeBtn.txt = scopeBtn:CreateFontString(nil, "OVERLAY")
-    scopeBtn.txt:SetFont(fontPath, 10, "OUTLINE")
-    scopeBtn.txt:SetPoint("RIGHT", scopeBtn, "RIGHT", 0, 0)
-    scopeBtn:SetScript("OnClick", function(_, button)
-        if button == "RightButton" then
-            ResetShoppingListPosition()
-            return
-        end
-        if shoppingListScope == "AREA" then
-            shoppingListScope = "ZONE"
-        elseif shoppingListScope == "ZONE" then
-            shoppingListScope = "ALL"
-        else
-            shoppingListScope = "AREA"
-        end
-        shoppingScrollOffset = 0
-        SaveState()
-        UpdateShoppingListUI()
-        if CFQ.RefreshOptionsPanel then CFQ.RefreshOptionsPanel() end
-    end)
-    scopeBtn:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:AddLine("Current-Area Sheet Scope", 1, 0.82, 0)
-        GameTooltip:AddLine("Left-Click: Cycle [Area] -> [Zone] -> [All]", 0.9, 0.9, 0.9)
-        GameTooltip:AddLine("Right-Click: Reset Size & Position", 0.75, 0.75, 0.75)
-        GameTooltip:Show()
-    end)
-    scopeBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-    f.scopeBtn = scopeBtn
-
     -- Options gear -> Cache ForQuest options panel
     local optBtn = CreateFrame("Button", nil, chrome)
-    optBtn:SetSize(14, 14)
-    optBtn:SetPoint("RIGHT", scopeBtn, "LEFT", -6, 0)
+    optBtn:SetSize(13, 13)
+    optBtn:SetPoint("RIGHT", closeBtn, "LEFT", -3, 0)
     optBtn:SetFrameLevel(base + 19)
     if not CFQ.ApplyGearIcon(optBtn, 0.42, 0.26, 0.09, "opt", 9) then
         optBtn:SetSize(20, 14)
     end
-    optBtn:SetScript("OnClick", function()
-        if CFQ.OpenOptions then CFQ.OpenOptions() end
-    end)
     optBtn:SetScript("OnEnter", function(self)
         CFQ.SetGearHover(self, true)
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
         GameTooltip:AddLine("Cache ForQuest Options", 1, 0.82, 0)
-        GameTooltip:AddLine("Parchment, ribbon tabs, tracker & map settings", 0.85, 0.85, 0.85)
+        GameTooltip:AddLine("Parchment, handwriting, tracker & map settings", 0.85, 0.85, 0.85)
+        GameTooltip:AddLine("Right-Click: reset the parchment's size & position", 0.65, 0.65, 0.65)
         GameTooltip:Show()
+    end)
+    optBtn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    optBtn:SetScript("OnClick", function(_, button)
+        if button == "RightButton" then
+            ResetShoppingListPosition()
+        elseif CFQ.OpenOptions then
+            CFQ.OpenOptions()
+        end
     end)
     optBtn:SetScript("OnLeave", function(self)
         CFQ.SetGearHover(self, false)
@@ -2600,37 +2441,38 @@ local function EnsureShoppingListFrame()
     end)
     f.optBtn = optBtn
 
-    -- Header Title (area name)
+    -- Page heading (area name) in handwriting, with a quill-ruled underline
     local titleFS = chrome:CreateFontString(nil, "OVERLAY")
-    titleFS:SetFont(fontPath, 11, "OUTLINE")
-    titleFS:SetPoint("TOPLEFT", chrome, "TOPLEFT", 8, -5)
+    P.SetInkFont(titleFS, "title")
+    titleFS:SetPoint("TOPLEFT", chrome, "TOPLEFT", 10, -6)
     titleFS:SetPoint("RIGHT", optBtn, "LEFT", -4, 0)
     titleFS:SetJustifyH("LEFT")
     titleFS:SetWordWrap(false)
+    titleFS:SetTextColor(P.INK[1], P.INK[2], P.INK[3], 1)
     f.titleFS = titleFS
+    f.titleRule = P.NewStroke(chrome, "ARTWORK", 4)
+    f.titleRule2 = P.NewStroke(chrome, "ARTWORK", 4)
 
-    -- Ruled Ink Header Line
-    local headerLine = chrome:CreateTexture(nil, "ARTWORK", nil, 3)
-    headerLine:SetHeight(1)
-    headerLine:SetPoint("TOPLEFT", chrome, "TOPLEFT", 6, -20)
-    headerLine:SetPoint("TOPRIGHT", chrome, "TOPRIGHT", -6, -20)
-    headerLine:SetColorTexture(0.38, 0.24, 0.09, 0.70)
+    -- Hidden measuring string for the hand-wrapped (struck-through) lines
+    f.measureFS = chrome:CreateFontString(nil, "OVERLAY")
+    f.measureFS:SetAlpha(0)
+    f.measureFS:SetWordWrap(false)
 
     -- Content Container for Checklist Rows
     local content = CreateFrame("Frame", nil, chrome)
-    content:SetPoint("TOPLEFT", chrome, "TOPLEFT", 6, -23)
-    content:SetPoint("BOTTOMRIGHT", chrome, "BOTTOMRIGHT", -6, 14)
+    content:SetPoint("TOPLEFT", chrome, "TOPLEFT", 6, -28)
+    content:SetPoint("BOTTOMRIGHT", chrome, "BOTTOMRIGHT", -6, 17)
     content:SetFrameLevel(base + 18)
     f.content = content
 
-    -- Footer Status / Scroll Hint
+    -- Footer (tally + page number), clear of the resize grip (left) and the dog-ear (right)
     local footerFS = chrome:CreateFontString(nil, "OVERLAY")
-    footerFS:SetFont(fontPath, 9, "")
-    footerFS:SetPoint("BOTTOMLEFT", chrome, "BOTTOMLEFT", 8, 4)
-    footerFS:SetPoint("BOTTOMRIGHT", chrome, "BOTTOMRIGHT", -20, 4)
+    P.SetInkFont(footerFS, "small")
+    footerFS:SetPoint("BOTTOMLEFT", chrome, "BOTTOMLEFT", 22, 5)
+    footerFS:SetPoint("BOTTOMRIGHT", chrome, "BOTTOMRIGHT", -30, 5)
     footerFS:SetJustifyH("LEFT")
     footerFS:SetWordWrap(false)
-    footerFS:SetTextColor(0.36, 0.22, 0.08, 0.90)
+    footerFS:SetTextColor(0.36, 0.22, 0.08, 0.95)
     f.footerFS = footerFS
 
     f:SetScript("OnMouseWheel", function(_, delta)
@@ -2640,28 +2482,35 @@ local function EnsureShoppingListFrame()
         P.Render(f)
     end)
 
-    -- Bottom-Right Resize Grip (Wraps text dynamically as you resize!)
+    -- Dog-eared corner (bottom-right): the page-turn hot corner
+    f.corner = P.CreateCorner(f, chrome)
+
+    -- Resize grip (bottom-left, so the dog-ear owns the bottom-right corner)
     local resizeGrip = CreateFrame("Button", nil, chrome)
     resizeGrip:SetSize(16, 16)
-    resizeGrip:SetPoint("BOTTOMRIGHT", chrome, "BOTTOMRIGHT", -1, 1)
+    resizeGrip:SetPoint("BOTTOMLEFT", chrome, "BOTTOMLEFT", 1, 1)
     resizeGrip:SetFrameLevel(base + 21)
     resizeGrip:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 
     local gripTex = resizeGrip:CreateTexture(nil, "OVERLAY")
     gripTex:SetAllPoints()
     gripTex:SetTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+    gripTex:SetTexCoord(1, 0, 0, 1)         -- mirrored to point into the bottom-left corner
+    gripTex:SetVertexColor(0.75, 0.55, 0.30, 0.85)
     resizeGrip.gripTex = gripTex
 
     resizeGrip:SetScript("OnEnter", function(self)
         self.gripTex:SetTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+        self.gripTex:SetTexCoord(1, 0, 0, 1)
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:AddLine("Resize Parchment List", 1, 0.82, 0)
-        GameTooltip:AddLine("Left-Click & Drag: Resize Width & Height", 0.85, 0.85, 0.85)
-        GameTooltip:AddLine("Right-Click: Reset Size & Position", 0.7, 0.7, 0.7)
+        GameTooltip:AddLine("Resize the parchment", 1, 0.82, 0)
+        GameTooltip:AddLine("Left-Click & Drag: resize width & height", 0.85, 0.85, 0.85)
+        GameTooltip:AddLine("Right-Click: reset size & position", 0.7, 0.7, 0.7)
         GameTooltip:Show()
     end)
     resizeGrip:SetScript("OnLeave", function(self)
         self.gripTex:SetTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+        self.gripTex:SetTexCoord(1, 0, 0, 1)
         GameTooltip:Hide()
     end)
 
@@ -2673,13 +2522,14 @@ local function EnsureShoppingListFrame()
         if button == "LeftButton" then
             f.isResizing = true
             self.gripTex:SetTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+            self.gripTex:SetTexCoord(1, 0, 0, 1)
             local scale = f:GetEffectiveScale() or 1
             local cx, cy = GetCursorPosition()
             f.resizeStartX = cx / scale
             f.resizeStartY = cy / scale
             f.resizeStartW = f:GetWidth()
             f.resizeStartH = f:GetHeight()
-            f.resizeStartLeft = f:GetLeft()
+            f.resizeStartRight = f:GetRight()
             f.resizeStartTop = f:GetTop()
 
             self:SetScript("OnUpdate", function()
@@ -2689,11 +2539,12 @@ local function EnsureShoppingListFrame()
                 mx = mx / s
                 my = my / s
 
-                local newW = math.max(185, math.min(520, f.resizeStartW + (mx - f.resizeStartX)))
+                -- dragging the bottom-left corner: the top-right corner stays put
+                local newW = math.max(185, math.min(520, f.resizeStartW - (mx - f.resizeStartX)))
                 local newH = math.max(95, math.min(520, f.resizeStartH - (my - f.resizeStartY)))
 
                 f:ClearAllPoints()
-                f:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", f.resizeStartLeft, f.resizeStartTop)
+                f:SetPoint("TOPRIGHT", UIParent, "BOTTOMLEFT", f.resizeStartRight, f.resizeStartTop)
                 f:SetSize(newW, newH)
                 P.Render(f)
             end)
@@ -2705,40 +2556,26 @@ local function EnsureShoppingListFrame()
             f.isResizing = false
             self:SetScript("OnUpdate", nil)
             self.gripTex:SetTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+            self.gripTex:SetTexCoord(1, 0, 0, 1)
             shoppingListCfg.width = math.floor((f:GetWidth() or 230) + 0.5)
             shoppingListCfg.height = math.floor((f:GetHeight() or 175) + 0.5)
-            local pt, _, relPt, xOfs, yOfs = f:GetPoint(1)
-            if pt then
-                shoppingListCfg.point = pt
-                shoppingListCfg.relPoint = relPt or pt
-                shoppingListCfg.x = math.floor((xOfs or 0) + 0.5)
-                shoppingListCfg.y = math.floor((yOfs or 0) + 0.5)
-                shoppingListCfg.useDefaultAnchor = false
-            end
+            SavePoint(f)
             SaveState()
-            P.UpdateRibbonSide(f)
             UpdateShoppingListUI()
         end
     end)
 
     f:SetScript("OnSizeChanged", function(self)
         P.ApplyStackLayout(self)
-        P.RefreshRibbonTargets(self)
-    end)
-    f:SetScript("OnShow", function(self)
-        for _, r in ipairs(P.ribbonPool) do
-            r.prevX, r.prevY = nil, nil     -- no phantom whip-crack from a stale position
-        end
-        P.UpdateRibbonSide(self)
     end)
     f:SetScript("OnHide", function(self)
         self.shuffle = nil
         self.chrome:SetAlpha(1)
+        if self.corner then self.corner.size, self.corner.target = P.CORNER_REST, P.CORNER_REST end
     end)
     f:SetScript("OnUpdate", P.OnUpdate)
 
     P.ApplyStackLayout(f)
-    P.UpdateRibbonSide(f, true)
     f:Hide()
     return f
 end
@@ -2746,8 +2583,8 @@ end
 -- ----------------------------------------------------------------------------
 -- AREA GROUPING
 -- ----------------------------------------------------------------------------
--- Which quantity quests belong to the player's current area (by proximity / cluster / activity),
--- plus every eligible quantity quest so the rest can be filed under other-area sheets.
+-- Which item quests are "near me" (within the proximity radius, or just worked on), plus every
+-- eligible item quest so the rest can be filed onto area pages.
 function P.CollectQuests()
     local playerMapID, px, py = GetPlayerMapPositionSafe()
     local realZoneRaw = strtrim((GetRealZoneText and GetRealZoneText()) or "")
@@ -2755,120 +2592,67 @@ function P.CollectQuests()
     local realZone = string.lower(realZoneRaw)
     local subZone  = string.lower(subZoneRaw)
     local areaName = (subZoneRaw ~= "" and subZoneRaw) or (realZoneRaw ~= "" and realZoneRaw) or nil
-    local radiusTol = math.max(turnInRadiusPercent or 16, incompleteRadiusPercent or 16, 18) / 100.0
+    local nearTol = P.GetNearRadius() / 100
     local now = GetTime()
 
-    -- Step 1: Identify quests directly within radius or active in the player's current subzone/session
-    local nearbyClusterIDs = {}
-    local directQuestMatch = {}
-    local anyCoordMatched = false
-
+    local nearSet, eligible = {}, {}
     for qID, qData in pairs(questRewardMap) do
-        if not qData.isFromMap and qData.quantityObjectives and #qData.quantityObjectives > 0 then
-            if DoesQuestMatchFilter(qID) then
-                local learnHere = false
+        if not qData.isFromMap and qData.itemObjectives and #qData.itemObjectives > 0 and DoesQuestMatchFilter(qID) then
+            table.insert(eligible, qData)
+            local near, learnHere = false, false
 
-                -- Check 1: Coordinate distance to player
-                if playerMapID and px and py and qData.mapID == playerMapID and qData.x and qData.y then
-                    local dx = px - qData.x
-                    local dy = py - qData.y
-                    if math.sqrt(dx * dx + dy * dy) <= radiusTol then
-                        directQuestMatch[qID] = true
-                        anyCoordMatched = true
-                        learnHere = true
-                        if qData.clusterID then
-                            nearbyClusterIDs[qData.clusterID] = true
-                        end
-                    end
+            -- 1) Distance from you to where the items are gathered (same map only)
+            local comparable = playerMapID and px and py and qData.mapID == playerMapID and qData.x and qData.y
+            qData.playerDist = nil
+            if comparable then
+                local dx, dy = px - qData.x, py - qData.y
+                qData.playerDist = math.sqrt(dx * dx + dy * dy)
+                if qData.playerDist <= nearTol then
+                    near, learnHere = true, true
                 end
+            end
 
-                -- Check 2: Recently progressed objective or targeted mob (within last 3 minutes)
-                if recentActiveQuests[qID] and (now - recentActiveQuests[qID] < 180) then
-                    directQuestMatch[qID] = true
-                    if now - recentActiveQuests[qID] < 20 then learnHere = true end
-                    if qData.clusterID then
-                        nearbyClusterIDs[qData.clusterID] = true
-                    end
-                end
+            -- 2) You just progressed it or targeted one of its mobs (last 3 minutes)
+            local t = recentActiveQuests[qID]
+            if t and (now - t) < 180 then
+                near = true
+                if (now - t) < 20 then learnHere = true end
+            end
 
-                -- Check 3: Subzone name appears in the quest title or objective text
+            -- 3) No usable coordinates (e.g. you're in a cave sub-map, or the client has no waypoint):
+            --    fall back to wording / zone clues
+            if not near and not comparable then
+                local lowerHeader = string.lower(qData.header or "")
+                local isSameZone = (realZone ~= "" and (lowerHeader == realZone
+                    or string.find(realZone, lowerHeader, 1, true) or string.find(lowerHeader, realZone, 1, true)))
                 if subZone ~= "" and string.len(subZone) >= 4 then
                     local lowerTitle = string.lower(qData.title or "")
                     local lowerObj   = string.lower(qData.objectiveText or "")
                     if string.find(lowerTitle, subZone, 1, true) or string.find(lowerObj, subZone, 1, true) then
-                        directQuestMatch[qID] = true
-                        learnHere = true
-                        if qData.clusterID then
-                            nearbyClusterIDs[qData.clusterID] = true
-                        end
+                        near, learnHere = true, true
                     end
                 end
-
-                -- Check 4: Currently SuperTracked quest in the same zone
-                if IsQuestSuperTracked(qID) then
-                    local lowerHeader = string.lower(qData.header or "")
-                    if realZone == "" or lowerHeader == realZone or string.find(realZone, lowerHeader, 1, true) then
-                        directQuestMatch[qID] = true
-                        if qData.clusterID then
-                            nearbyClusterIDs[qData.clusterID] = true
-                        end
-                    end
-                end
-
-                -- Remember where this quest's objectives are worked so its other-area ribbon gets a real name
-                if learnHere and areaName then
-                    CFQ.learnedQuestAreas[qID] = areaName
+                if not near and isSameZone and (IsQuestSuperTracked(qID) or (not qData.x and IsQuestWatched(qID))) then
+                    near = true
                 end
             end
+
+            -- Remember where this quest's objectives are worked so its area page gets a real name
+            if learnHere and areaName then
+                CFQ.learnedQuestAreas[qID] = areaName
+            end
+            if near then nearSet[qID] = true end
         end
     end
 
-    -- Step 2: Collect quests according to the active scope ("AREA", "ZONE", or "ALL")
-    local matchedQuests = {}
-    local eligible = {}
-    for qID, qData in pairs(questRewardMap) do
-        if not qData.isFromMap and qData.quantityObjectives and #qData.quantityObjectives > 0 and DoesQuestMatchFilter(qID) then
-            table.insert(eligible, qData)
-            local include = false
-            local lowerHeader = string.lower(qData.header or "")
-            local isSameZone = (realZone ~= "" and (lowerHeader == realZone or string.find(realZone, lowerHeader, 1, true) or string.find(lowerHeader, realZone, 1, true)))
-
-            if shoppingListScope == "ALL" then
-                include = true
-            elseif shoppingListScope == "ZONE" then
-                include = isSameZone or directQuestMatch[qID] == true
-            else
-                -- "AREA" mode: include direct matches + any quest sharing the same proximity cluster!
-                if directQuestMatch[qID] or (qData.clusterID and nearbyClusterIDs[qData.clusterID]) then
-                    include = true
-                elseif not anyCoordMatched and isSameZone and IsQuestWatched(qID) then
-                    -- In Classic/Forever zones where quests lack API waypoints, include watched quantity quests in your current zone
-                    include = true
-                end
-            end
-
-            if include then
-                table.insert(matchedQuests, qData)
-            end
-        end
-    end
-
-    local headerTitle
-    if shoppingListScope == "ALL" then
-        headerTitle = "All Areas"
-    elseif shoppingListScope == "ZONE" then
-        headerTitle = (realZoneRaw ~= "" and realZoneRaw) or "Field Tally"
-    else
-        headerTitle = areaName or "Field Tally"
-    end
-    return matchedQuests, eligible, headerTitle
+    return nearSet, eligible, areaName or "Field Tally"
 end
 
 function P.FlattenQuests(quests)
     local items = {}
     local doneCount = 0
     for _, qData in ipairs(quests) do
-        for _, obj in ipairs(qData.quantityObjectives) do
+        for _, obj in ipairs(qData.itemObjectives or {}) do
             if obj.finished then
                 doneCount = doneCount + 1
             end
@@ -2890,73 +2674,234 @@ function P.FlattenQuests(quests)
     return items, doneCount
 end
 
-function P.GetAreaColor(name, isCurrent)
-    if isCurrent then return P.RIBBON_COLORS[1] end
-    local sum = 0
-    local str = name or ""
-    for i = 1, string.len(str) do
-        sum = sum + string.byte(str, i) * i
+-- Page radius (% of the zone map): either its own setting or the tracker's (•••) stacking slider
+function P.GetPageRadius()
+    if CFQ.parchmentOpts.pagesFollowTracker then
+        return incompleteRadiusPercent or 16
     end
-    local n = #P.RIBBON_COLORS - 1
-    return P.RIBBON_COLORS[2 + (sum % n)]
+    return CFQ.pageRadiusPercent or 16
+end
+
+P.COMPASS = {   -- 8 sectors starting east, counter-clockwise (map y grows downward)
+    "Eastern", "North-eastern", "Northern", "North-western", "Western", "South-western", "Southern", "South-eastern",
+}
+
+-- "Northern Teldrassil" from where the page's quests sit on their zone map
+function P.CompassName(cx, cy, zone)
+    zone = zone or "the wilds"
+    local dx, dy = cx - 0.5, 0.5 - cy
+    if math.sqrt(dx * dx + dy * dy) < 0.13 then return "Central " .. zone end
+    local ang = math.atan2(dy, dx)
+    if ang < 0 then ang = ang + 2 * math.pi end
+    local sector = math.floor((ang + math.pi / 8) / (math.pi / 4)) % 8 + 1
+    return P.COMPASS[sector] .. " " .. zone
+end
+
+-- Leader clustering (no chaining): each quest joins the nearest page whose centre is within the
+-- radius, otherwise it starts a page of its own. Single-linkage (as the tracker stacks use) would
+-- chain a whole zone's worth of quests into one page.
+function P.ClusterIntoPages(quests, radius)
+    table.sort(quests, function(a, b)
+        if a.mapID ~= b.mapID then return (a.mapID or 0) < (b.mapID or 0) end
+        return a.questID < b.questID
+    end)
+    local pages = {}
+    for _, q in ipairs(quests) do
+        local best, bestD = nil, nil
+        for _, pg in ipairs(pages) do
+            if pg.mapID == q.mapID then
+                local dx, dy = q.x - pg.cx, q.y - pg.cy
+                local d = math.sqrt(dx * dx + dy * dy)
+                if d <= radius and (not bestD or d < bestD) then best, bestD = pg, d end
+            end
+        end
+        if not best then
+            best = { mapID = q.mapID, cx = q.x, cy = q.y, quests = {} }
+            table.insert(pages, best)
+        end
+        table.insert(best.quests, q)
+        local n = #best.quests
+        best.cx = best.cx + (q.x - best.cx) / n
+        best.cy = best.cy + (q.y - best.cy) / n
+    end
+    return pages
+end
+
+-- Name a page: the area where its objectives were actually worked (learned as you play), else a compass
+-- direction on the zone map, else the quest log header
+function P.NamePage(pg)
+    -- the explored map area at the page's centre is the most accurate name
+    local atCentre = pg.cx and P.AreaNameAt(pg.mapID, pg.cx, pg.cy)
+    if atCentre then return atCentre end
+    local votes, bestName, bestN = {}, nil, 0
+    for _, q in ipairs(pg.quests) do
+        local nm = CFQ.learnedQuestAreas[q.questID]
+        if nm then
+            votes[nm] = (votes[nm] or 0) + 1
+            if votes[nm] > bestN then bestName, bestN = nm, votes[nm] end
+        end
+    end
+    if bestName then return bestName end
+    local zone = pg.quests[1] and pg.quests[1].header
+    if pg.cx then return P.CompassName(pg.cx, pg.cy, zone) end
+    return zone or "Elsewhere"
+end
+
+-- "Near me" radius (% of the zone map): how close you must be to where a quest's items are gathered
+function P.GetNearRadius()
+    return CFQ.nearRadiusPercent or 10
+end
+
+-- ----------------------------------------------------------------------------
+-- AREA PAGE NAMES
+-- ----------------------------------------------------------------------------
+P.GROUPINGS = {
+    { key = "AREA",   label = "Map areas" },   -- the explored subzone the items are in (world-map area names)
+    { key = "ZONE",   label = "Zones" },       -- one page per zone
+    { key = "RADIUS", label = "Distance" },    -- clusters by the Area page size slider
+}
+
+function P.GetGrouping()
+    for _, g in ipairs(P.GROUPINGS) do
+        if g.key == CFQ.pageGrouping then return g end
+    end
+    return P.GROUPINGS[1]
+end
+
+function P.CycleGrouping()
+    local idx = 1
+    for i, g in ipairs(P.GROUPINGS) do
+        if g.key == CFQ.pageGrouping then idx = i end
+    end
+    CFQ.pageGrouping = P.GROUPINGS[(idx % #P.GROUPINGS) + 1].key
+end
+
+-- Subzone name at a map position, the same way the world map labels areas you have explored
+P.areaNameCache = {}
+function P.AreaNameAt(mapID, x, y)
+    if not (mapID and x and y) then return nil end
+    local key = mapID .. ":" .. math.floor(x * 250) .. ":" .. math.floor(y * 250)
+    local cached = P.areaNameCache[key]
+    if cached then return cached end
+    local api = C_MapExplorationInfo and C_MapExplorationInfo.GetExploredAreaIDsAtPosition
+    if not (api and C_Map and C_Map.GetAreaInfo and CreateVector2D) then return nil end
+    local ok, ids = pcall(api, mapID, CreateVector2D(x, y))
+    if ok and type(ids) == "table" then
+        for _, id in ipairs(ids) do
+            local okN, name = pcall(C_Map.GetAreaInfo, id)
+            if okN and type(name) == "string" and name ~= "" then
+                P.areaNameCache[key] = name        -- only cache hits: unexplored spots may get explored later
+                return name
+            end
+        end
+    end
+    return nil
+end
+
+function P.ZoneNameOf(q)
+    if q.mapID and C_Map and C_Map.GetMapInfo then
+        local ok, info = pcall(C_Map.GetMapInfo, q.mapID)
+        if ok and info and info.name and info.name ~= "" then return info.name end
+    end
+    return q.header or "Elsewhere"
+end
+
+-- The map area a quest's items are in: explored subzone at its position > where you've worked it >
+-- compass sector of its zone > quest log header
+function P.AreaNameOf(q)
+    if q.mapID and q.x and q.y then
+        local nm = P.AreaNameAt(q.mapID, q.x, q.y)
+        if nm then return nm end
+    end
+    local learned = CFQ.learnedQuestAreas[q.questID]
+    if learned then return learned end
+    if q.x and q.y then return P.CompassName(q.x, q.y, P.ZoneNameOf(q)) end
+    return q.header or "Elsewhere"
 end
 
 function P.BuildAreas()
-    local nearby, eligible, headerTitle = P.CollectQuests()
-    local current = { key = P.CURRENT_KEY, title = headerTitle, isCurrent = true, quests = nearby }
+    local nearSet, eligible, here = P.CollectQuests()
+    -- Page 1 is always "Near me": what you can gather from where you stand
+    local current = { key = P.CURRENT_KEY, title = "Near me", subtitle = here, isCurrent = true, quests = {} }
     local areas = { current }
 
-    if CFQ.parchmentOpts.showTabs and shoppingListScope ~= "ALL" then
-        local inCurrent = {}
-        for _, q in ipairs(nearby) do inCurrent[q.questID] = true end
-        local curLower = string.lower(headerTitle or "")
-        local groups, list = {}, {}
+    local rest = {}
+    for _, q in ipairs(eligible) do
+        if nearSet[q.questID] then
+            table.insert(current.quests, q)
+        elseif not q.isComplete then        -- area pages only carry what still needs gathering
+            table.insert(rest, q)
+        end
+    end
 
-        for _, q in ipairs(eligible) do
-            -- other-area sheets only carry quests that still need gathering
-            if not inCurrent[q.questID] and not q.isComplete then
-                local name = CFQ.learnedQuestAreas[q.questID] or q.header or "Elsewhere"
-                local lname = string.lower(name)
-                if lname == curLower then
-                    table.insert(nearby, q)        -- worked here before: it belongs on the current sheet
-                    inCurrent[q.questID] = true
+    if CFQ.parchmentOpts.showTabs then
+        local mode = P.GetGrouping().key
+        local named = {}       -- { title, quests } before merging
+
+        if mode == "RADIUS" then
+            local withCoords = {}
+            for _, q in ipairs(rest) do
+                if q.mapID and q.x and q.y then
+                    table.insert(withCoords, q)
                 else
-                    local g = groups[lname]
-                    if not g then
-                        g = { key = "AREA:" .. lname, title = name, quests = {} }
-                        groups[lname] = g
-                        table.insert(list, g)
-                    end
-                    table.insert(g.quests, q)
+                    table.insert(named, { title = CFQ.learnedQuestAreas[q.questID] or q.header or "Elsewhere", quests = { q } })
                 end
             end
+            for _, pg in ipairs(P.ClusterIntoPages(withCoords, P.GetPageRadius() / 100)) do
+                pg.title = P.NamePage(pg)
+                table.insert(named, pg)
+            end
+        else
+            for _, q in ipairs(rest) do
+                local title = (mode == "ZONE") and P.ZoneNameOf(q) or P.AreaNameOf(q)
+                table.insert(named, { title = title, quests = { q } })
+            end
         end
 
-        local maxOthers = P.MAX_AREAS - 1
-        if #list > maxOthers then
-            table.sort(list, function(a, b)
-                if #a.quests ~= #b.quests then return #a.quests > #b.quests end
-                return a.title < b.title
-            end)
-            local overflow = { key = "AREA:__elsewhere", title = "Elsewhere", quests = {}, isOverflow = true }
-            for i = maxOthers, #list do
-                for _, q in ipairs(list[i].quests) do table.insert(overflow.quests, q) end
+        -- One page per name, in every mode: never "Dolanaar II / III"
+        local byTitle, others = {}, {}
+        for _, pg in ipairs(named) do
+            local k = string.lower(pg.title or "Elsewhere")
+            if k == "near me" then k = "near me (area)" end
+            local page = byTitle[k]
+            if not page then
+                page = { key = "AREA:" .. k, title = pg.title or "Elsewhere", quests = {} }
+                byTitle[k] = page
+                table.insert(others, page)
             end
-            for i = #list, maxOthers, -1 do table.remove(list, i) end
-            table.insert(list, overflow)
+            for _, q in ipairs(pg.quests) do table.insert(page.quests, q) end
         end
-        table.sort(list, function(a, b)
-            if (a.isOverflow == true) ~= (b.isOverflow == true) then return not a.isOverflow end
+
+        -- Nearest page first (by its closest quest), then alphabetical
+        for _, pg in ipairs(others) do
+            local d = nil
+            for _, q in ipairs(pg.quests) do
+                if q.playerDist and (not d or q.playerDist < d) then d = q.playerDist end
+            end
+            pg.playerDist = d
+        end
+        table.sort(others, function(a, b)
+            local da, db = a.playerDist or math.huge, b.playerDist or math.huge
+            if da ~= db then return da < db end
             return a.title < b.title
         end)
-        for _, g in ipairs(list) do table.insert(areas, g) end
+
+        local maxOthers = P.MAX_AREAS - 1
+        if #others > maxOthers then
+            local overflow = { key = "AREA:__elsewhere", title = "Elsewhere", quests = {} }
+            for i = maxOthers, #others do
+                for _, q in ipairs(others[i].quests) do table.insert(overflow.quests, q) end
+            end
+            for i = #others, maxOthers, -1 do table.remove(others, i) end
+            table.insert(others, overflow)
+        end
+        for _, pg in ipairs(others) do table.insert(areas, pg) end
     end
 
     for _, a in ipairs(areas) do
         table.sort(a.quests, CompareQuestsForTracker)
         a.items, a.doneCount = P.FlattenQuests(a.quests)
         a.remaining = #a.items - a.doneCount
-        a.color = P.GetAreaColor(a.title, a.isCurrent)
     end
     return areas
 end
@@ -2965,11 +2910,7 @@ end
 -- RENDER THE SELECTED SHEET
 -- ----------------------------------------------------------------------------
 function P.Render(f)
-    local area = nil
-    for _, a in ipairs(P.areas) do
-        if a.key == P.selectedKey then area = a break end
-    end
-    area = area or P.areas[1]
+    local area = P.GetSelectedArea()
     if not area then return end
 
     local items = area.items or {}
@@ -2978,31 +2919,48 @@ function P.Render(f)
         row:Hide()
     end
 
-    local scopeLabel = (shoppingListScope == "AREA" and "Area")
-        or (shoppingListScope == "ZONE" and "Zone")
-        or "All"
-    f.scopeBtn.txt:SetText("|cFF5A3814[" .. scopeLabel .. "]|r")
-    if area.isCurrent then
-        f.titleFS:SetText("|cFFFFF0C2" .. (area.title or "Field Tally") .. "|r")
+    local pageIdx, pageCount = P.GetAreaIndex(area.key), #P.areas
+    local pageStr = (pageCount > 1) and string.format("  ·  page %d of %d", pageIdx, pageCount) or ""
+    local now = GetTime()
+    local w = f:GetWidth() or 230
+
+    -- Heading: fresh red ink for a few seconds after you arrive in a new area
+    P.SetInkFont(f.titleFS, "title")
+    P.SetInkFont(f.footerFS, "small")
+    local title = area.title or (area.isCurrent and "Field Tally" or "Elsewhere")
+    if area.isCurrent and now < (P.currentGlowUntil or 0) then
+        f.titleFS:SetTextColor(P.INK_RED[1], P.INK_RED[2], P.INK_RED[3], 1)
     else
-        f.titleFS:SetText("|cFFFFF0C2" .. (area.title or "Elsewhere") .. "|r |cFFD9C49A(away)|r")
+        f.titleFS:SetTextColor(P.INK[1], P.INK[2], P.INK[3], 1)
     end
+    if area.isCurrent and area.subtitle and area.subtitle ~= "" then
+        f.titleFS:SetText(title .. "  |cFF7A5A3A· " .. area.subtitle .. "|r")
+    else
+        f.titleFS:SetText(title)
+    end
+    local ruleW = math.min(w - 20, math.max(60, (f.titleFS:GetStringWidth() or 80) + 22))
+    P.DrawStroke(f.titleRule, f.chrome, 8, -25, 8 + ruleW, -24, 1.2, 0.70)
+    P.DrawStroke(f.titleRule2, f.chrome, 14, -27.5, 8 + ruleW * 0.55, -27, 0.7, 0.40)
 
     if #items == 0 then
         local row = AcquireShoppingListRow(1, f.content)
         row.box:Hide()
-        row.strikeLine:Hide()
-        row.itemText:SetWidth(math.max(120, (f:GetWidth() or 230) - 30))
-        row.itemText:SetText("|cFF6B5233Nothing to gather nearby.|r\n|cFF8A7050Pick a ribbon to see other areas.|r")
+        P.HideStrikes(row)
+        row.suffixText:Hide()
+        P.SetInkFont(row.itemText, "item")
+        row.itemText:SetWidth(math.max(120, w - 30))
+        row.itemText:SetTextColor(0.42, 0.32, 0.20, 1)
+        row.itemText:SetText((area.isCurrent and "Nothing to gather near you." or "Nothing left to gather here.") ..
+            ((pageCount > 1) and "\nTurn the page corner to see other areas." or ""))
         row:ClearAllPoints()
         row:SetPoint("TOPLEFT", f.content, "TOPLEFT", 0, -2)
         row:SetPoint("TOPRIGHT", f.content, "TOPRIGHT", 0, -2)
-        row:SetHeight(32)
+        row:SetHeight(36)
         row:SetScript("OnClick", nil)
         row:SetScript("OnEnter", nil)
         row:SetScript("OnLeave", nil)
         row:Show()
-        f.footerFS:SetText("0 items here")
+        f.footerFS:SetText("nothing here" .. pageStr)
         return
     end
 
@@ -3010,41 +2968,73 @@ function P.Render(f)
         shoppingScrollOffset = math.max(0, #items - 1)
     end
 
-    local contentW = math.max(150, (f:GetWidth() or 230) - 12)
-    local contentH = math.max(55, (f:GetHeight() or 175) - 38)
+    local contentW = math.max(150, w - 12)
+    local contentH = math.max(55, (f:GetHeight() or 175) - 45)
     local yCursor = 0
-    local now = GetTime()
     local shownRows = 0
+    P.SetInkFont(f.measureFS, "item")
 
     for i = 1 + shoppingScrollOffset, #items do
         if shownRows >= MAX_SHOPPING_ROWS then break end
         local entry = items[i]
         local row = AcquireShoppingListRow(shownRows + 1, f.content)
         row.box:Show()
+        P.SetInkFont(row.itemText, "item")
+        P.SetInkFont(row.suffixText, "small")
+        P.HideStrikes(row)
+        row.suffixText:Hide()
 
-        local textW = math.max(120, contentW - 22)
+        local textW = math.max(110, contentW - 24)
         row.itemText:SetWidth(textW)
 
         local isFlashing = flashObjectiveUntil[entry.progKey] and (now < flashObjectiveUntil[entry.progKey])
         local countStr = string.format("%d/%d", entry.numFulfilled or 0, entry.numRequired or 1)
-        local readySuffix = entry.isQuestComplete and " |cFF1F6E1F(Turn in)|r" or ""
+        local nameStr = entry.itemName or ""
+        local strH
 
         if entry.finished then
-            row.box.checkMark:Show()
-            row.box.bg:SetColorTexture(0.78, 0.84, 0.68, 0.90)
-            row.itemText:SetText(string.format("|cFF5C5346%s  %s|r%s", countStr, entry.itemName or "", readySuffix))
-        elseif isFlashing then
-            row.box.checkMark:Hide()
-            row.box.bg:SetColorTexture(1.0, 0.90, 0.35, 1.0)
-            row.itemText:SetText(string.format("|cFF8A4B00%s|r  |cFF1E1004%s|r", countStr, entry.itemName or ""))
+            P.ShowTick(row.box, row.seed)
+            row.box.wash:SetColorTexture(0.55, 0.40, 0.18, 0.06)
+
+            -- Faded ink, wrapped by hand so every line gets a strike exactly as long as its words
+            local lines, widths = P.WrapLines(f.measureFS, countStr .. "  " .. nameStr, textW)
+            row.itemText:SetTextColor(0.38, 0.30, 0.21, 1)
+            row.itemText:SetText(table.concat(lines, "\n"))
+            strH = math.max(14, math.ceil(row.itemText:GetStringHeight() or 14))
+            local lineH = strH / #lines
+            for k, lw in ipairs(widths) do
+                local tilt = (P.Hash01(row.seed, k, 5) - 0.5) * 1.8
+                local y = -(k - 0.5) * lineH + 0.5
+                P.DrawStroke(P.GetStrike(row, k), row.itemText, -2, y + tilt * 0.5, lw + 2, y - tilt * 0.5, 1.3, 0.82)
+            end
+
+            if entry.isQuestComplete then
+                row.suffixText:SetText("(turn in)")
+                local sw = row.suffixText:GetStringWidth() or 40
+                local lastW = widths[#widths] or 0
+                row.suffixText:ClearAllPoints()
+                if lastW + 8 + sw <= textW then
+                    -- same line, after the struck words
+                    row.suffixText:SetPoint("TOPLEFT", row.itemText, "TOPLEFT", lastW + 8, -(#lines - 1) * lineH - 1)
+                else
+                    row.suffixText:SetPoint("TOPLEFT", row.itemText, "TOPLEFT", 0, -strH - 1)
+                    strH = strH + math.ceil(row.suffixText:GetStringHeight() or 11) + 1
+                end
+                row.suffixText:Show()
+            end
         else
-            row.box.checkMark:Hide()
-            row.box.bg:SetColorTexture(0.95, 0.89, 0.74, 0.90)
-            row.itemText:SetText(string.format("|cFF7A2E00%s|r  |cFF1A0E04%s|r", countStr, entry.itemName or ""))
+            P.HideTick(row.box)
+            if isFlashing then
+                row.box.wash:SetColorTexture(0.95, 0.72, 0.20, 0.45)   -- fresh tally mark
+            else
+                row.box.wash:SetColorTexture(0.55, 0.40, 0.18, 0.06)
+            end
+            row.itemText:SetTextColor(P.INK[1], P.INK[2], P.INK[3], 1)
+            row.itemText:SetText(string.format("|cFF7A2A10%s|r  |cFF2B1A0C%s|r", countStr, nameStr))
+            strH = math.max(14, math.ceil(row.itemText:GetStringHeight() or 14))
         end
 
-        local strH = math.max(14, math.ceil(row.itemText:GetStringHeight() or 14))
-        local rowH = strH + 6
+        local rowH = strH + 7
 
         if (math.abs(yCursor) + rowH) > (contentH + 4) and shownRows > 0 then
             row:Hide()
@@ -3055,17 +3045,6 @@ function P.Render(f)
         row:SetPoint("TOPLEFT", f.content, "TOPLEFT", 0, yCursor)
         row:SetPoint("TOPRIGHT", f.content, "TOPRIGHT", 0, yCursor)
         row:SetHeight(rowH)
-
-        -- Position the horizontal ink strikethrough line across completed items
-        if entry.finished then
-            local lineW = math.min(textW - 4, math.max(40, (row.itemText:GetStringWidth() or 80)))
-            row.strikeLine:ClearAllPoints()
-            row.strikeLine:SetPoint("LEFT", row.itemText, "TOPLEFT", 0, -7)
-            row.strikeLine:SetWidth(lineW)
-            row.strikeLine:Show()
-        else
-            row.strikeLine:Hide()
-        end
 
         row:SetScript("OnClick", function(_, button)
             if button == "RightButton" then
@@ -3086,7 +3065,7 @@ function P.Render(f)
             GameTooltip:AddLine(lvlStr .. "|cFFFFD100" .. (entry.questTitle or "Quest") .. "|r")
             GameTooltip:AddLine(string.format("%s: %d / %d", entry.itemName or "Objective", entry.numFulfilled or 0, entry.numRequired or 1), 0.9, 0.9, 0.9)
             if entry.isQuestComplete then
-                GameTooltip:AddLine("All objectives complete — Ready for turn-in!", 0.25, 0.95, 0.25)
+                GameTooltip:AddLine("All objectives complete — ready to turn in!", 0.25, 0.95, 0.25)
             end
             GameTooltip:AddLine("Left-Click: Track Quest | Right-Click: Open Log", 0.65, 0.65, 0.65)
             GameTooltip:Show()
@@ -3098,12 +3077,12 @@ function P.Render(f)
         shownRows = shownRows + 1
     end
 
-    local questCount = area.quests and #area.quests or 0
     local doneCount = area.doneCount or 0
     if #items > shownRows then
-        f.footerFS:SetText(string.format("%d/%d checked  •  Scroll (%d-%d of %d)", doneCount, #items, shoppingScrollOffset + 1, shoppingScrollOffset + shownRows, #items))
+        f.footerFS:SetText(string.format("%d of %d gathered  ·  %d-%d shown%s",
+            doneCount, #items, shoppingScrollOffset + 1, shoppingScrollOffset + shownRows, pageStr))
     else
-        f.footerFS:SetText(string.format("%d/%d checked off  (%d %s)", doneCount, #items, questCount, questCount == 1 and "quest" or "quests"))
+        f.footerFS:SetText(string.format("%d of %d gathered%s", doneCount, #items, pageStr))
     end
 end
 
@@ -3137,10 +3116,11 @@ UpdateShoppingListUI = function()
         return
     end
 
-    f.visibleBackSheets = math.max(1, math.min(#areas - 1, P.MAX_BACK_SHEETS))
+    -- one page per area: the pile under the top page shows how many other pages there are
+    f.visibleBackSheets = math.max(0, math.min(#areas - 1, P.MAX_BACK_SHEETS))
     f:Show()
     P.Render(f)
-    P.UpdateRibbons(f, areas)
+    P.UpdateCorner(f)
     P.ApplyStackLayout(f)
 end
 
@@ -3732,13 +3712,13 @@ local function EnsureTrackerControlBar(trackerModule)
         end
 
         local tBtn, tSlider, tVal = CreateLargerClusterControl(true, 0)
+        -- Toggling a stack type never touches the watch list: decks only contain quests that are
+        -- already tracked, so switching off just un-hides their native blocks.
         tBtn:SetScript("OnClick", function()
-            if turnInStackEnabled then
-                CFQ.PreserveStackedQuestWatches(true)   -- keep every stacked quest on the tracker
-            end
             turnInStackEnabled = not turnInStackEnabled
             ApplyFilterChanges()
-            CFQ.ScheduleTrackerRelayout(0.15)           -- catch Blizzard's block rebuild after new watches
+            CFQ.RequestNativeTrackerUpdate()           -- let Blizzard re-show / re-anchor its blocks
+            CFQ.ScheduleTrackerRelayout(0.15)
         end)
         tSlider:SetScript("OnValueChanged", function(self, val)
             local rounded = math.floor((val or 16) + 0.5)
@@ -3756,11 +3736,9 @@ local function EnsureTrackerControlBar(trackerModule)
 
         local iBtn, iSlider, iVal = CreateLargerClusterControl(false, 132)
         iBtn:SetScript("OnClick", function()
-            if incompleteStackEnabled then
-                CFQ.PreserveStackedQuestWatches(false)
-            end
             incompleteStackEnabled = not incompleteStackEnabled
             ApplyFilterChanges()
+            CFQ.RequestNativeTrackerUpdate()
             CFQ.ScheduleTrackerRelayout(0.15)
         end)
         iSlider:SetScript("OnValueChanged", function(self, val)
@@ -3858,24 +3836,6 @@ function CFQ.RestoreAllStackHiddenFrames()
     end
 end
 
--- Decks show EVERY quest in a cluster, including ones the native tracker isn't watching.
--- Before a stack type is switched off, make sure those quests are actually watched so they
--- keep a native tracker block instead of vanishing with the deck.
-function CFQ.PreserveStackedQuestWatches(isCompleteType)
-    if not C_QuestLog or not C_QuestLog.AddQuestWatch then return end
-    local filterActive = autoUntrack and ((GetActiveRewardFilterCount() > 0) or (GetActiveLevelFilterCount() > 0))
-    for _, deck in ipairs(trackerStackDeckPool) do
-        local cg = deck.clusterData
-        if deck:IsShown() and cg and cg.quests and (cg.isComplete == true) == (isCompleteType == true) then
-            for _, q in ipairs(cg.quests) do
-                if not IsQuestWatched(q.questID) and (not filterActive or DoesQuestMatchFilter(q.questID)) then
-                    pcall(C_QuestLog.AddQuestWatch, q.questID)
-                end
-            end
-        end
-    end
-end
-
 function CFQ.ReportError(err)
     local msg = tostring(err)
     if CFQ.reportedErrors[msg] then return end
@@ -3890,6 +3850,52 @@ end
 
 function CFQ.ErrorWithStack(err)
     return tostring(err) .. ((debugstack and ("\n" .. debugstack(2))) or "")
+end
+
+-- Ask Blizzard's tracker to rebuild and re-anchor its own quest blocks. Needed whenever we
+-- stop stacking: blocks we parked off-screen / Blizzard skipped while they were hidden only come
+-- back when the native tracker runs a full layout (our Update hook then re-applies our layout).
+function CFQ.RequestNativeTrackerUpdate()
+    if InCombatLockdown() then return end
+    if QuestObjectiveTracker and QuestObjectiveTracker.MarkDirty then
+        pcall(QuestObjectiveTracker.MarkDirty, QuestObjectiveTracker)
+    end
+    if ObjectiveTrackerFrame and ObjectiveTrackerFrame.Update then
+        pcall(ObjectiveTrackerFrame.Update, ObjectiveTrackerFrame)
+    elseif ObjectiveTracker_Update then
+        pcall(ObjectiveTracker_Update)
+    elseif WatchFrame_Update then
+        pcall(WatchFrame_Update)
+    end
+end
+
+-- /cfq debug: prints what the tracker contents frame holds so in-game layout problems can be diagnosed
+function CFQ.DebugDumpTracker()
+    local out = function(s) print("|cFFFFD100CFQ|r " .. s) end
+    local mod = QuestObjectiveTracker
+    out(string.format("turnIn=%s incomp=%s lvl=%s dist=%s filters=%d/%d",
+        tostring(turnInStackEnabled), tostring(incompleteStackEnabled), levelSortMode, distSortMode,
+        GetActiveRewardFilterCount(), GetActiveLevelFilterCount()))
+    if not mod or not mod.ContentsFrame then out("QuestObjectiveTracker.ContentsFrame missing!"); return end
+    local c = mod.ContentsFrame
+    out(string.format("module shown=%s vis=%s h=%.0f | contents shown=%s h=%.0f clips=%s",
+        tostring(mod:IsShown()), tostring(mod:IsVisible()), mod:GetHeight() or -1,
+        tostring(c:IsShown()), c:GetHeight() or -1, tostring(c.DoesClipChildren and c:DoesClipChildren())))
+    local n = 0
+    for _, ch in ipairs({ c:GetChildren() }) do
+        n = n + 1
+        local kind = (ch == trackerControlBar and "BAR") or (ch.clusterData and "DECK")
+            or ((type(ch.id) == "number" and ch.parentBlock == nil) and "BLOCK") or "other"
+        local p, rel, rp, x, y = ch:GetPoint(1)
+        local relName = rel and ((rel.GetName and rel:GetName()) or (rel == c and "contents") or (rel == trackerControlBar and "bar") or tostring(rel.id or "?")) or "-"
+        local q = type(ch.id) == "number" and questRewardMap[ch.id]
+        out(string.format("%d %s id=%s shown=%s vis=%s a=%.2f stackHid=%s w=%.0f h=%.0f pts=%d %s>%s:%s %.0f,%.0f %s%s",
+            n, kind, tostring(ch.id), tostring(ch:IsShown()), tostring(ch:IsVisible()), ch:GetAlpha() or -1,
+            tostring(ch.qrfHiddenByStack), ch:GetWidth() or -1, ch:GetHeight() or -1, ch:GetNumPoints() or 0,
+            tostring(p), relName, tostring(rp), x or 0, y or 0,
+            q and ("'" .. (q.title or "") .. "'") or "", (q and q.clusterID) and (" " .. q.clusterID) or ""))
+    end
+    out(n .. " children")
 end
 
 function CFQ.ScheduleTrackerRelayout(delay)
@@ -4022,12 +4028,38 @@ local function LayoutTrackerImpl(isAnimationTick)
         local layoutItems = {}
         local seenClusters = {}
 
+        -- A deck only ever holds quests that already have a native tracker block. Stacking is
+        -- purely visual: switching it off must reveal exactly the same quests, never fewer.
+        -- (Decks used to pull in nearby UNtracked quests and then try to AddQuestWatch them on
+        -- toggle-off; whenever that failed - watch cap, combat, API differences - those quests
+        -- simply vanished from the tracker.)
+        local trackedClusterViews = {}
+        for _, blkEntry in ipairs(rawBlocks) do
+            local cID = blkEntry.qData and blkEntry.qData.clusterID
+            local src = cID and clusterGroupsMap[cID]
+            if src then
+                local view = trackedClusterViews[cID]
+                if not view then
+                    view = { id = src.id, index = src.index, zone = src.zone, isComplete = src.isComplete,
+                             quests = {}, minDistance = CFQ.DIST_UNKNOWN }
+                    trackedClusterViews[cID] = view
+                end
+                table.insert(view.quests, blkEntry.qData)
+            end
+        end
+        for _, view in pairs(trackedClusterViews) do
+            table.sort(view.quests, CompareQuestsForTracker)
+            for _, q in ipairs(view.quests) do
+                if (q.distance or CFQ.DIST_UNKNOWN) < view.minDistance then view.minDistance = q.distance end
+            end
+        end
+
         for _, blkEntry in ipairs(rawBlocks) do
             local qData = blkEntry.qData
             local blk = blkEntry.frame
             local poiBtn = blkEntry.poiBtn
             local cID = qData and qData.clusterID
-            local cGroup = cID and clusterGroupsMap[cID]
+            local cGroup = cID and trackedClusterViews[cID]
 
             if cGroup and #cGroup.quests >= 2 and IsQuestStackingEnabledFor(qData) then
                 SetNativeTrackerBlockHidden(blk, poiBtn, true)
@@ -4101,6 +4133,11 @@ local function LayoutTrackerImpl(isAnimationTick)
 
             for _, item in ipairs(layoutItems) do
                 local f = item.frame
+                -- Blizzard can size a block by its LEFT/RIGHT anchors rather than an explicit width.
+                -- Remember the resolved width before we drop those anchors, or a re-anchored block
+                -- collapses to 0 px wide and its text disappears.
+                local resolvedW = (not item.isDeck) and f:GetWidth() or 0
+                if resolvedW and resolvedW > 40 then f.qrfWidth = resolvedW end
                 f:ClearAllPoints()
                 if item.isDeck then
                     if anchorTopFrame == activeBar then
@@ -4116,6 +4153,7 @@ local function LayoutTrackerImpl(isAnimationTick)
                     else
                         f:SetPoint("TOPLEFT", anchorTopFrame, "BOTTOMLEFT", 0, yCursor)
                     end
+                    if f.qrfWidth and (f:GetWidth() or 0) < 40 then f:SetWidth(f.qrfWidth) end
                     -- Ensure native POI button stays anchored beside its unstacked quest block
                     if item.poiBtn and item.poiBtn ~= f then
                         item.poiBtn:ClearAllPoints()
@@ -5576,7 +5614,7 @@ local function CreateObjectiveTrackerButton()
         self.label:SetText("|cFFFFD100Cache ForQuest|r")
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:AddLine("Cache ForQuest Options", 1, 0.82, 0)
-        GameTooltip:AddLine("Parchment list, ribbon tabs, tracker & map settings", 0.85, 0.85, 0.85, true)
+        GameTooltip:AddLine("Parchment pages, handwriting, tracker & map settings", 0.85, 0.85, 0.85, true)
         GameTooltip:Show()
     end)
     optBtn:SetScript("OnLeave", function(self)
@@ -5823,39 +5861,161 @@ function CFQ.BuildOptionsPanel()
     -- Field Tally parchment ---------------------------------------------------
     Section("Field Tally Parchment")
     Check("Show the parchment tally list",
-        "The checklist of items to collect & mobs to slay for quests around you.",
+        "The checklist of quest items you still need to gather around you.",
         function() return showShoppingList end,
         function(v) showShoppingList = v; RefreshParchment() end)
-    Check("Ribbon tabs for other areas",
-        "Each area with unfinished collection quests gets its own sheet in the stack and a hanging ribbon tab. Click a ribbon to shuffle that sheet to the top.",
+    -- Radius slider row: label, 1-50% slider, value, hint. get() returns the value; set(v) applies it.
+    local function RadiusSlider(labelText, tipTitle, tipBody, get, set, hintFn, enabledFn)
+        local row = CreateFrame("Frame", nil, p)
+        row:SetSize(440, 26)
+        row:SetPoint("TOPLEFT", p, "TOPLEFT", 48, y)
+        local label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        label:SetPoint("LEFT", row, "LEFT", 0, 0)
+        label:SetText(labelText)
+        local slider = CreateFrame("Slider", nil, row)
+        slider:SetOrientation("HORIZONTAL")
+        slider:SetSize(170, 16)
+        slider:SetPoint("LEFT", row, "LEFT", 110, 0)
+        slider:SetMinMaxValues(1, 50)
+        slider:SetValueStep(1)
+        if slider.SetObeyStepOnDrag then slider:SetObeyStepOnDrag(true) end
+        slider:EnableMouseWheel(true)
+        local track = slider:CreateTexture(nil, "BACKGROUND")
+        track:SetHeight(6)
+        track:SetPoint("LEFT", slider, "LEFT", 0, 0)
+        track:SetPoint("RIGHT", slider, "RIGHT", 0, 0)
+        track:SetColorTexture(0.08, 0.08, 0.08, 0.9)
+        local fill = slider:CreateTexture(nil, "ARTWORK")
+        fill:SetHeight(4)
+        fill:SetPoint("LEFT", slider, "LEFT", 1, 0)
+        fill:SetColorTexture(1.0, 0.82, 0.0, 0.85)
+        local thumb = slider:CreateTexture(nil, "OVERLAY")
+        thumb:SetSize(18, 18)
+        thumb:SetTexture("Interface\Buttons\UI-SliderBar-Button-Horizontal")
+        slider:SetThumbTexture(thumb)
+        local valText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        valText:SetPoint("LEFT", slider, "RIGHT", 10, 0)
+        local hint = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        hint:SetPoint("LEFT", valText, "RIGHT", 8, 0)
+
+        local function Show(v)
+            fill:SetWidth(math.max(1, (v - 1) / 49 * 168))
+            valText:SetText(v .. "%")
+        end
+        slider:SetScript("OnValueChanged", function(self, val)
+            local v = math.floor((val or 10) + 0.5)
+            Show(v)
+            if self.updating then return end
+            if v ~= get() then set(v) end
+        end)
+        slider:SetScript("OnMouseWheel", function(self, delta)
+            self:SetValue((self:GetValue() or get()) + delta)
+        end)
+        slider:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:AddLine(tipTitle, 1, 0.82, 0)
+            GameTooltip:AddLine(tipBody, 0.9, 0.9, 0.9, true)
+            local h = hintFn and hintFn()
+            if h and h ~= "" then GameTooltip:AddLine(h, 0.55, 0.85, 0.55, true) end
+            GameTooltip:Show()
+        end)
+        slider:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+        row.Refresh = function()
+            local v = get()
+            slider.updating = true
+            slider:SetValue(v)
+            slider.updating = false
+            Show(v)
+            hint:SetText((hintFn and hintFn()) or "")
+            row:SetAlpha((not enabledFn or enabledFn()) and 1 or 0.45)
+        end
+        row.slider = slider
+        table.insert(CFQ.optionWidgets, row)
+        y = y - 30
+        return row
+    end
+
+    -- "Near me" (page 1): how close you must be to where the items are gathered
+    CFQ.nearRadiusRow = RadiusSlider("Near me distance", "Near me distance",
+        "Page 1 lists quest items gathered within this distance of where you're standing (as % of the zone map), plus anything you've progressed in the last few minutes.",
+        function() return P.GetNearRadius() end,
+        function(v) CFQ.nearRadiusPercent = v; SaveState(); RefreshParchment() end)
+
+    Check("Pages for other areas",
+        "Each area with items still to gather gets its own page in the pile. Click the dog-eared corner to turn to the next page (right-click to go back).",
         function() return CFQ.parchmentOpts.showTabs end,
         function(v) CFQ.parchmentOpts.showTabs = v; RefreshParchment() end)
-    Check("Ribbon physics",
-        "Ribbons sway and droop when the parchment is dragged, resized, or shuffled.",
-        function() return CFQ.parchmentOpts.ribbonPhysics end,
-        function(v) CFQ.parchmentOpts.ribbonPhysics = v end)
-    Check("Bring the current area to the top on arrival",
-        "When you enter a new area, its sheet shuffles to the top of the stack and its ribbon glows.",
-        function() return CFQ.parchmentOpts.autoFrontOnAreaChange end,
-        function(v) CFQ.parchmentOpts.autoFrontOnAreaChange = v end)
-    Check("Hide the parchment when nothing is nearby",
-        "Off: the stack stays up so you can browse other areas. On: it only appears when the area you're in has something to gather.",
-        function() return CFQ.parchmentOpts.hideWhenNothingNearby end,
-        function(v) CFQ.parchmentOpts.hideWhenNothingNearby = v; RefreshParchment() end)
 
-    y = y - 4
-    Button("Scope: Area", 120, 24, function()
-        if shoppingListScope == "AREA" then shoppingListScope = "ZONE"
-        elseif shoppingListScope == "ZONE" then shoppingListScope = "ALL"
-        else shoppingListScope = "AREA" end
+    -- How area pages (page 2+) are divided up
+    local groupBtn = Button("Area pages by: Map areas", 210, 48, function()
+        P.CycleGrouping()
         shoppingScrollOffset = 0
         SaveState()
         RefreshParchment()
     end, function(self)
-        local lbl = (shoppingListScope == "AREA" and "Area") or (shoppingListScope == "ZONE" and "Zone") or "All"
-        self:SetText("Scope: " .. lbl)
+        self:SetText("Area pages by: " .. P.GetGrouping().label)
+        self:SetAlpha(CFQ.parchmentOpts.showTabs and 1 or 0.45)
     end)
-    Button("Reset Position & Size", 160, 150, function()
+    groupBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Area pages by", 1, 0.82, 0)
+        GameTooltip:AddLine("Map areas: one page per explored subzone your quest items are in (the names on your world map).", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine("Zones: one page per zone.", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine("Distance: quests near each other share a page, sized by the Area page size slider below.", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine("Pages with the same name are always merged.", 0.55, 0.85, 0.55, true)
+        GameTooltip:Show()
+    end)
+    groupBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    y = y - 30
+
+    local function DistanceMode() return CFQ.parchmentOpts.showTabs and P.GetGrouping().key == "RADIUS" end
+    local followCb = Check("Area page size follows the tracker's (•••) stacking slider",
+        "Distance grouping only. On: quests within the same radius you use for (•••) stacks in the Objective Tracker share a page. Off: set the area page size yourself below.",
+        function() return CFQ.parchmentOpts.pagesFollowTracker end,
+        function(v) CFQ.parchmentOpts.pagesFollowTracker = v; RefreshParchment() end)
+    local baseRefresh = followCb.Refresh
+    followCb.Refresh = function(self)
+        baseRefresh(self)
+        self:SetAlpha(DistanceMode() and 1 or 0.45)
+    end
+
+
+    -- Area pages (page 2+): how far apart quests can be and still share a page
+    CFQ.pageRadiusRow = RadiusSlider("Area page size", "Area page size",
+        "Distance grouping only. Quests whose items lie within this distance of each other (as % of the zone map) share an area page. Smaller = more, tighter pages.",
+        function() return P.GetPageRadius() end,
+        function(v)
+            if CFQ.parchmentOpts.pagesFollowTracker then
+                -- linked: this slider *is* the tracker's (•••) slider
+                incompleteRadiusPercent = v
+                ApplyFilterChanges()
+            else
+                CFQ.pageRadiusPercent = v
+                SaveState()
+                RefreshParchment()
+            end
+        end,
+        function() return CFQ.parchmentOpts.pagesFollowTracker and "(linked to •••)" or "" end,
+        DistanceMode)
+    Check("Turn back to \"Near me\" when you arrive somewhere new",
+        "When you enter a new area, the pile turns back to the Near me page and its heading is written in fresh red ink.",
+        function() return CFQ.parchmentOpts.autoFrontOnAreaChange end,
+        function(v) CFQ.parchmentOpts.autoFrontOnAreaChange = v end)
+    Check("Hide the parchment when nothing is nearby",
+        "Off: the pile stays up so you can leaf through other areas. On: it only appears when the area you're in has something to gather.",
+        function() return CFQ.parchmentOpts.hideWhenNothingNearby end,
+        function(v) CFQ.parchmentOpts.hideWhenNothingNearby = v; RefreshParchment() end)
+
+    y = y - 4
+    Button("Handwriting: Quill script", 190, 24, function()
+        P.CycleFontStyle()
+        SaveState()
+        RefreshParchment()
+    end, function(self)
+        self:SetText("Handwriting: " .. P.GetFontStyle().label)
+    end)
+    Button("Reset Position & Size", 160, 220, function()
         showShoppingList = true
         ResetShoppingListPosition()
     end)
@@ -6010,6 +6170,8 @@ SlashCmdList["CACHEFORQUEST"] = function(msg)
         showShoppingList = true
         ResetShoppingListPosition()
         CFQ.RefreshOptionsPanel()
+    elseif cmd == "debug" then
+        CFQ.DebugDumpTracker()
     elseif cmd == "options" or cmd == "opt" or cmd == "config" or cmd == "settings" then
         CFQ.OpenOptions()
     else
@@ -6058,7 +6220,6 @@ loader:SetScript("OnEvent", function(self, event, arg1)
             C_Timer.After(1.5, function()
                 if shoppingListCfg.useDefaultAnchor and shoppingListFrame then
                     CFQ.P.ApplyPosition(shoppingListFrame)
-                    CFQ.P.UpdateRibbonSide(shoppingListFrame, true)
                 end
             end)
         end
