@@ -25,7 +25,7 @@
 -- EDIT: names and labels shown on the filter buttons and menu headers
 local CONFIG = {
     ADDON_NAME          = "Handkerquest",
-    VERSION             = "1.4.0",
+    VERSION             = "2.0.0",
     REWARD_BTN_ALL      = "Rewards: All",
     LEVEL_BTN_ALL       = "Levels: All",
     TRACKER_BTN_ALL     = "Filter: All",
