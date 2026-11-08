@@ -5,3 +5,5 @@ ignore:
   - CLAUDE.md
   - smoke.lua
   - wowmock.lua
+  - media
+  - tools

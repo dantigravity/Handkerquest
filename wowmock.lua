@@ -40,6 +40,10 @@ function methods:GetTop() return 500 + (self.__py or 0) end
 function methods:GetBottom() return 300 end
 function methods:GetRight() return 400 end
 function methods:GetRect() if self.__rect then return unpack(self.__rect) end return nil end
+function methods:SetTexture(t) self.__tex = t; self.__color = nil; return true end
+function methods:SetColorTexture(r, g, b, a) self.__color = { r, g, b, a }; self.__tex = nil end
+function methods:SetVertexColor(r, g, b, a) self.__vc = { r, g, b, a or 1 } end
+function methods:SetTexCoord(...) self.__tc = { ... } end
 function methods:GetEffectiveScale() return 1 end
 function methods:GetScale() return 1 end
 function methods:SetAlpha(a) self.__alpha = a end

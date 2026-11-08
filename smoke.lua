@@ -512,7 +512,28 @@ check(CFQ.huntSpots["999_1"] == nil and CFQ.huntSpots["101_1"] ~= nil, "spots of
 check(CFQ.learnedDroppers["wolf"] == nil and CFQ.learnedDroppers["npc:1994"] ~= nil, "droppers pruned the same way")
 
 -- 4i) Looks: handkerchief (default), parchment, transparent window
-check(CFQ.parchmentStyle == "HANDKERCHIEF" and P.GetStyle().label == "Handkerchief notes", "handkerchief notes is the default look")
+check(CFQ.parchmentStyle == "RAG" and P.GetStyle().label == "Torn rag", "torn rag is the default look")
+check(f.topSheet.body.__tex == "Interface\\AddOns\\Handkerquest\\textures\\torn_rag", "the default tally draws the torn rag texture")
+
+-- the page-turn corner on a texture look: the fold shows the material itself, mirrored
+local corner = f.corner
+corner.drawnKey = nil; P.DrawCorner(corner)
+local flap1, under1 = corner.flap[1], corner.under[1]
+check(flap1.__tex == "Interface\\AddOns\\Handkerquest\\textures\\torn_rag" and under1.__tex == flap1.__tex,
+    "folded corner: flap and the page beneath show the cloth itself")
+check(flap1.__tc and #flap1.__tc == 8, "folded corner: the flap samples the corner through a mirrored mapping")
+-- mirrored: along the flap's top row the texture runs vertically (x fixed, y changes)
+check(flap1.__tc[1] == flap1.__tc[5] and flap1.__tc[2] ~= flap1.__tc[6], "folded corner: flap is the corner reflected across the fold")
+local tcOk = true
+for _, v in ipairs(flap1.__tc) do if v < 0.8 or v > 1.05 then tcOk = false end end
+check(tcOk, "folded corner: samples come from the sheet's bottom-right corner")
+check(not corner.flapTop.__shown and not corner.flapLeft.__shown, "folded corner: no drawn straight edges on a texture look")
+corner.size = P.CORNER_HOVER; P.DrawCorner(corner)
+check(corner.flap[20].__shown and corner.flap[20].__tex, "folded corner: still the material when lifted on hover")
+corner.size = P.CORNER_REST; P.DrawCorner(corner)
+
+CFQ.parchmentStyle = "HANDKERCHIEF"; P.ApplyStyle(); Fire("ZONE_CHANGED")
+check(corner.flap[1].__tex == nil and corner.flapTop.__shown, "drawn looks: the corner goes back to inked strips and edges")
 check(f.topSheet.hem[1].__shown and #f.topSheet.stitches > 10, "handkerchief has a hem band and running stitch")
 local function CountShown(list) local n = 0; for _, t in ipairs(list or {}) do if t.__shown then n = n + 1 end end; return n end
 local cp = f.topSheet.clothParts
@@ -522,8 +543,10 @@ check(cp and CountShown(cp.lace) > 60 and CountShown(cp.thread) == CountShown(cp
 local segShown = 0
 for _, t in ipairs(f.topSheet.segs[2]) do if t.__shown then segShown = segShown + 1 end end
 check(segShown == 0, "handkerchief: no torn-paper edge strips")
+local keepBack = f.visibleBackSheets; f.visibleBackSheets = 1; P.ApplyStackLayout(f)
 check(f.backSheets[1].clothParts and CountShown(f.backSheets[1].clothParts.lace) > 60 and CountShown(f.backSheets[1].clothParts.eye) == 0,
     "hankies underneath are cloth too (lace, no eyelets)")
+f.visibleBackSheets = keepBack; P.ApplyStackLayout(f)
 check(f.shadowSheet.clothParts and CountShown(f.shadowSheet.clothParts.lace) == 0 and CountShown(f.shadowSheet.clothParts.corner) == 4,
     "shadow is a soft rounded shape without lace")
 check(f.topSheet.hem2[1].__shown and f.topSheet.drape[1].__shown and f.topSheet.folds[1].__shown, "woven border stripe, drape wrinkles and soft creases")
@@ -538,6 +561,46 @@ local segBack = 0
 for _, t in ipairs(f.topSheet.segs[2]) do if t.__shown then segBack = segBack + 1 end end
 check(segBack > 20, "parchment: torn edges back")
 NOW = NOW + 200   -- "worked on recently" wears off: other quests go back to their area pages
+
+-- texture looks: crumpled paper and torn rag
+local function anyShown(list) for _, t in ipairs(list or {}) do if t.__shown then return true end end return false end
+P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
+check(CFQ.parchmentStyle == "CRUMPLED" and P.GetStyle().label == "Crumpled paper", "parchment -> crumpled paper")
+check(f.topSheet.body.__tex == "Interface\\AddOns\\Handkerquest\\textures\\crumpled_paper", "crumpled paper draws its texture image")
+check(not anyShown(f.topSheet.segs[2]) and not anyShown(f.topSheet.clothParts and f.topSheet.clothParts.lace)
+    and not f.topSheet.hem[1].__shown and not f.topSheet.grain.__shown, "texture look: no drawn edges, lace, hem or grain")
+check(f.shadowSheet.body.__tex and f.shadowSheet.body.__vc[1] == 0 and math.abs(f.shadowSheet.body.__vc[4] - 0.35) < 1e-6,
+    "the shadow is the paper's own shape in black")
+check(f.backSheets[1].body.__tex and f.backSheets[1].body.__tc[1] == 1 and f.backSheets[2].body.__tc[3] == 1,
+    "pages underneath are the same sheet turned different ways")
+check(f.pad == 8 and P.INK[1] == 0.20, "crumpled paper: pencil ink, writing inset from the edges")
+P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
+check(CFQ.parchmentStyle == "RAG" and f.topSheet.body.__tex == "Interface\\AddOns\\Handkerquest\\textures\\torn_rag",
+    "crumpled paper -> torn rag, with its texture")
+check(f.pad == 20 and f.visibleBackSheets == math.min(#P.areas - 1, 3), "torn rag: writing clear of the torn edges, rags piled underneath")
+local _, _, _, cx, cy = f.corner:GetPoint(1)
+local fw, fh = f:GetWidth(), f:GetHeight()
+check(cx == -math.floor(fw * 0.068 + 0.5) and cy == math.floor(fh * 0.046 + 0.5),
+    "the page-turn corner sits on the cloth's own corner (" .. tostring(cx) .. "," .. tostring(cy) .. ")")
+f:SetSize(400, 300); P.UpdateCorner(f)
+_, _, _, cx, cy = f.corner:GetPoint(1)
+check(cx == -27 and cy == 14, "resizing the tally keeps the corner on the cloth's corner (" .. tostring(cx) .. "," .. tostring(cy) .. ")")
+f:SetSize(fw, fh); P.UpdateCorner(f)
+for _, name in ipairs({ "crumpled_paper", "torn_rag" }) do
+    local fh = io.open(here .. "/textures/" .. name .. ".tga", "rb")
+    local hdr = fh and fh:read(18)
+    if fh then fh:close() end
+    check(hdr and hdr:byte(3) == 2 and hdr:byte(13) + 256 * hdr:byte(14) == 512 and hdr:byte(15) + 256 * hdr:byte(16) == 512
+        and hdr:byte(17) == 32, name .. ".tga ships as a 512x512 32-bit uncompressed TGA")
+end
+SlashCmdList["HANDKERQUEST"]("look rag")
+check(CFQ.parchmentStyle == "RAG", "/hanky look rag")
+SlashCmdList["HANDKERQUEST"]("look crumpled")
+check(CFQ.parchmentStyle == "CRUMPLED", "/hanky look crumpled")
+SlashCmdList["HANDKERQUEST"]("look handkerchief")
+check(f.topSheet.body.__tex == nil and f.topSheet.body.__vc[1] == 1 and f.topSheet.body.__tc[1] == 0 and anyShown(f.topSheet.clothParts.lace),
+    "back to the handkerchief: drawn cloth again, no leftover tint or flip")
+CFQ.parchmentStyle = "RAG"; P.ApplyStyle()
 P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
 check(#P.areas > 1 and CFQ.parchmentStyle == "NATIVE" and f.visibleBackSheets == 0 and not f.shadowSheet.__shown, "transparent window: no pile, no shadow, even with several pages")
 check(f.titleFS.inkKey:find("^PLAIN:"), "transparent window uses the plain UI font")
@@ -664,6 +727,10 @@ check(lookBtn ~= nil and lookBtn.__text == "Look: Handkerchief notes", "options 
 if lookBtn then
     lookBtn:GetScript("OnClick")(lookBtn)
     check(lookBtn.__text == "Look: Parchment" and f.styleKey == "PARCHMENT", "look button switches to parchment")
+    lookBtn:GetScript("OnClick")(lookBtn)
+    check(lookBtn.__text == "Look: Crumpled paper", "look button: crumpled paper")
+    lookBtn:GetScript("OnClick")(lookBtn)
+    check(lookBtn.__text == "Look: Torn rag", "look button: torn rag")
     lookBtn:GetScript("OnClick")(lookBtn)
     check(lookBtn.__text == "Look: Transparent window" and fontBtn.__alpha < 1, "window look greys out the handwriting button")
     lookBtn:GetScript("OnClick")(lookBtn)
