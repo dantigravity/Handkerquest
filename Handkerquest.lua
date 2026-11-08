@@ -1,21 +1,28 @@
 -- ============================================================================
--- Handkerquest.lua (v1.3.0 - WoW Forever Edition)
+-- Handkerquest.lua - WoW Forever Edition
 -- "Don't go off on an adventure without your handkerchief." (the name: handkerchief + quest)
 -- Objective Tracker sorting, filters & (?)/(•••) quest stacks, plus the Field Tally:
--- a pile of handwritten parchment pages listing the quest items still to gather.
--- (Formerly "Cache ForQuest". Internal names keep the old CFQ / QRF_ prefixes so saved
---  settings and frame names carry over.)
+-- a handwritten list (on a handkerchief, parchment or a see-through window) of the quest
+-- items still to gather, with a map preview on hover and minimap pins.
 --
--- v1.2.x: single-button lvl / dist cycle sorts, filter-menu Reset, options panel
---         (parchment gear, tracker gear, Options > AddOns), chat-side default position.
--- v1.3.0: renamed to Handkerquest (/hanky). Stacking is visual only; tally lists item
---         objectives only; "Near me" page + area pages (map areas / zones / distance) with a
---         dog-eared page-turn corner; handwritten ink, quill ticks, per-line strike-through.
--- v1.4.0: looks (handkerchief notes default / parchment / transparent window); clicking an item
---         tracks its quest like the tracker's quest icon; hover map preview; minimap pins for
---         looted spots; ink glows in hunting grounds and burns for mobs that drop it (learned
---         from the loot window); brass tack removed; default spot higher above the chat tabs.
+-- Internal names use the old "Cache ForQuest" prefixes (CFQ, QRF_). Keep them: renaming
+-- QRF_SavedState would reset everyone's saved settings.
+--
+-- WHERE TO MAKE SIMPLE CHANGES (search for the name):
+--   Default settings (what's on/off for new players) .... CFQ = { parchmentOpts = ... }
+--   Default tally size / position ........................ shoppingListCfg
+--   Tally colours, borders and each look ................ P.STYLES
+--   Handwriting fonts and their sizes ................... P.FONT_STYLES
+--   Gap between the tally and the chat box .............. P.PILE_MARGIN_X / P.PILE_MARGIN_Y
+--   How many rows / pages the tally shows ............... MAX_SHOPPING_ROWS, P.MAX_AREAS
+--   "Hunting grounds" distances (glow) .................. P.HUNT_SPOT_RADIUS, P.HUNT_POI_RADIUS
+--   When a mob stops counting as a possible dropper ..... P.RULE_OUT_LOOTS
+--   Hover map size ...................................... P.PREVIEW_W, P.PREVIEW_H
+--   Frames the hover map avoids covering ................ P.AVOID_FRAMES
+--   Minimap pins (how many) ............................. P.MAX_MINIMAP_PINS
+--   Button / header texts ............................... CONFIG (just below)
 -- ============================================================================
+-- EDIT: names and labels shown on the filter buttons and menu headers
 local CONFIG = {
     ADDON_NAME          = "Handkerquest",
     VERSION             = "1.4.0",
@@ -38,7 +45,9 @@ local levelSortMode = "NONE"        -- "NONE", "ASC", or "DESC"
 local distSortMode = "NONE"         -- "NONE", "ASC" (nearest first), or "DESC" (farthest first)
 local primarySortKey = "LVL"        -- "LVL" or "DIST": whichever sort was switched on most recently wins ties
 
--- Namespaced state for v1.2 features (keeps the main chunk well under Lua's 200-local limit)
+-- Settings and shared state. EDIT: the true/false values below are the defaults a new player
+-- starts with (each can also be switched in Options > AddOns > Handkerquest).
+-- Add new settings to this table rather than as new "local" lines: Lua allows only 200 locals here.
 local CFQ = {
     parchmentOpts = {
         showTabs = true,                -- a page for every other area with items to gather
@@ -53,7 +62,7 @@ local CFQ = {
     parchmentFont = "QUILL",            -- handwriting on the parchment: "QUILL", "SCRAWL" or "PLAIN"
     parchmentStyle = "HANDKERCHIEF",    -- the tally's look: "HANDKERCHIEF", "PARCHMENT" or "NATIVE" (transparent window)
     huntSpots = {},                     -- [progKey] = { { m = mapID, x, y, a = subzone }, ... } where the item was looted
-    learnedDroppers = {},               -- [lower mob name] = { [progKey] = times it was looted right before the item ticked up }
+    learnedDroppers = {},               -- ["npc:ID"] = { label = name, loots = n, tries = {}, [progKey] = times the item dropped }
     pageRadiusPercent = 16,             -- own page radius (% of the zone map) when not following the tracker
     nearRadiusPercent = 10,             -- "Near me" page: how close (% of the zone map) the items must be
     pageGrouping = "AREA",              -- area pages by "AREA" (map areas), "ZONE" or "RADIUS" (distance)
@@ -69,8 +78,9 @@ local turnInRadiusPercent = 16      -- 1% to 50% of zone map
 local incompleteStackEnabled = false-- (•••) Incomplete quest stacking toggle (Objective Tracker only)
 local incompleteRadiusPercent = 16  -- 1% to 50% of zone map
 
-local showShoppingList = true       -- Dynamic Parchment Shopping List for local quantity quests
-local shoppingListScope = "AREA"    -- fixed: the current area is always the top page (saved for older versions only)
+local showShoppingList = true       -- the Field Tally is shown
+local shoppingListScope = "AREA"    -- no longer used; kept so older saved settings still load
+-- EDIT: width / height are the tally's default size in pixels (also what "Reset Position & Size" uses)
 local shoppingListCfg = {
     width = 230,
     height = 175,
@@ -126,6 +136,7 @@ local dropdownScrollOffset = 0
 local shoppingScrollOffset = 0
 local dropdownSearchText = ""
 
+-- EDIT: list limits (quest log rows, filter-menu rows, quests per tracker stack, tally rows)
 local MAX_CUSTOM_ROWS = 11
 local MAX_DROPDOWN_ROWS = 12
 local MAX_CARDS_PER_STACK = 8
@@ -141,8 +152,6 @@ local LayoutObjectiveTrackerWithStacks
 local ScanQuestLogRewards
 local SyncObjectiveTracker
 local UpdateShoppingListUI
--- (v1.2 forward declarations live on CFQ: CFQ.OpenOptions, CFQ.RefreshSortButtons,
---  CFQ.UpdateQuestDistances, CFQ.UpdateTrackerOptionsButton, CFQ.RefreshOptionsPanel)
 
 local CATEGORY_NAMES = {
     [1] = "Seasonal & Event",
@@ -423,7 +432,7 @@ local function LoadState()
             if sc.useDefaultAnchor ~= nil then
                 shoppingListCfg.useDefaultAnchor = sc.useDefaultAnchor
             else
-                -- v1.1 save: only migrate to the new chat-side default if the list was never moved
+                -- older saves: only move to the chat-side default spot if the list was never moved
                 local wasOldDefault = (sc.point == "TOPRIGHT" and tonumber(sc.x) == -310 and tonumber(sc.y) == -220)
                 shoppingListCfg.useDefaultAnchor = wasOldDefault or sc.point == nil
             end
@@ -527,7 +536,7 @@ end
 
 -- Strips every count fragment ("0/1 ", "/6 ", ": 2/6", "(2/6)") from an objective so only the
 -- item / mob / place name remains. Some clients send kill & exploration objectives as "/6 Name"
--- (current count missing), which is what produced the redundant "0/6 /6 Gnarlpine Ambusher slain".
+-- (current count missing).
 function CFQ.CleanObjectiveName(text)
     if not text then return "" end
     local s = string.gsub(text, "^%s*%-+%s*", "")
@@ -1623,10 +1632,11 @@ ScanQuestLogRewards = function()
 end
 
 -- ============================================================================
--- DYNAMIC PARCHMENT "SHOPPING LIST" FOR CLUSTER QUANTITY / COLLECTION QUESTS
--- Checks off & crosses out completed items with an ink line until turned in!
--- v1.3: a pile of rough-cut parchment pages, one per area that has items to gather.
---       The current area's page is on top; a dog-eared corner turns to the next page.
+-- FIELD TALLY: the handwritten list of quest items still to gather
+-- A pile of pages, one per area with items to gather ("Near me" always on top). Gathered items
+-- are ticked and struck through until the quest is turned in; the dog-eared corner turns pages.
+-- EDIT: P.MAX_AREAS = how many pages at most; INK colours are the defaults before a look applies
+--       (the real colours of each look are in P.STYLES further down).
 -- ============================================================================
 local P = {
     CURRENT_KEY = "__HERE__",
@@ -1910,8 +1920,7 @@ function P.CreateSheet(parent, seed, opts)
     if opts.decor then
         sheet.grain = sheet:CreateTexture(nil, "BACKGROUND", nil, 4)
         sheet.grain:SetTexture("Interface\\QuestFrame\\UI-QuestGreeting-TopLeft")
-        -- plain parchment only: the upper part of this art is the quest frame's dark header, which
-        -- stretched with the window into a thick shaded band (removed in v1.4)
+        -- plain parchment only: the upper part of this art is the quest frame's dark header band
         sheet.grain:SetTexCoord(0.20, 0.95, 0.45, 0.98)
         sheet.shadeTop = sheet:CreateTexture(nil, "BACKGROUND", nil, 5)
         sheet.shadeBot = sheet:CreateTexture(nil, "BACKGROUND", nil, 5)
@@ -1955,7 +1964,7 @@ function P.RestyleSheet(sheet, opts)
     if sheet.shadeTop then
         local s = opts.shade
         for _, t in ipairs({ sheet.shadeTop, sheet.shadeBot, sheet.shadeL, sheet.shadeR }) do t:SetShown(s and true or false) end
-        sheet.shadeTop:Hide()        -- no shaded header band (user request): sides and foot only
+        sheet.shadeTop:Hide()        -- no shaded band along the top: sides and foot only
         if s then
             local r, g, b = s[1], s[2], s[3]
             ApplyTwoColorVerticalGradient(sheet.shadeTop, r * 1.2, g * 1.2, b * 1.2, 0.0, r, g, b, 0.34)
@@ -2070,6 +2079,7 @@ end
 -- The pages under the top sheet hang up to ~10px below and left of the frame (plus their torn
 -- edges and the drop shadow), and swing further out while a page turns. The default spot leaves
 -- room for that so the pile never laps over the chat tabs.
+-- EDIT: pixels to the right of / above the chat box for the default spot
 P.PILE_MARGIN_X = 10
 P.PILE_MARGIN_Y = 20
 
@@ -2120,6 +2130,7 @@ CFQ.ResetShoppingListPosition = ResetShoppingListPosition
 -- ----------------------------------------------------------------------------
 -- Handwriting faces built into the client (no font files shipped with the addon).
 -- Morpheus is the calligraphic face Blizzard uses for books & letters.
+-- EDIT: item / title / small are font sizes for the list rows, the page heading and the footer.
 P.FONT_STYLES = {
     { key = "QUILL",  label = "Quill script", path = "Fonts\\MORPHEUS.TTF", item = 13, title = 15, small = 11 },
     { key = "SCRAWL", label = "Rough scrawl", path = "Fonts\\SKURRI.TTF",   item = 12, title = 14, small = 10 },
@@ -2168,6 +2179,12 @@ end
 -- ----------------------------------------------------------------------------
 -- LOOKS: handkerchief notes (default), the parchment pile, or a see-through WoW window
 -- Every colour the tally draws with comes from here.
+-- EDIT: colours are { red, green, blue, opacity } from 0 to 1. Per look:
+--   paper = the sheet, back = the pages underneath, ink / inkRed / inkGreen = writing, counts and
+--   "(turn in)", title / footer / faded = heading, footer and ticked-off items, hem = the
+--   handkerchief border, cloth = its lace edge (scallop = size of each scallop), pad = space
+--   between the edge and the writing. To make a different look the default, change
+--   parchmentStyle near the top of the file to that look's key.
 -- ----------------------------------------------------------------------------
 P.STYLES = {
     {
@@ -2743,8 +2760,7 @@ function P.EnsureRowFX(row)
     if row.fx then return row.fx end
     local fx = { inner = {}, outer = {}, all = {} }
     -- copies of the words nudged a pixel or two in every direction under the ink: only their edges
-    -- show, which reads as a halo (glow) or a licking flame. (Font outlines are always black, so they
-    -- can't be used for this.)
+    -- show, which reads as a halo (glow) or a licking flame.
     local function Copy(list, sub, ox, oy)
         local fs = row:CreateFontString(nil, "ARTWORK", nil, sub)
         fs:SetPoint("TOPLEFT", row.itemText, "TOPLEFT", ox, oy)
@@ -2779,7 +2795,7 @@ function P.EnsureRowFX(row)
     return fx
 end
 
--- mode: nil (off), "glow" (hunting grounds) or "fire" (your target drops it)
+-- mode: nil (off), "glow" (hunting grounds), "fire" (your target drops it) or "smoulder" (it might)
 -- key: the item's progKey (rows are pooled, so a row can show a different item after a re-render)
 function P.SetRowFX(row, mode, plainText, textW, key)
     if not mode and not row.fx then return end
@@ -2868,7 +2884,7 @@ function P.AnimateRowFX(now)
     end
 end
 
--- red ink circled round the box of the item that is shown on the world map
+-- red ink circled round the box of an item whose quest you're tracking
 function P.SetRowLasso(row, on)
     if not on then
         if row.lasso then for _, s in ipairs(row.lasso) do P.HideStroke(s) end end
@@ -3795,9 +3811,8 @@ end
 -- ============================================================================
 -- HUNTING GROUNDS
 -- Where a tally item is gathered (learned from where you loot it + the quest's own objective
--- area), which mobs drop it (learned from what you loot it from + unit tooltips + names), and a
--- world-map overlay for the item you pick on the tally. None of this touches super-tracking,
--- watches or waypoints: your tracked quest stays exactly as it was.
+-- area) and which mobs drop it (learned from the loot window + unit tooltips, names as a last resort).
+-- EDIT: the radii are fractions of the map's width (0.035 = 3.5%): bigger = the glow starts further out.
 -- ============================================================================
 P.HUNT_SPOT_RADIUS = 0.035      -- a looted-here spot counts as hunting ground within 3.5% of the map
 P.HUNT_POI_RADIUS = 0.06        -- ...and so does the quest's objective area (its map POI) within 6%
@@ -4044,7 +4059,8 @@ function CFQ.ReadUnitTooltip(unit)
     return lines
 end
 
-P.RULE_OUT_LOOTS = 4    -- looted this many of a mob without ever getting the item: it doesn't drop it
+-- EDIT: looted this many of a mob without ever getting the item = it doesn't drop it
+P.RULE_OUT_LOOTS = 4
 
 -- Which unfinished tally items could this mob drop? Returns { [progKey] = "sure" | "guess" } or nil.
 --   sure:  you've looted the item from this npc before, or its tooltip names the item / the quest
@@ -4259,7 +4275,7 @@ end
 -- ----------------------------------------------------------------------------
 -- CLICKING AN ITEM: track its quest exactly like clicking the quest's icon in the Objective Tracker
 -- (super-track it; click again to stop). Blizzard then draws its own shaded quest area on the map
--- and its waypoint arrow, as for any super-tracked quest. (User decision, v1.4.)
+-- and its waypoint arrow, as for any super-tracked quest.
 -- ----------------------------------------------------------------------------
 function CFQ.ToggleSuperTrack(questID)
     if not questID then return end
@@ -4297,8 +4313,8 @@ function CFQ.GetHuntMapID(focus)
     return C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
 end
 
--- A circled patch of map: just a dashed ink ring and a small pip in the middle. No fill, so the
--- map and Blizzard's own quest-area highlights underneath stay fully visible.
+-- A circled patch of map on the hover preview: a dashed ink ring and a small pip in the middle
+-- (no fill, so the map art underneath stays visible)
 function P.AcquireHuntCircle(ov, i)
     local c = ov.circles[i]
     if c then return c end
@@ -4367,6 +4383,7 @@ end
 -- gathered, with the quest's objective area, your looted-here spots and where you are now.
 -- It is a separate frame, so it never draws on (or covers anything on) the real world map.
 -- ----------------------------------------------------------------------------
+-- EDIT: size of the map area in pixels (keep roughly 3:2, the shape of zone maps)
 P.PREVIEW_W, P.PREVIEW_H = 220, 147
 
 function CFQ.EnsureMapPreview()
@@ -4465,7 +4482,8 @@ function CFQ.ShowMapPreview(entry, anchor)
     local LW, LH = art and art.w or 1002, art and art.h or 668
     local marks = CFQ.CollectHuntMarks(entry.questID, entry.progKey, mapID)
 
-    -- zoom to fit the marks with some margin (never closer than a fifth of the map, never past its edges)
+    -- zoom to fit the marks with some margin (never closer than a third of the map, never past its edges)
+    -- EDIT: change 0.35 below to zoom the preview in (smaller) or out (bigger)
     local minX, maxX, minY, maxY = 1, 0, 1, 0
     for _, mk in ipairs(marks) do
         minX, maxX = math.min(minX, mk.x - mk.r), math.max(maxX, mk.x + mk.r)
@@ -4578,7 +4596,8 @@ function P.Overlap(a, b)
     return w * h
 end
 
--- Windows and HUD pieces a pop-up shouldn't sit on (whichever exist and are showing)
+-- Windows and HUD pieces a pop-up shouldn't sit on (whichever exist and are showing).
+-- EDIT: add another addon's frame by its global name (type /fstack in game to find it).
 P.AVOID_FRAMES = {
     "ObjectiveTrackerFrame", "MinimapCluster", "PlayerFrame", "TargetFrame", "FocusFrame", "BuffFrame",
     "DebuffFrame", "MainMenuBar", "MainActionBar", "MultiBarBottomLeft", "MultiBarBottomRight", "MultiBarRight",
@@ -4635,7 +4654,7 @@ function P.PlacePreview(pv, tip)
     local F = P.TallyRect()
     pv:ClearAllPoints()
     if not T and not F then
-        -- nothing to measure against (very early, or a test client): plain under-the-tooltip spot
+        -- nothing to measure against yet: plain under-the-tooltip spot
         pv:SetPoint("TOPLEFT", tip, "BOTTOMLEFT", 0, -2)
         return
     end
@@ -4689,7 +4708,7 @@ P.MINIMAP_YARDS = {
     indoor = { [0] = 300, 240, 180, 120, 80, 50 },
     outdoor = { [0] = 466 + 2 / 3, 400, 333 + 1 / 3, 266 + 2 / 6, 200, 133 + 1 / 3 },
 }
-P.MAX_MINIMAP_PINS = 8
+P.MAX_MINIMAP_PINS = 8      -- EDIT: most pins shown at once (nearest first)
 
 function P.AcquireMinimapPin(i)
     P.mmPins = P.mmPins or {}
@@ -5722,9 +5741,6 @@ local function LayoutTrackerImpl(isAnimationTick)
 
         -- A deck only ever holds quests that already have a native tracker block. Stacking is
         -- purely visual: switching it off must reveal exactly the same quests, never fewer.
-        -- (Decks used to pull in nearby UNtracked quests and then try to AddQuestWatch them on
-        -- toggle-off; whenever that failed - watch cap, combat, API differences - those quests
-        -- simply vanished from the tracker.)
         local trackedClusterViews = {}
         for _, blkEntry in ipairs(rawBlocks) do
             local cID = blkEntry.qData and blkEntry.qData.clusterID
@@ -5868,8 +5884,8 @@ local function LayoutTrackerImpl(isAnimationTick)
     end
 end
 
--- Guarded wrapper: an error anywhere in a layout pass used to leave isReorderingTrackerUI stuck
--- at true, which froze every later layout with stacked blocks still hidden.
+-- Guarded wrapper: an error in a layout pass is reported and the tracker keeps working
+-- (stacked blocks are never left hidden).
 LayoutObjectiveTrackerWithStacks = function(isAnimationTick)
     if isReorderingTrackerUI or InCombatLockdown() then return end
     isReorderingTrackerUI = true
@@ -7461,10 +7477,10 @@ local function CreateQuestLogUI()
 end
 
 -- ============================================================================
--- CACHE FORQUEST OPTIONS PANEL
--- Lives in Options > AddOns (Settings canvas), opens from the parchment gear, the gear
--- above "All Objectives", the filter menu, or /hanky options. Falls back to a standalone
--- window on clients without the Settings API.
+-- HANDKERQUEST OPTIONS PANEL
+-- Lives in Options > AddOns, opens from the tally's gear, the gear above "All Objectives", the
+-- filter menu, or /hanky options. Falls back to a standalone window on clients without that menu.
+-- EDIT: each Check(...) is one checkbox: its label, its tooltip, then what it reads and sets.
 -- ============================================================================
 CFQ.UpdateTrackerOptionsButton = function()
     local btn = CFQ.trackerOptionsBtn
