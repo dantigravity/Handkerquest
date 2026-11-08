@@ -11,10 +11,14 @@
 -- v1.3.0: renamed to Handkerquest (/hanky). Stacking is visual only; tally lists item
 --         objectives only; "Near me" page + area pages (map areas / zones / distance) with a
 --         dog-eared page-turn corner; handwritten ink, quill ticks, per-line strike-through.
+-- v1.4.0: looks (handkerchief notes default / parchment / transparent window); clicking an item
+--         tracks its quest like the tracker's quest icon; hover map preview; minimap pins for
+--         looted spots; ink glows in hunting grounds and burns for mobs that drop it (learned
+--         from the loot window); brass tack removed; default spot higher above the chat tabs.
 -- ============================================================================
 local CONFIG = {
     ADDON_NAME          = "Handkerquest",
-    VERSION             = "1.3.0",
+    VERSION             = "1.4.0",
     REWARD_BTN_ALL      = "Rewards: All",
     LEVEL_BTN_ALL       = "Levels: All",
     TRACKER_BTN_ALL     = "Filter: All",
@@ -42,8 +46,14 @@ local CFQ = {
         autoFrontOnAreaChange = true,   -- current-area sheet jumps to the top when you enter a new area
         hideWhenNothingNearby = false,  -- hide the parchment entirely when the current area has nothing to gather
         showTrackerOptionsButton = true,-- gear button above "All Objectives"
+        inkEffects = true,              -- tally text glows in an item's hunting grounds / burns for a mob that drops it
+        mapPreview = true,              -- hovering a tally item shows a little map of where it's gathered
+        minimapPins = true,             -- looted-here spots of the super-tracked quest's items on the minimap
     },
     parchmentFont = "QUILL",            -- handwriting on the parchment: "QUILL", "SCRAWL" or "PLAIN"
+    parchmentStyle = "HANDKERCHIEF",    -- the tally's look: "HANDKERCHIEF", "PARCHMENT" or "NATIVE" (transparent window)
+    huntSpots = {},                     -- [progKey] = { { m = mapID, x, y, a = subzone }, ... } where the item was looted
+    learnedDroppers = {},               -- [lower mob name] = { [progKey] = times it was looted right before the item ticked up }
     pageRadiusPercent = 16,             -- own page radius (% of the zone map) when not following the tracker
     nearRadiusPercent = 10,             -- "Near me" page: how close (% of the zone map) the items must be
     pageGrouping = "AREA",              -- area pages by "AREA" (map areas), "ZONE" or "RADIUS" (distance)
@@ -351,6 +361,9 @@ local function SaveState()
     QRF_SavedState.primarySortKey = primarySortKey
     QRF_SavedState.parchmentOpts = CFQ.parchmentOpts
     QRF_SavedState.learnedQuestAreas = CFQ.learnedQuestAreas
+    QRF_SavedState.parchmentStyle = CFQ.parchmentStyle
+    QRF_SavedState.huntSpots = CFQ.huntSpots
+    QRF_SavedState.learnedDroppers = CFQ.learnedDroppers
 end
 
 local function LoadState()
@@ -433,6 +446,16 @@ local function LoadState()
         end
         if type(QRF_SavedState.learnedQuestAreas) == "table" then
             CFQ.learnedQuestAreas = QRF_SavedState.learnedQuestAreas
+        end
+        local ps = QRF_SavedState.parchmentStyle
+        if ps == "HANDKERCHIEF" or ps == "PARCHMENT" or ps == "NATIVE" then
+            CFQ.parchmentStyle = ps
+        end
+        if type(QRF_SavedState.huntSpots) == "table" then
+            CFQ.huntSpots = QRF_SavedState.huntSpots
+        end
+        if type(QRF_SavedState.learnedDroppers) == "table" then
+            CFQ.learnedDroppers = QRF_SavedState.learnedDroppers
         end
     end
 end
@@ -538,6 +561,10 @@ CFQ.NON_ITEM_WORDS = {
     "explored", "discovered", "visited", "located", "investigated", "entrance", "speak with",
     "talk to", "used", "activated", "lit", "burned", "captured", "subdued", "tamed", "cleansed",
     "placed", "planted", "bombed", "slay", "kill", "defeat", "destroy", "protect", "reach",
+    "find", "found", "search", "searched", "scout", "scouted", "escort", "inspect", "inspected",
+    "examine", "examined", "observe", "observed", "witness", "witnessed", "survive", "survived",
+    "defend", "defended", "complete", "completed", "deliver", "delivered", "warn", "warned",
+    "interrupt", "interrupted", "visit", "slaughtered", "vanquished", "eliminated", "assassinated",
 }
 function CFQ.IsCollectItemObjective(objType, name)
     if objType and objType ~= "" then
@@ -548,8 +575,10 @@ function CFQ.IsCollectItemObjective(objType, name)
     for _, w in ipairs(CFQ.NON_ITEM_WORDS) do
         local s, e = string.find(lower, w, 1, true)
         if s then
+            local nextCh = string.sub(lower, e + 1, e + 1)
             local before = (s == 1) or not string.find(string.sub(lower, s - 1, s - 1), "%a")
-            local after = (e == string.len(lower)) or not string.find(string.sub(lower, e + 1, e + 1), "%a")
+            -- "Scout's Report" is loot: a possessive is a name, not a verb
+            local after = (e == string.len(lower)) or not (string.find(nextCh, "%a") or nextCh == "'")
             if before and after then return false end
         end
     end
@@ -608,10 +637,13 @@ local function ExtractQuestQuantityObjectives(questID, logIndex, isComplete)
 
             -- Track live tick-ups so the shopping list can flash newly progressed rows
             local progKey = tostring(questID) .. "_" .. tostring(idx)
+            local isItem = CFQ.IsCollectItemObjective(objType, itemName)
             local prevCur = prevObjectiveProgress[progKey]
             if prevCur ~= nil and cur > prevCur then
                 flashObjectiveUntil[progKey] = GetTime() + 2.0
                 recentActiveQuests[questID] = GetTime()
+                -- an item just went into your bags: remember where (hunting grounds) and what you looted it from
+                if isItem and CFQ.OnItemProgress then pcall(CFQ.OnItemProgress, questID, progKey) end
             end
             prevObjectiveProgress[progKey] = cur
 
@@ -620,10 +652,11 @@ local function ExtractQuestQuantityObjectives(questID, logIndex, isComplete)
                 progKey = progKey,
                 text = cleanText,
                 itemName = itemName,
+                objType = objType,
                 numFulfilled = cur,
                 numRequired = max,
                 finished = isDone,
-                isItem = CFQ.IsCollectItemObjective(objType, itemName),
+                isItem = isItem,
             })
         end
     end
@@ -1684,7 +1717,6 @@ function P.LayoutSheet(sheet, w, h, angle, dx, dy)
     local inset = o.inset or 0
     local hw, hh = w * 0.5 - inset, h * 0.5 - inset
 
-    PQ(sheet, sheet.body, -hw, -hh, hw, hh)
     if sheet.grain then PQ(sheet, sheet.grain, -hw, -hh, hw, hh) end
     if sheet.shadeTop then
         PQ(sheet, sheet.shadeTop, -hw, hh - 20, hw, hh)
@@ -1692,6 +1724,18 @@ function P.LayoutSheet(sheet, w, h, angle, dx, dy)
         PQ(sheet, sheet.shadeL, -hw, -hh, -hw + 9, hh)
         PQ(sheet, sheet.shadeR, hw - 9, -hh, hw, hh)
     end
+    if sheet.hem then P.LayoutCloth(sheet, hw, hh) end
+
+    -- Cloth (handkerchief): rounded corners and a scalloped lace edge instead of torn paper
+    if o.cloth then
+        P.LayoutClothShape(sheet, hw, hh, o.cloth)
+        for layer = 1, 2 do
+            for _, tex in ipairs(sheet.segs[layer]) do tex:Hide() end
+        end
+        return
+    end
+    P.HideClothShape(sheet)
+    PQ(sheet, sheet.body, -hw, -hh, hw, hh)
 
     local D = o.depth or 4
     local minD = o.minDepth or 1
@@ -1745,6 +1789,112 @@ function P.LayoutSheet(sheet, w, h, angle, dx, dy)
     end
 end
 
+-- ----------------------------------------------------------------------------
+-- CLOTH SHAPE (handkerchief look)
+-- A rounded rectangle (two crossed rects + a disc in each corner) trimmed all round with a
+-- scalloped lace edge: overlapping little discs half tucked under the cloth, each with a thread
+-- outline and an embroidered eyelet, rippling gently like a hem that has been washed and ironed
+-- by someone in a hurry. Discs are round, so rotating the sheet only moves their centres.
+-- ----------------------------------------------------------------------------
+function P.ClothTex(sheet, pool, i, sub)
+    local cl = sheet.clothParts
+    local list = cl[pool]
+    local t = list[i]
+    if not t then
+        t = sheet:CreateTexture(nil, "BACKGROUND", nil, sub)
+        if pool ~= "body2" then t:SetTexture(CIRCLE_MASK_TEX) end   -- a plain white disc
+        list[i] = t
+    end
+    t:Show()
+    return t
+end
+
+function P.LayoutClothShape(sheet, hw, hh, cl)
+    sheet.clothParts = sheet.clothParts or { body2 = {}, corner = {}, lace = {}, thread = {}, eye = {} }
+    local PQ = P.PlaceQuad
+    local paper = sheet.opts.paper
+    local R = math.min(cl.radius or 9, hw, hh)
+    local c, s = sheet.cosA or 1, sheet.sinA or 0
+    local function Disc(t, x, y, rad, col)
+        t:ClearAllPoints()
+        t:SetPoint("CENTER", sheet, "CENTER", x * c - y * s, x * s + y * c)
+        t:SetSize(rad * 2, rad * 2)
+        t:SetVertexColor(col[1], col[2], col[3], col[4])
+    end
+
+    -- the cloth itself
+    PQ(sheet, sheet.body, -hw, -hh + R, hw, hh - R)
+    sheet.body:Show()
+    local b2 = P.ClothTex(sheet, "body2", 1, 3)
+    b2:SetColorTexture(paper[1], paper[2], paper[3], paper[4])
+    PQ(sheet, b2, -hw + R, -hh, hw - R, hh)
+    local corners = { { hw - R, hh - R }, { -hw + R, hh - R }, { -hw + R, -hh + R }, { hw - R, -hh + R } }
+    for k, cc in ipairs(corners) do
+        Disc(P.ClothTex(sheet, "corner", k, 3), cc[1], cc[2], R, paper)
+    end
+
+    -- the scalloped lace trim, walked round the outline (counter-clockwise from the bottom-right)
+    local counts = { lace = 0, thread = 0, eye = 0 }
+    local r = cl.scallop
+    if r then
+        local step = cl.step or (r * 1.7)
+        local ripple = cl.ripple or 0
+        local seed = sheet.seed or 0
+        local idx = 0
+        local function Put(x, y, nx, ny)
+            idx = idx + 1
+            local w = ripple * math.sin(idx * 0.83 + seed) + ripple * 0.4 * math.sin(idx * 2.3 + seed * 2)
+            local cx, cy = x + nx * w, y + ny * w
+            if cl.thread then
+                counts.thread = counts.thread + 1
+                Disc(P.ClothTex(sheet, "thread", counts.thread, 0), cx, cy, r + 1.1, cl.thread)
+            end
+            counts.lace = counts.lace + 1
+            Disc(P.ClothTex(sheet, "lace", counts.lace, 1), cx, cy, r, cl.lace or paper)
+            if cl.eyelet then
+                counts.eye = counts.eye + 1
+                Disc(P.ClothTex(sheet, "eye", counts.eye, 2), cx + nx * r * 0.45, cy + ny * r * 0.45, 1.1, cl.eyelet)
+            end
+        end
+        local function Edge(x0, y0, x1, y1, nx, ny)
+            local len = math.sqrt((x1 - x0) ^ 2 + (y1 - y0) ^ 2)
+            local n = math.max(1, math.floor(len / step + 0.5))
+            for i = 0, n - 1 do
+                local t = i / n
+                Put(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, nx, ny)
+            end
+        end
+        local function Arc(cx, cy, a0)
+            local m = math.max(1, math.floor(R * math.pi * 0.5 / step + 0.5))
+            for j = 0, m - 1 do
+                local a = a0 + (j / m) * math.pi * 0.5
+                local ca, sa = math.cos(a), math.sin(a)
+                Put(cx + ca * R, cy + sa * R, ca, sa)
+            end
+        end
+        local pi = math.pi
+        Edge(hw, -hh + R, hw, hh - R, 1, 0)
+        Arc(hw - R, hh - R, 0)
+        Edge(hw - R, hh, -hw + R, hh, 0, 1)
+        Arc(-hw + R, hh - R, pi * 0.5)
+        Edge(-hw, hh - R, -hw, -hh + R, -1, 0)
+        Arc(-hw + R, -hh + R, pi)
+        Edge(-hw + R, -hh, hw - R, -hh, 0, -1)
+        Arc(hw - R, -hh + R, pi * 1.5)
+    end
+    for pool, n in pairs(counts) do
+        local list = sheet.clothParts[pool]
+        for i = n + 1, #list do list[i]:Hide() end
+    end
+end
+
+function P.HideClothShape(sheet)
+    if not sheet.clothParts then return end
+    for _, list in pairs(sheet.clothParts) do
+        for _, t in ipairs(list) do t:Hide() end
+    end
+end
+
 function P.CreateSheet(parent, seed, opts)
     local sheet = CreateFrame("Frame", nil, parent)
     sheet:SetAllPoints(parent)
@@ -1754,40 +1904,189 @@ function P.CreateSheet(parent, seed, opts)
     sheet.segs = { {}, {} }
 
     sheet.body = sheet:CreateTexture(nil, "BACKGROUND", nil, 3)
-    sheet.body:SetColorTexture(opts.paper[1], opts.paper[2], opts.paper[3], opts.paper[4])
 
-    if opts.grain then
+    -- Paper grain and edge shading are created on every sheet that may need them, so a style
+    -- change can switch them on and off without rebuilding the pile.
+    if opts.decor then
         sheet.grain = sheet:CreateTexture(nil, "BACKGROUND", nil, 4)
         sheet.grain:SetTexture("Interface\\QuestFrame\\UI-QuestGreeting-TopLeft")
-        sheet.grain:SetTexCoord(0.10, 0.70, 0.25, 0.75)
-        sheet.grain:SetVertexColor(1.0, 0.94, 0.80, 0.30)
-    end
-    if opts.shade then
+        -- plain parchment only: the upper part of this art is the quest frame's dark header, which
+        -- stretched with the window into a thick shaded band (removed in v1.4)
+        sheet.grain:SetTexCoord(0.20, 0.95, 0.45, 0.98)
         sheet.shadeTop = sheet:CreateTexture(nil, "BACKGROUND", nil, 5)
-        ApplyTwoColorVerticalGradient(sheet.shadeTop, 0.42, 0.28, 0.12, 0.0, 0.35, 0.22, 0.08, 0.34)
         sheet.shadeBot = sheet:CreateTexture(nil, "BACKGROUND", nil, 5)
-        ApplyTwoColorVerticalGradient(sheet.shadeBot, 0.35, 0.22, 0.08, 0.30, 0.42, 0.28, 0.12, 0.0)
         sheet.shadeL = sheet:CreateTexture(nil, "BACKGROUND", nil, 5)
-        ApplyHorizontalGradient(sheet.shadeL, 0.36, 0.23, 0.09, 0.26, 0.0)
         sheet.shadeR = sheet:CreateTexture(nil, "BACKGROUND", nil, 5)
-        ApplyHorizontalGradient(sheet.shadeR, 0.36, 0.23, 0.09, 0.0, 0.26)
+        -- Handkerchief: a woven border (wide band + thin inner stripe), the running stitch that sews
+        -- the lace on, soft creases where it was folded in four, and a couple of drape wrinkles
+        sheet.hem = {}
+        for k = 1, 4 do sheet.hem[k] = sheet:CreateTexture(nil, "BACKGROUND", nil, 6) end
+        sheet.hem2 = {}
+        for k = 1, 4 do sheet.hem2[k] = sheet:CreateTexture(nil, "BACKGROUND", nil, 6) end
+        sheet.folds = {}
+        for k = 1, 4 do sheet.folds[k] = sheet:CreateTexture(nil, "BACKGROUND", nil, 5) end
+        sheet.drape = {}
+        for k = 1, 4 do sheet.drape[k] = sheet:CreateTexture(nil, "BACKGROUND", nil, 5) end
+        sheet.stitches = {}
     end
 
     sheet.Layout = P.LayoutSheet
+    P.RestyleSheet(sheet, opts)
     return sheet
+end
+
+-- Recolours a sheet for the current style (opts = paper/rim colours + edge shape + decorations)
+function P.RestyleSheet(sheet, opts)
+    sheet.opts = opts
+    sheet.layoutKey = nil
+    local pc = opts.paper
+    sheet.body:SetColorTexture(pc[1], pc[2], pc[3], pc[4])
+    for layer = 1, 2 do
+        local col = (layer == 1) and opts.rim or opts.paper
+        for _, tex in ipairs(sheet.segs[layer]) do
+            if col then tex:SetColorTexture(col[1], col[2], col[3], col[4]) end
+        end
+    end
+    if sheet.grain then
+        local g = opts.grain
+        sheet.grain:SetShown(g and true or false)
+        if g then sheet.grain:SetVertexColor(g[1], g[2], g[3], g[4]) end
+    end
+    if sheet.shadeTop then
+        local s = opts.shade
+        for _, t in ipairs({ sheet.shadeTop, sheet.shadeBot, sheet.shadeL, sheet.shadeR }) do t:SetShown(s and true or false) end
+        sheet.shadeTop:Hide()        -- no shaded header band (user request): sides and foot only
+        if s then
+            local r, g, b = s[1], s[2], s[3]
+            ApplyTwoColorVerticalGradient(sheet.shadeTop, r * 1.2, g * 1.2, b * 1.2, 0.0, r, g, b, 0.34)
+            ApplyTwoColorVerticalGradient(sheet.shadeBot, r, g, b, 0.30, r * 1.2, g * 1.2, b * 1.2, 0.0)
+            ApplyHorizontalGradient(sheet.shadeL, r, g, b, 0.26, 0.0)
+            ApplyHorizontalGradient(sheet.shadeR, r, g, b, 0.0, 0.26)
+        end
+    end
+    if sheet.hem then
+        local hem = opts.hem
+        local on = hem and true or false
+        for k = 1, 4 do
+            sheet.hem[k]:SetShown(on)
+            sheet.hem2[k]:SetShown(on and hem.stripe ~= nil)
+            sheet.folds[k]:SetShown(on)
+            sheet.drape[k]:SetShown(on)
+        end
+        if hem then
+            for k = 1, 4 do
+                sheet.hem[k]:SetColorTexture(hem.band[1], hem.band[2], hem.band[3], hem.band[4])
+                if hem.stripe then sheet.hem2[k]:SetColorTexture(hem.stripe[1], hem.stripe[2], hem.stripe[3], hem.stripe[4]) end
+            end
+            -- creases fade out to either side: the shadowed half, then the half catching the light
+            local d, l = hem.creaseDark, hem.creaseLight
+            ApplyHorizontalGradient(sheet.folds[1], d[1], d[2], d[3], 0, d[4])     -- left of the vertical crease
+            ApplyHorizontalGradient(sheet.folds[2], l[1], l[2], l[3], l[4], 0)     -- right of it
+            ApplyTwoColorVerticalGradient(sheet.folds[3], d[1], d[2], d[3], 0, d[1], d[2], d[3], d[4])   -- below the horizontal crease
+            ApplyTwoColorVerticalGradient(sheet.folds[4], l[1], l[2], l[3], l[4], l[1], l[2], l[3], 0)   -- above it
+            -- drape wrinkles: same idea, softer
+            ApplyHorizontalGradient(sheet.drape[1], d[1], d[2], d[3], 0, d[4] * 0.8)
+            ApplyHorizontalGradient(sheet.drape[2], l[1], l[2], l[3], l[4] * 0.8, 0)
+            ApplyHorizontalGradient(sheet.drape[3], d[1], d[2], d[3], 0, d[4] * 0.6)
+            ApplyHorizontalGradient(sheet.drape[4], l[1], l[2], l[3], l[4] * 0.6, 0)
+        end
+        for _, ln in ipairs(sheet.stitches) do
+            if hem then ln:SetColorTexture(hem.stitch[1], hem.stitch[2], hem.stitch[3], hem.stitch[4]) else ln:Hide() end
+        end
+    end
+end
+
+-- Handkerchief hem band, running stitch and fold creases. Placed with the sheet's rotation so they
+-- tilt with it during a page turn.
+function P.LayoutCloth(sheet, hw, hh)
+    local hem = sheet.opts.hem
+    if not hem then
+        for _, ln in ipairs(sheet.stitches) do ln:Hide() end
+        return
+    end
+    local PQ = P.PlaceQuad
+    -- Woven border: bands on top/bottom run the full width, the side bands stop short of them, so
+    -- the corners aren't doubled up
+    local b0, b1 = hem.inset or 3, (hem.inset or 3) + (hem.width or 7)
+    PQ(sheet, sheet.hem[1], -hw + b0, hh - b1, hw - b0, hh - b0)       -- top band
+    PQ(sheet, sheet.hem[2], -hw + b0, -hh + b0, hw - b0, -hh + b1)     -- bottom band
+    PQ(sheet, sheet.hem[3], -hw + b0, -hh + b1, -hw + b1, hh - b1)     -- left band
+    PQ(sheet, sheet.hem[4], hw - b1, -hh + b1, hw - b0, hh - b1)       -- right band
+    if hem.stripe then
+        local s0 = b1 + (hem.stripeGap or 2)
+        local s1 = s0 + (hem.stripeWidth or 1.2)
+        PQ(sheet, sheet.hem2[1], -hw + s0, hh - s1, hw - s0, hh - s0)
+        PQ(sheet, sheet.hem2[2], -hw + s0, -hh + s0, hw - s0, -hh + s1)
+        PQ(sheet, sheet.hem2[3], -hw + s0, -hh + s1, -hw + s1, hh - s1)
+        PQ(sheet, sheet.hem2[4], hw - s1, -hh + s1, hw - s0, hh - s1)
+    end
+    -- folded in four: soft creases through the middle, slightly off-centre, fading to each side
+    local fx, fy = hw * 0.06, -hh * 0.08
+    PQ(sheet, sheet.folds[1], fx - 7, -hh + 1, fx, hh - 1)
+    PQ(sheet, sheet.folds[2], fx, -hh + 1, fx + 5, hh - 1)
+    PQ(sheet, sheet.folds[3], -hw + 1, fy - 7, hw - 1, fy)
+    PQ(sheet, sheet.folds[4], -hw + 1, fy, hw - 1, fy + 5)
+    -- two drape wrinkles running down from the top-right, where it was picked up and stuffed in a pocket
+    local slant = hh * 0.35
+    local yb, yt = hh * 0.05, hh - 2
+    local x1, x2 = hw * 0.30, hw * 0.62
+    PQ(sheet, sheet.drape[1], x1 - 9, yb, x1, yt, slant, 0, 0, 0, slant, 0, 0, 0)
+    PQ(sheet, sheet.drape[2], x1, yb, x1 + 6, yt, slant, 0, 0, 0, slant, 0, 0, 0)
+    PQ(sheet, sheet.drape[3], x2 - 7, yb + hh * 0.3, x2, yt, slant * 0.6, 0, 0, 0, slant * 0.6, 0, 0, 0)
+    PQ(sheet, sheet.drape[4], x2, yb + hh * 0.3, x2 + 5, yt, slant * 0.6, 0, 0, 0, slant * 0.6, 0, 0, 0)
+
+    -- running stitch that sews the lace on, just inside the cloth's edge (straight runs only:
+    -- the corners are rounded)
+    local s = hem.stitchInset or 1.8
+    local R = (sheet.opts.cloth and sheet.opts.cloth.radius) or 0
+    local dash, gap = 3, 2.5
+    local c, sn = sheet.cosA or 1, sheet.sinA or 0
+    local n = 0
+    local function Dash(x0, y0, x1, y1)
+        n = n + 1
+        local ln = sheet.stitches[n]
+        if not ln then
+            ln = sheet:CreateLine(nil, "BACKGROUND", nil, 7)
+            local st = hem.stitch
+            ln:SetColorTexture(st[1], st[2], st[3], st[4])
+            ln:SetThickness(1.1)
+            sheet.stitches[n] = ln
+        end
+        ln:SetStartPoint("CENTER", sheet, x0 * c - y0 * sn, x0 * sn + y0 * c)
+        ln:SetEndPoint("CENTER", sheet, x1 * c - y1 * sn, x1 * sn + y1 * c)
+        ln:Show()
+    end
+    local x0, x1, y0, y1 = -hw + s, hw - s, -hh + s, hh - s
+    local v = x0 + R
+    while v + dash <= x1 - R do Dash(v, y1, v + dash, y1); Dash(v, y0, v + dash, y0); v = v + dash + gap end
+    v = y0 + R
+    while v + dash <= y1 - R do Dash(x0, v, x0, v + dash); Dash(x1, v, x1, v + dash); v = v + dash + gap end
+    for i = n + 1, #sheet.stitches do sheet.stitches[i]:Hide() end
 end
 
 -- ----------------------------------------------------------------------------
 -- POSITIONING (default: just above the chat box, left side of the screen)
 -- ----------------------------------------------------------------------------
+-- The pages under the top sheet hang up to ~10px below and left of the frame (plus their torn
+-- edges and the drop shadow), and swing further out while a page turns. The default spot leaves
+-- room for that so the pile never laps over the chat tabs.
+P.PILE_MARGIN_X = 10
+P.PILE_MARGIN_Y = 20
+
 function P.ComputeDefaultAnchor()
     local cf = ChatFrame1
     if cf and cf.GetLeft and cf:GetLeft() and cf:GetTop() then
-        local ratio = (cf:GetEffectiveScale() or 1) / (UIParent:GetEffectiveScale() or 1)
+        local uiScale = UIParent:GetEffectiveScale() or 1
+        local ratio = (cf:GetEffectiveScale() or 1) / uiScale
         local left = cf:GetLeft() * ratio
-        local top = cf:GetTop() * ratio
-        -- +32 clears the chat tabs that sit on top of the chat frame
-        return math.floor(left + 0.5), math.floor(top + 32 + 0.5)
+        -- +32 clears the chat tabs that sit on top of the chat frame; use the tab itself when it's taller
+        local top = cf:GetTop() * ratio + 32
+        local tab = _G.ChatFrame1Tab
+        if tab and tab.GetTop and tab:GetTop() then
+            local tabTop = tab:GetTop() * ((tab:GetEffectiveScale() or 1) / uiScale)
+            if tabTop > top then top = tabTop end
+        end
+        return math.floor(left + P.PILE_MARGIN_X + 0.5), math.floor(top + P.PILE_MARGIN_Y + 0.5)
     end
     return 36, 250
 end
@@ -1844,14 +2143,182 @@ end
 
 -- Applies the chosen handwriting face; falls back to the standard UI font if the client can't load it
 function P.SetInkFont(fs, kind, flags)
+    local look = P.GetStyle()
     local st = P.GetFontStyle()
-    if fs.inkKey == st.key and fs.inkKind == kind then return end
+    if look.font then
+        for _, f in ipairs(P.FONT_STYLES) do if f.key == look.font then st = f end end
+    end
+    local cacheKey = st.key .. ":" .. look.key
+    if fs.inkKey == cacheKey and fs.inkKind == kind then return end
     local ok = st.path and fs:SetFont(st.path, st[kind] or st.item, flags or "")
     if not st.path or ok == false then
         fs:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", P.FONT_STYLES[3][kind] or 11, flags or "")
     end
-    if fs.SetShadowColor then fs:SetShadowColor(0, 0, 0, 0) end   -- ink doesn't cast drop shadows
-    fs.inkKey, fs.inkKind = st.key, kind
+    if fs.SetShadowColor then
+        if look.textShadow then
+            fs:SetShadowColor(0, 0, 0, 1)                 -- UI text: the usual drop shadow
+            if fs.SetShadowOffset then fs:SetShadowOffset(1, -1) end
+        else
+            fs:SetShadowColor(0, 0, 0, 0)                 -- ink doesn't cast drop shadows
+        end
+    end
+    fs.inkKey, fs.inkKind = cacheKey, kind
+end
+
+-- ----------------------------------------------------------------------------
+-- LOOKS: handkerchief notes (default), the parchment pile, or a see-through WoW window
+-- Every colour the tally draws with comes from here.
+-- ----------------------------------------------------------------------------
+P.STYLES = {
+    {
+        key = "HANDKERCHIEF", label = "Handkerchief notes",
+        paper = { 0.95, 0.93, 0.88, 0.98 }, rim = nil,
+        depth = 1.6, minDepth = 0.4, segW = 4,
+        -- soft cloth: rounded corners, scalloped lace with eyelets, rippling a little
+        cloth = { radius = 9, scallop = 4.6, step = 7.5, ripple = 1.1,
+                  lace = { 0.99, 0.98, 0.95, 0.98 }, thread = { 0.60, 0.67, 0.84, 0.95 }, eyelet = { 0.50, 0.58, 0.80, 0.70 } },
+        shade = nil, grain = nil,
+        hem = {
+            band = { 0.42, 0.56, 0.84, 0.30 }, inset = 4, width = 4,
+            stripe = { 0.32, 0.46, 0.78, 0.55 }, stripeGap = 2, stripeWidth = 1.2,
+            stitch = { 0.40, 0.50, 0.75, 0.75 }, stitchInset = 1.6,
+            creaseDark = { 0.36, 0.37, 0.45, 0.16 }, creaseLight = { 1, 1, 1, 0.55 },
+        },
+        back = { { 0.93, 0.84, 0.84, 0.98 }, { 0.86, 0.90, 0.83, 0.98 }, { 0.95, 0.91, 0.78, 0.98 } },
+        backRim = nil, backDepth = 1.6, backMinDepth = 0.4, backSegW = 4,
+        backThread = { 0.62, 0.54, 0.56, 0.90 },        -- the hankies underneath: same cloth, own colours
+        shadowAlpha = 0.20, pile = true, cornerInset = 4,
+        ink = { 0.10, 0.13, 0.30 }, inkRed = { 0.62, 0.12, 0.12 }, inkGreen = { 0.16, 0.40, 0.20 },
+        title = { 0.10, 0.13, 0.30 }, faded = { 0.42, 0.44, 0.52 }, footer = { 0.30, 0.34, 0.50 },
+        sub = { 0.38, 0.42, 0.58 }, close = { 0.30, 0.34, 0.52 }, gear = { 0.28, 0.33, 0.52 },
+        wash = { 0.40, 0.48, 0.70, 0.06 }, washFlash = { 0.95, 0.72, 0.20, 0.45 },
+        divider = { 0.35, 0.42, 0.62, 0.14 }, highlight = { 0.30, 0.40, 0.70, 0.10 },
+        grip = { 0.45, 0.52, 0.72, 0.85 }, pad = 7,           -- writing kept inside the woven border
+        corner = { u1 = { 0.50, 0.52, 0.60 }, u2 = { 0.86, 0.85, 0.80 }, tip = { 1.00, 0.99, 0.96 },
+                   crease = { 0.78, 0.78, 0.82 }, edge = { 0.40, 0.48, 0.68, 0.75 }, cut = { 0.45, 0.55, 0.78, 0.80 },
+                   shadow = { 0.10, 0.12, 0.20 } },
+    },
+    {
+        key = "PARCHMENT", label = "Parchment",
+        paper = { 0.93, 0.85, 0.67, 0.97 }, rim = { 0.40, 0.27, 0.12, 0.95 },
+        depth = 4.5, minDepth = 0.8, segW = 8,
+        shade = { 0.35, 0.22, 0.08 }, grain = { 1.0, 0.94, 0.80, 0.30 }, hem = nil,
+        back = { { 0.84, 0.75, 0.56, 0.98 }, { 0.78, 0.69, 0.51, 0.98 }, { 0.72, 0.63, 0.46, 0.98 } },
+        backRim = { 0.34, 0.22, 0.09, 0.95 }, backDepth = 4, backMinDepth = 0.8, backSegW = 11,
+        shadowAlpha = 0.36, pile = true,
+        ink = { 0.17, 0.10, 0.05 }, inkRed = { 0.48, 0.15, 0.06 }, inkGreen = { 0.18, 0.36, 0.13 },
+        title = { 0.17, 0.10, 0.05 }, faded = { 0.38, 0.30, 0.21 }, footer = { 0.36, 0.22, 0.08 },
+        sub = { 0.48, 0.35, 0.23 }, close = { 0.40, 0.25, 0.11 }, gear = { 0.42, 0.26, 0.09 },
+        wash = { 0.55, 0.40, 0.18, 0.06 }, washFlash = { 0.95, 0.72, 0.20, 0.45 },
+        divider = { 0.45, 0.32, 0.15, 0.14 }, highlight = { 0.45, 0.30, 0.08, 0.10 },
+        grip = { 0.75, 0.55, 0.30, 0.85 }, pad = 0,
+        corner = { u1 = { 0.42, 0.30, 0.16 }, u2 = { 0.78, 0.68, 0.50 }, tip = { 0.98, 0.92, 0.78 },
+                   crease = { 0.70, 0.58, 0.38 }, edge = { 0.33, 0.21, 0.08, 0.75 }, cut = { 0.45, 0.31, 0.14, 0.70 },
+                   shadow = { 0.10, 0.05, 0.01 } },
+    },
+    {
+        key = "NATIVE", label = "Transparent window",
+        paper = { 0.02, 0.02, 0.03, 0.70 }, rim = { 0.55, 0.55, 0.60, 0.85 },
+        depth = 1, minDepth = 1, segW = 40,                              -- straight edges, 1px border
+        shade = nil, grain = nil, hem = nil,
+        back = { { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, { 0, 0, 0, 0 } },
+        backRim = nil, backDepth = 1, backMinDepth = 1, backSegW = 40,
+        shadowAlpha = 0, pile = false,                                   -- no paper pile: the footer shows the page
+        ink = { 0.85, 0.85, 0.85 }, inkRed = { 1.00, 0.82, 0.00 }, inkGreen = { 0.25, 0.95, 0.25 },
+        title = { 1.00, 0.82, 0.00 }, faded = { 0.55, 0.55, 0.55 }, footer = { 0.70, 0.70, 0.70 },
+        sub = { 0.75, 0.75, 0.75 }, close = { 0.80, 0.80, 0.80 }, gear = { 0.80, 0.80, 0.80 },
+        wash = { 1, 1, 1, 0.05 }, washFlash = { 1.0, 0.82, 0.0, 0.40 },
+        divider = { 1, 1, 1, 0.08 }, highlight = { 1, 1, 1, 0.07 },
+        grip = { 0.80, 0.80, 0.80, 0.85 }, pad = 0,
+        textShadow = true, font = "PLAIN", name = { 0.95, 0.95, 0.95 },
+        corner = { u1 = { 0.08, 0.08, 0.10 }, u2 = { 0.22, 0.22, 0.25 }, tip = { 0.50, 0.50, 0.55 },
+                   crease = { 0.25, 0.25, 0.28 }, edge = { 0.60, 0.60, 0.65, 0.80 }, cut = { 0.50, 0.50, 0.55, 0.80 },
+                   shadow = { 0, 0, 0 } },
+    },
+}
+
+function P.GetStyle()
+    for _, st in ipairs(P.STYLES) do
+        if st.key == CFQ.parchmentStyle then return st end
+    end
+    return P.STYLES[1]
+end
+
+function P.CycleStyle()
+    local idx = 1
+    for i, st in ipairs(P.STYLES) do
+        if st.key == CFQ.parchmentStyle then idx = i end
+    end
+    CFQ.parchmentStyle = P.STYLES[(idx % #P.STYLES) + 1].key
+end
+
+function P.Hex(c)
+    return string.format("FF%02X%02X%02X", math.floor(c[1] * 255 + 0.5), math.floor(c[2] * 255 + 0.5), math.floor(c[3] * 255 + 0.5))
+end
+
+-- Repaints the whole pile and its chrome for the current look
+function P.ApplyStyle(f)
+    f = f or shoppingListFrame
+    if not f then return end
+    local st = P.GetStyle()
+    P.INK, P.INK_RED, P.INK_GREEN = st.ink, st.inkRed, st.inkGreen
+    f.styleKey = st.key
+
+    local cl = st.cloth
+    P.RestyleSheet(f.shadowSheet, { paper = { 0, 0, 0, st.shadowAlpha or 0 }, depth = st.depth + 0.5, minDepth = 1, segW = 14, overlap = 0,
+        cloth = cl and { radius = cl.radius + 1 } or nil })      -- a soft rounded shadow, no lace
+    for k, sh in ipairs(f.backSheets) do
+        local bp = st.back[k]
+        P.RestyleSheet(sh, { paper = bp, rim = st.backRim, depth = st.backDepth, minDepth = st.backMinDepth, segW = st.backSegW,
+            cloth = cl and { radius = cl.radius, scallop = cl.scallop, step = cl.step, ripple = cl.ripple,
+                lace = { math.min(1, bp[1] * 1.03), math.min(1, bp[2] * 1.03), math.min(1, bp[3] * 1.03), bp[4] },
+                thread = st.backThread } or nil })
+    end
+    P.RestyleSheet(f.topSheet, {
+        paper = st.paper, rim = st.rim, depth = st.depth, minDepth = st.minDepth, segW = st.segW,
+        grain = st.grain, shade = st.shade, hem = st.hem, cloth = cl,
+    })
+    if f.corner then
+        -- on cloth the folded corner sits inside the rounded corner instead of poking past it
+        local ci = st.cornerInset or 0
+        f.corner:ClearAllPoints()
+        f.corner:SetPoint("BOTTOMRIGHT", f.chrome, "BOTTOMRIGHT", 3 - ci, -3 + ci)
+    end
+    f.shadowSheet:SetShown((st.shadowAlpha or 0) > 0)
+
+    local cc = st.close
+    if f.closeBtn then f.closeBtn.txt:SetTextColor(cc[1], cc[2], cc[3]) end
+    if f.optBtn then
+        f.optBtn.iconColor = { st.gear[1], st.gear[2], st.gear[3] }
+        CFQ.SetGearHover(f.optBtn, false)
+    end
+    if f.gripTex then f.gripTex:SetVertexColor(st.grip[1], st.grip[2], st.grip[3], st.grip[4]) end
+
+    -- keep the writing off the handkerchief's hem
+    local pad = st.pad or 0
+    f.pad = pad
+    if f.closeBtn then
+        f.closeBtn:ClearAllPoints()
+        f.closeBtn:SetPoint("TOPRIGHT", f.chrome, "TOPRIGHT", -5 - pad, -5 - pad)
+    end
+    if f.titleFS then
+        f.titleFS:ClearAllPoints()
+        f.titleFS:SetPoint("TOPLEFT", f.chrome, "TOPLEFT", 10 + pad, -6 - pad)
+        f.titleFS:SetPoint("RIGHT", f.optBtn, "LEFT", -4, 0)
+    end
+    if f.content then
+        f.content:ClearAllPoints()
+        f.content:SetPoint("TOPLEFT", f.chrome, "TOPLEFT", 6 + pad, -28 - pad)
+        f.content:SetPoint("BOTTOMRIGHT", f.chrome, "BOTTOMRIGHT", -6 - pad, 17 + pad)
+    end
+    if f.footerFS then
+        f.footerFS:ClearAllPoints()
+        f.footerFS:SetPoint("BOTTOMLEFT", f.chrome, "BOTTOMLEFT", 22 + pad, 5 + pad)
+        f.footerFS:SetPoint("BOTTOMRIGHT", f.chrome, "BOTTOMRIGHT", -30 - pad, 5 + pad)
+        f.footerFS:SetTextColor(st.footer[1], st.footer[2], st.footer[3], 0.95)
+    end
+    if f.corner then f.corner.drawnKey = nil; P.DrawCorner(f.corner) end
+    P.ApplyStackLayout(f)
 end
 
 -- A quill stroke: a crisp core line plus a wider, faint "bleed" line so the ink looks absorbed by the paper
@@ -1960,6 +2427,9 @@ function P.DrawCorner(c)
     local lift = (S - P.CORNER_REST) / (P.CORNER_HOVER - P.CORNER_REST)   -- 0 at rest, 1 fully lifted
     if lift < 0 then lift = 0 elseif lift > 1 then lift = 1 end
     local n = math.floor(S + 0.5)
+    local cs = P.GetStyle().corner
+    local u1, u2, tip, cr = cs.u1, cs.u2, cs.tip, cs.crease
+    local tipK = 1 - 0.06 * lift
     for j = 1, P.CORNER_MAX do
         local under, flap = c.under[j], c.flap[j]
         if j <= n then
@@ -1971,7 +2441,7 @@ function P.DrawCorner(c)
             under:SetPoint("TOPLEFT", c, "TOPLEFT", ox + cut, y)
             under:SetSize(math.max(0.5, uw), 1)
             -- the page beneath, darkened right under the fold where the flap shades it
-            P.HGradient(under, 0.42, 0.30, 0.16, 1, 0.78, 0.68, 0.50, 1)
+            P.HGradient(under, u1[1], u1[2], u1[3], 1, u2[1], u2[2], u2[3], 1)
             under:Show()
 
             if cut > 0.4 then
@@ -1979,9 +2449,8 @@ function P.DrawCorner(c)
                 flap:SetPoint("TOPLEFT", c, "TOPLEFT", ox, y)
                 flap:SetSize(cut, 1)
                 -- underside of the parchment: lighter at the tip, shading into the crease
-                local tipShade = 0.98 - 0.06 * lift
-                P.HGradient(flap, tipShade, tipShade * 0.94, tipShade * 0.80, 1,
-                    0.70 - 0.08 * lift, 0.58 - 0.08 * lift, 0.38 - 0.06 * lift, 1)
+                P.HGradient(flap, tip[1] * tipK, tip[2] * tipK, tip[3] * tipK, 1,
+                    cr[1] - 0.08 * lift, cr[2] - 0.08 * lift, cr[3] - 0.06 * lift, 1)
                 flap:Show()
             else
                 flap:Hide()
@@ -1996,19 +2465,19 @@ function P.DrawCorner(c)
     c.foldShadow:SetStartPoint("TOPLEFT", c, ox + S + 1.2, -ox - 1.2)
     c.foldShadow:SetEndPoint("TOPLEFT", c, ox + 1.2, -(ox + S) - 1.2)
     c.foldShadow:SetThickness(2.5 + 2 * lift)
-    c.foldShadow:SetColorTexture(0.10, 0.05, 0.01, 0.20 + 0.15 * lift)
+    c.foldShadow:SetColorTexture(cs.shadow[1], cs.shadow[2], cs.shadow[3], 0.20 + 0.15 * lift)
     c.foldEdge:SetStartPoint("TOPLEFT", c, ox + S, -ox)
     c.foldEdge:SetEndPoint("TOPLEFT", c, ox, -(ox + S))
     c.foldEdge:SetThickness(1)
-    c.foldEdge:SetColorTexture(0.33, 0.21, 0.08, 0.75)
+    c.foldEdge:SetColorTexture(cs.edge[1], cs.edge[2], cs.edge[3], cs.edge[4])
     c.flapTop:SetStartPoint("TOPLEFT", c, ox, -ox)
     c.flapTop:SetEndPoint("TOPLEFT", c, ox + S, -ox)
     c.flapTop:SetThickness(1)
-    c.flapTop:SetColorTexture(0.45, 0.31, 0.14, 0.70)
+    c.flapTop:SetColorTexture(cs.cut[1], cs.cut[2], cs.cut[3], cs.cut[4])
     c.flapLeft:SetStartPoint("TOPLEFT", c, ox, -ox)
     c.flapLeft:SetEndPoint("TOPLEFT", c, ox, -(ox + S))
     c.flapLeft:SetThickness(1)
-    c.flapLeft:SetColorTexture(0.45, 0.31, 0.14, 0.70)
+    c.flapLeft:SetColorTexture(cs.cut[1], cs.cut[2], cs.cut[3], cs.cut[4])
 end
 
 function P.CreateCorner(f, parent)
@@ -2132,6 +2601,8 @@ function P.OnUpdate(f, elapsed)
         P.ApplyStackLayout(f)
     end
 
+    if next(P.fxRows) then P.AnimateRowFX(GetTime()) end
+
     local c = f.corner
     if c and c:IsShown() then
         local d = (c.target or P.CORNER_REST) - (c.size or P.CORNER_REST)
@@ -2199,15 +2670,11 @@ local function AcquireShoppingListRow(idx, parent)
         { 0 + J(1), 0 + J(2) }, { 11 + J(3), 0 + J(4) }, { 11 + J(5), -11 + J(6) }, { 0 + J(7), -11 + J(8) },
     }
     box.sides = {}
+    box.corners = corners
     for k = 1, 4 do
-        local a, b = corners[k], corners[(k % 4) + 1]
-        local dx, dy = b[1] - a[1], b[2] - a[2]
-        local len = math.max(0.1, math.sqrt(dx * dx + dy * dy))
-        local ux, uy = dx / len, dy / len
-        local s = P.NewStroke(box, "ARTWORK", 3)
-        P.DrawStroke(s, box, a[1] - ux * 0.4, a[2] - uy * 0.4, b[1] + ux * 1.1, b[2] + uy * 1.1, 1.05, 0.72)
-        box.sides[k] = s
+        box.sides[k] = P.NewStroke(box, "ARTWORK", 3)
     end
+    P.DrawBoxSides(box)
 
     -- Quill tick: heavy short down-stroke, then a long flick up and out past the box's top-right
     box.tick = { P.NewStroke(box, "OVERLAY", 5), P.NewStroke(box, "OVERLAY", 5), P.NewStroke(box, "OVERLAY", 5) }
@@ -2239,7 +2706,191 @@ local function AcquireShoppingListRow(idx, parent)
     row.divider:SetColorTexture(0.45, 0.32, 0.15, 0.14)
 
     shoppingListRowPool[idx] = row
+    P.StyleRow(row)
     return row
+end
+
+-- the box's four crooked strokes, in the current ink
+function P.DrawBoxSides(box)
+    local corners = box.corners
+    for k = 1, 4 do
+        local a, b = corners[k], corners[(k % 4) + 1]
+        local dx, dy = b[1] - a[1], b[2] - a[2]
+        local len = math.max(0.1, math.sqrt(dx * dx + dy * dy))
+        local ux, uy = dx / len, dy / len
+        P.DrawStroke(box.sides[k], box, a[1] - ux * 0.4, a[2] - uy * 0.4, b[1] + ux * 1.1, b[2] + uy * 1.1, 1.05, 0.72)
+    end
+end
+
+-- re-inks a row after the look changes
+function P.StyleRow(row)
+    local st = P.GetStyle()
+    if row.styleKey == st.key then return end
+    row.styleKey = st.key
+    local h, d = st.highlight, st.divider
+    row.highlight:SetColorTexture(h[1], h[2], h[3], h[4])
+    row.divider:SetColorTexture(d[1], d[2], d[3], d[4])
+    P.DrawBoxSides(row.box)
+    row.suffixText:SetTextColor(st.inkGreen[1], st.inkGreen[2], st.inkGreen[3], 1)
+    if row.lasso then row.lassoKey = nil end
+end
+
+-- ----------------------------------------------------------------------------
+-- INK EFFECTS: a warm glow when you're in an item's hunting grounds, flames when your
+-- target is something that drops it, and a red ink circle round the item shown on the map
+-- ----------------------------------------------------------------------------
+function P.EnsureRowFX(row)
+    if row.fx then return row.fx end
+    local fx = { inner = {}, outer = {}, all = {} }
+    -- copies of the words nudged a pixel or two in every direction under the ink: only their edges
+    -- show, which reads as a halo (glow) or a licking flame. (Font outlines are always black, so they
+    -- can't be used for this.)
+    local function Copy(list, sub, ox, oy)
+        local fs = row:CreateFontString(nil, "ARTWORK", nil, sub)
+        fs:SetPoint("TOPLEFT", row.itemText, "TOPLEFT", ox, oy)
+        fs:SetJustifyH("LEFT")
+        fs:SetJustifyV("TOP")
+        fs:SetWordWrap(true)
+        fs:Hide()
+        table.insert(list, fs)
+        table.insert(fx.all, fs)
+    end
+    for k = 0, 7 do
+        local a = k * math.pi / 4
+        Copy(fx.inner, 2, math.cos(a) * 1.2, math.sin(a) * 1.2)
+    end
+    for k = 0, 3 do
+        local a = math.pi / 4 + k * math.pi / 2
+        Copy(fx.outer, 1, math.cos(a) * 2.4, math.sin(a) * 2.4 + 0.6)   -- a touch higher: heat rises
+    end
+    -- heat haze rising off the line
+    fx.haze = row:CreateTexture(nil, "BACKGROUND", nil, 2)
+    fx.haze:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 16, 1)
+    fx.haze:SetPoint("TOPRIGHT", row, "TOPRIGHT", -2, 2)
+    fx.haze:Hide()
+    fx.embers = {}
+    for k = 1, 6 do
+        local e = row:CreateTexture(nil, "OVERLAY", nil, 7)
+        e:SetSize(2, 2)
+        e:Hide()
+        fx.embers[k] = e
+    end
+    row.fx = fx
+    return fx
+end
+
+-- mode: nil (off), "glow" (hunting grounds) or "fire" (your target drops it)
+-- key: the item's progKey (rows are pooled, so a row can show a different item after a re-render)
+function P.SetRowFX(row, mode, plainText, textW, key)
+    if not mode and not row.fx then return end
+    local fx = P.EnsureRowFX(row)
+    if not mode then
+        row.fxMode, row.fxKey, row.fxSince = nil, nil, nil
+        for _, fs in ipairs(fx.all) do fs:Hide() end
+        fx.haze:Hide()
+        for _, e in ipairs(fx.embers) do e:Hide() end
+        P.fxRows[row] = nil
+        return
+    end
+    if row.fxMode ~= mode or row.fxKey ~= key or not row.fxSince then row.fxSince = GetTime() end
+    row.fxMode, row.fxKey = mode, key
+    local path, size, flags = row.itemText:GetFont()
+    path = path or STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
+    size = size or 12
+    for _, fs in ipairs(fx.all) do
+        fs:SetFont(path, size, flags or "")
+        fs:SetWidth(textW)
+        fs:SetText(plainText)
+        if fs.SetShadowColor then fs:SetShadowColor(0, 0, 0, 0) end
+        fs:Show()
+    end
+    if mode == "fire" then
+        ApplyTwoColorVerticalGradient(fx.haze, 1.0, 0.45, 0.05, 0.30, 1.0, 0.70, 0.10, 0.0)
+        fx.haze:Show()
+    else
+        fx.haze:Hide()
+        for _, e in ipairs(fx.embers) do e:Hide() end
+    end
+    row.fxTextW = textW
+    P.fxRows[row] = true
+end
+P.fxRows = setmetatable({}, { __mode = "k" })
+
+-- per-frame flicker / pulse for every row that has an effect on
+function P.AnimateRowFX(now)
+    for row in pairs(P.fxRows) do
+        local fx, mode = row.fx, row.fxMode
+        if not (fx and mode and row:IsShown()) then
+            P.fxRows[row] = nil
+        elseif mode == "glow" then
+            -- slow breathing gold; brighter for the first few seconds after you walk in
+            local fresh = math.max(0, 1 - (now - (row.fxSince or now)) / 4)
+            local a = 0.30 + 0.22 * (0.5 + 0.5 * math.sin(now * 2.6 + (row.seed or 0))) + 0.35 * fresh
+            for _, fs in ipairs(fx.outer) do fs:SetTextColor(1.0, 0.72, 0.20, a * 0.45) end
+            for _, fs in ipairs(fx.inner) do fs:SetTextColor(1.0, 0.88, 0.45, a * 0.75) end
+        else
+            -- flames ("fire": known dropper) or a smoulder ("smoulder": only the names suggest it):
+            -- two out-of-phase flickers, colour sliding between deep orange and yellow
+            local heat = (mode == "fire") and 1 or 0.45
+            local s = row.seed or 0
+            local f1 = 0.55 + 0.25 * math.sin(now * 17 + s) + 0.20 * math.sin(now * 29 + s * 2)
+            local f2 = 0.55 + 0.25 * math.sin(now * 23 + s * 3) + 0.20 * math.sin(now * 11 + s)
+            local flare = heat * math.max(0, 1 - (now - (row.fxSince or now)) / 2.5)   -- big flare-up as it catches
+            for i, fs in ipairs(fx.outer) do
+                -- each tongue of flame flickers on its own
+                local fi = 0.5 + 0.5 * math.sin(now * (13 + i * 3) + s + i)
+                fs:SetTextColor(1.0, 0.28 + 0.15 * f2, 0.04, heat * math.min(1, 0.25 + 0.45 * fi * f1 + 0.25 * flare))
+            end
+            for _, fs in ipairs(fx.inner) do
+                fs:SetTextColor(1.0, 0.62 + 0.30 * f1, 0.12 + 0.20 * f2, heat * math.min(1, 0.50 + 0.35 * f2 + 0.15 * flare))
+            end
+            fx.haze:SetAlpha(0.55 + 0.45 * f1)
+            local w = math.max(20, math.min(row.fxTextW or 100, (row.itemText:GetStringWidth() or 100)))
+            local h = row:GetHeight() or 20
+            local nEmbers = (mode == "fire") and #fx.embers or 2
+            for k, e in ipairs(fx.embers) do
+              if k > nEmbers then
+                e:Hide()
+              else
+                -- each ember rises from the words, drifts and fades, then is re-lit somewhere else
+                local speed = 0.55 + 0.35 * P.Hash01(s, k, 1)
+                local t = now * speed + P.Hash01(s, k, 2)
+                local cycle = math.floor(t)
+                local p = t - cycle
+                local x = 18 + w * P.Hash01(s, k, cycle) + math.sin(t * 6 + k) * 2
+                e:ClearAllPoints()
+                e:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", x, 2 + p * (h + 6))
+                e:SetColorTexture(1.0, 0.55 + 0.4 * (1 - p), 0.1, (1 - p) * 0.95 * heat)
+                e:Show()
+              end
+            end
+        end
+    end
+end
+
+-- red ink circled round the box of the item that is shown on the world map
+function P.SetRowLasso(row, on)
+    if not on then
+        if row.lasso then for _, s in ipairs(row.lasso) do P.HideStroke(s) end end
+        return
+    end
+    if not row.lasso then
+        row.lasso = {}
+        for k = 1, 9 do row.lasso[k] = P.NewStroke(row.box, "OVERLAY", 7) end
+    end
+    local n = #row.lasso
+    local cx, cy, rx, ry = 5.5, -5.5, 9.5, 8.5
+    local prevX, prevY
+    for k = 0, n do
+        -- a loop that doesn't quite close, overshooting where the quill started
+        local a = -0.6 + (k / n) * (2 * math.pi + 0.5)
+        local wob = 1 + (P.Hash01(row.seed, k, 7) - 0.5) * 0.12
+        local x, y = cx + math.cos(a) * rx * wob, cy + math.sin(a) * ry * wob
+        if prevX then
+            P.DrawStroke(row.lasso[k], row.box, prevX, prevY, x, y, 1.2, 0.85, P.INK_RED)
+        end
+        prevX, prevY = x, y
+    end
 end
 
 function P.ShowTick(box, seed)
@@ -2341,30 +2992,27 @@ local function EnsureShoppingListFrame()
         SaveState()
     end)
 
-    -- Page pile (bottom to top): drop shadow, up to 3 pages underneath, the top page
+    -- Page pile (bottom to top): drop shadow, up to 3 pages underneath, the top page.
+    -- Colours and edge shapes come from the chosen look (P.ApplyStyle at the end).
     local base = f.baseLevel
+    local st = P.GetStyle()
     f.shadowSheet = P.CreateSheet(f, 11, {
-        paper = { 0, 0, 0, 0.36 }, depth = 4, minDepth = 1, segW = 14, overlap = 0,
+        paper = { 0, 0, 0, st.shadowAlpha or 0 }, depth = 4, minDepth = 1, segW = 14, overlap = 0,
     })
     f.shadowSheet:SetFrameLevel(base + 1)
 
-    local backPaper = {
-        { 0.84, 0.75, 0.56, 0.98 },
-        { 0.78, 0.69, 0.51, 0.98 },
-        { 0.72, 0.63, 0.46, 0.98 },
-    }
     f.backSheets = {}
     for k = 1, P.MAX_BACK_SHEETS do
         local sh = P.CreateSheet(f, 20 + k * 7, {
-            paper = backPaper[k], rim = { 0.34, 0.22, 0.09, 0.95 }, depth = 4, minDepth = 0.8, segW = 11,
+            paper = st.back[k], rim = st.backRim, depth = st.backDepth, minDepth = st.backMinDepth, segW = st.backSegW,
         })
         sh:SetFrameLevel(base + 5 - k)   -- back1 (closest) = base+4 ... back3 = base+2
         f.backSheets[k] = sh
     end
 
     f.topSheet = P.CreateSheet(f, 7, {
-        paper = { 0.93, 0.85, 0.67, 0.97 }, rim = { 0.40, 0.27, 0.12, 0.95 },
-        depth = 4.5, minDepth = 0.8, segW = 8, grain = true, shade = true,
+        paper = st.paper, rim = st.rim, depth = st.depth, minDepth = st.minDepth, segW = st.segW,
+        grain = st.grain, shade = st.shade, hem = st.hem, decor = true,
     })
     f.topSheet:SetFrameLevel(base + 12)
 
@@ -2373,19 +3021,6 @@ local function EnsureShoppingListFrame()
     chrome:SetAllPoints(f.topSheet)
     chrome:SetFrameLevel(base + 17)
     f.chrome = chrome
-
-    -- Brass tack pinning the pile together
-    local tack = CreateFrame("Frame", nil, chrome)
-    tack:SetSize(10, 10)
-    tack:SetPoint("TOP", chrome, "TOP", 0, 3)
-    tack:SetFrameLevel(base + 19)
-    local tackRim = tack:CreateTexture(nil, "BACKGROUND")
-    tackRim:SetAllPoints()
-    tackRim:SetColorTexture(0.18, 0.10, 0.02, 1.0)
-    local tackHead = tack:CreateTexture(nil, "ARTWORK")
-    tackHead:SetPoint("TOPLEFT", 1, -1)
-    tackHead:SetPoint("BOTTOMRIGHT", -1, 1)
-    tackHead:SetColorTexture(0.92, 0.74, 0.24, 1.0)
 
     -- Close (×), inked
     local closeBtn = CreateFrame("Button", nil, chrome)
@@ -2405,9 +3040,11 @@ local function EnsureShoppingListFrame()
         GameTooltip:Show()
     end)
     closeBtn:SetScript("OnLeave", function(self)
-        self.txt:SetTextColor(0.40, 0.25, 0.11)
+        local cc = P.GetStyle().close
+        self.txt:SetTextColor(cc[1], cc[2], cc[3])
         GameTooltip:Hide()
     end)
+    f.closeBtn = closeBtn
     closeBtn:SetScript("OnClick", function()
         showShoppingList = false
         f:Hide()
@@ -2427,7 +3064,7 @@ local function EnsureShoppingListFrame()
         CFQ.SetGearHover(self, true)
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
         GameTooltip:AddLine("Handkerquest Options", 1, 0.82, 0)
-        GameTooltip:AddLine("Parchment, handwriting, tracker & map settings", 0.85, 0.85, 0.85)
+        GameTooltip:AddLine("Look, handwriting, tracker & map settings", 0.85, 0.85, 0.85)
         GameTooltip:AddLine("Right-Click: reset the parchment's size & position", 0.65, 0.65, 0.65)
         GameTooltip:Show()
     end)
@@ -2502,6 +3139,7 @@ local function EnsureShoppingListFrame()
     gripTex:SetTexCoord(1, 0, 0, 1)         -- mirrored to point into the bottom-left corner
     gripTex:SetVertexColor(0.75, 0.55, 0.30, 0.85)
     resizeGrip.gripTex = gripTex
+    f.gripTex = gripTex
 
     resizeGrip:SetScript("OnEnter", function(self)
         self.gripTex:SetTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
@@ -2573,13 +3211,14 @@ local function EnsureShoppingListFrame()
         P.ApplyStackLayout(self)
     end)
     f:SetScript("OnHide", function(self)
+        if CFQ.HideMapPreview then CFQ.HideMapPreview() end
         self.shuffle = nil
         self.chrome:SetAlpha(1)
         if self.corner then self.corner.size, self.corner.target = P.CORNER_REST, P.CORNER_REST end
     end)
     f:SetScript("OnUpdate", P.OnUpdate)
 
-    P.ApplyStackLayout(f)
+    P.ApplyStyle(f)
     f:Hide()
     return f
 end
@@ -2927,6 +3566,9 @@ function P.Render(f)
     local pageStr = (pageCount > 1) and string.format("  ·  page %d of %d", pageIdx, pageCount) or ""
     local now = GetTime()
     local w = f:GetWidth() or 230
+    local st = P.GetStyle()
+    if f.styleKey ~= st.key then P.ApplyStyle(f) end
+    local pad = st.pad or 0
 
     -- Heading: fresh red ink for a few seconds after you arrive in a new area
     P.SetInkFont(f.titleFS, "title")
@@ -2935,25 +3577,28 @@ function P.Render(f)
     if area.isCurrent and now < (P.currentGlowUntil or 0) then
         f.titleFS:SetTextColor(P.INK_RED[1], P.INK_RED[2], P.INK_RED[3], 1)
     else
-        f.titleFS:SetTextColor(P.INK[1], P.INK[2], P.INK[3], 1)
+        f.titleFS:SetTextColor(st.title[1], st.title[2], st.title[3], 1)
     end
     if area.isCurrent and area.subtitle and area.subtitle ~= "" then
-        f.titleFS:SetText(title .. "  |cFF7A5A3A· " .. area.subtitle .. "|r")
+        f.titleFS:SetText(title .. "  |c" .. P.Hex(st.sub) .. "· " .. area.subtitle .. "|r")
     else
         f.titleFS:SetText(title)
     end
-    local ruleW = math.min(w - 20, math.max(60, (f.titleFS:GetStringWidth() or 80) + 22))
-    P.DrawStroke(f.titleRule, f.chrome, 8, -25, 8 + ruleW, -24, 1.2, 0.70)
-    P.DrawStroke(f.titleRule2, f.chrome, 14, -27.5, 8 + ruleW * 0.55, -27, 0.7, 0.40)
+    local ruleW = math.min(w - 20 - 2 * pad, math.max(60, (f.titleFS:GetStringWidth() or 80) + 22))
+    P.DrawStroke(f.titleRule, f.chrome, 8 + pad, -25 - pad, 8 + pad + ruleW, -24 - pad, 1.2, 0.70)
+    P.DrawStroke(f.titleRule2, f.chrome, 14 + pad, -27.5 - pad, 8 + pad + ruleW * 0.55, -27 - pad, 0.7, 0.40)
 
     if #items == 0 then
         local row = AcquireShoppingListRow(1, f.content)
+        P.StyleRow(row)
+        P.SetRowFX(row, nil)
+        P.SetRowLasso(row, false)
         row.box:Hide()
         P.HideStrikes(row)
         row.suffixText:Hide()
         P.SetInkFont(row.itemText, "item")
-        row.itemText:SetWidth(math.max(120, w - 30))
-        row.itemText:SetTextColor(0.42, 0.32, 0.20, 1)
+        row.itemText:SetWidth(math.max(120, w - 30 - 2 * pad))
+        row.itemText:SetTextColor(st.faded[1], st.faded[2], st.faded[3], 1)
         row.itemText:SetText((area.isCurrent and "Nothing to gather near you." or "Nothing left to gather here.") ..
             ((pageCount > 1) and "\nTurn the page corner to see other areas." or ""))
         row:ClearAllPoints()
@@ -2972,16 +3617,20 @@ function P.Render(f)
         shoppingScrollOffset = math.max(0, #items - 1)
     end
 
-    local contentW = math.max(150, w - 12)
-    local contentH = math.max(55, (f:GetHeight() or 175) - 45)
+    local contentW = math.max(150, w - 12 - 2 * pad)
+    local contentH = math.max(55, (f:GetHeight() or 175) - 45 - 2 * pad)
     local yCursor = 0
     local shownRows = 0
     P.SetInkFont(f.measureFS, "item")
+    local huntCtx = CFQ.BuildHuntContext()
+    local countHex, nameHex = P.Hex(st.inkRed), P.Hex(st.name or st.ink)
+    local trackedID = P.GetSuperTrackedID()
 
     for i = 1 + shoppingScrollOffset, #items do
         if shownRows >= MAX_SHOPPING_ROWS then break end
         local entry = items[i]
         local row = AcquireShoppingListRow(shownRows + 1, f.content)
+        P.StyleRow(row)
         row.box:Show()
         P.SetInkFont(row.itemText, "item")
         P.SetInkFont(row.suffixText, "small")
@@ -2996,13 +3645,14 @@ function P.Render(f)
         local nameStr = entry.itemName or ""
         local strH
 
+        local wa = st.wash
         if entry.finished then
             P.ShowTick(row.box, row.seed)
-            row.box.wash:SetColorTexture(0.55, 0.40, 0.18, 0.06)
+            row.box.wash:SetColorTexture(wa[1], wa[2], wa[3], wa[4])
 
             -- Faded ink, wrapped by hand so every line gets a strike exactly as long as its words
             local lines, widths = P.WrapLines(f.measureFS, countStr .. "  " .. nameStr, textW)
-            row.itemText:SetTextColor(0.38, 0.30, 0.21, 1)
+            row.itemText:SetTextColor(st.faded[1], st.faded[2], st.faded[3], 1)
             row.itemText:SetText(table.concat(lines, "\n"))
             strH = math.max(14, math.ceil(row.itemText:GetStringHeight() or 14))
             local lineH = strH / #lines
@@ -3029,14 +3679,21 @@ function P.Render(f)
         else
             P.HideTick(row.box)
             if isFlashing then
-                row.box.wash:SetColorTexture(0.95, 0.72, 0.20, 0.45)   -- fresh tally mark
+                local wf = st.washFlash
+                row.box.wash:SetColorTexture(wf[1], wf[2], wf[3], wf[4])   -- fresh tally mark
             else
-                row.box.wash:SetColorTexture(0.55, 0.40, 0.18, 0.06)
+                row.box.wash:SetColorTexture(wa[1], wa[2], wa[3], wa[4])
             end
             row.itemText:SetTextColor(P.INK[1], P.INK[2], P.INK[3], 1)
-            row.itemText:SetText(string.format("|cFF7A2A10%s|r  |cFF2B1A0C%s|r", countStr, nameStr))
+            row.itemText:SetText(string.format("|c%s%s|r  |c%s%s|r", countHex, countStr, nameHex, nameStr))
             strH = math.max(14, math.ceil(row.itemText:GetStringHeight() or 14))
         end
+
+        -- glow in its hunting grounds, flames when your target drops it, red ink circle round the
+        -- items of the quest you're tracking
+        local fxMode = CFQ.GetItemFXMode(entry, huntCtx)
+        P.SetRowFX(row, fxMode, countStr .. "  " .. nameStr, textW, entry.progKey)
+        P.SetRowLasso(row, trackedID ~= nil and trackedID == entry.questID)
 
         local rowH = strH + 7
 
@@ -3056,25 +3713,31 @@ function P.Render(f)
                     QuestMapFrame_OpenToQuestDetails(entry.questID)
                 end
             else
-                ActivateQuestTarget(entry.questID)
-                if LayoutObjectiveTrackerWithStacks then
-                    LayoutObjectiveTrackerWithStacks()
-                end
+                -- same as clicking the quest's icon in the Objective Tracker: track it / stop tracking
+                CFQ.ToggleSuperTrack(entry.questID)
             end
         end)
 
         row:SetScript("OnEnter", function(self)
-            GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+            P.PlaceTooltip(self)
             local lvlStr = string.format("|c%s[%d]|r ", entry.levelHex or "FFFFFF00", entry.level or 0)
             GameTooltip:AddLine(lvlStr .. "|cFFFFD100" .. (entry.questTitle or "Quest") .. "|r")
             GameTooltip:AddLine(string.format("%s: %d / %d", entry.itemName or "Objective", entry.numFulfilled or 0, entry.numRequired or 1), 0.9, 0.9, 0.9)
             if entry.isQuestComplete then
                 GameTooltip:AddLine("All objectives complete — ready to turn in!", 0.25, 0.95, 0.25)
             end
-            GameTooltip:AddLine("Left-Click: Track Quest | Right-Click: Open Log", 0.65, 0.65, 0.65)
+            CFQ.AddHuntTooltipLines(GameTooltip, entry)
+            local tracked = P.GetSuperTrackedID() == entry.questID
+            GameTooltip:AddLine((tracked and "Left-Click: stop tracking this quest" or "Left-Click: track this quest")
+                .. "  |  Right-Click: open the quest log", 0.65, 0.65, 0.65)
             GameTooltip:Show()
+            local okPv, errPv = pcall(CFQ.ShowMapPreview, entry, GameTooltip)
+            if not okPv then CFQ.HideMapPreview(); CFQ.ReportError(errPv) end
         end)
-        row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        row:SetScript("OnLeave", function()
+            GameTooltip:Hide()
+            CFQ.HideMapPreview()
+        end)
 
         row:Show()
         yCursor = yCursor - rowH
@@ -3121,11 +3784,1015 @@ UpdateShoppingListUI = function()
     end
 
     -- one page per area: the pile under the top page shows how many other pages there are
-    f.visibleBackSheets = math.max(0, math.min(#areas - 1, P.MAX_BACK_SHEETS))
+    -- (the see-through window has no pile; its footer still reads "page n of m")
+    f.visibleBackSheets = P.GetStyle().pile and math.max(0, math.min(#areas - 1, P.MAX_BACK_SHEETS)) or 0
     f:Show()
     P.Render(f)
     P.UpdateCorner(f)
     P.ApplyStackLayout(f)
+end
+
+-- ============================================================================
+-- HUNTING GROUNDS
+-- Where a tally item is gathered (learned from where you loot it + the quest's own objective
+-- area), which mobs drop it (learned from what you loot it from + unit tooltips + names), and a
+-- world-map overlay for the item you pick on the tally. None of this touches super-tracking,
+-- watches or waypoints: your tracked quest stays exactly as it was.
+-- ============================================================================
+P.HUNT_SPOT_RADIUS = 0.035      -- a looted-here spot counts as hunting ground within 3.5% of the map
+P.HUNT_POI_RADIUS = 0.06        -- ...and so does the quest's objective area (its map POI) within 6%
+P.MAX_HUNT_SPOTS = 12           -- per item; nearby loots merge into one spot
+
+function P.Round4(v) return math.floor(v * 10000 + 0.5) / 10000 end
+
+-- "npc:1234" from a creature GUID, so a mob is recognised whatever its name is in your language
+function P.NpcKey(guid)
+    if type(guid) ~= "string" then return nil end
+    local kind, id = string.match(guid, "^(%a+)%-%d+%-%d+%-%d+%-%d+%-(%d+)%-")
+    if (kind == "Creature" or kind == "Vehicle") and id then return "npc:" .. id end
+    return nil
+end
+
+-- Position on another map (e.g. a spot looted on the zone map, shown on the continent map)
+function P.TranslatePos(fromMap, x, y, toMap)
+    if not (fromMap and x and y and toMap) then return nil end
+    if fromMap == toMap then return x, y end
+    if not (C_Map and C_Map.GetWorldPosFromMapPos and C_Map.GetMapPosFromWorldPos and CreateVector2D) then return nil end
+    local ok, cont, wpos = pcall(C_Map.GetWorldPosFromMapPos, fromMap, CreateVector2D(x, y))
+    if not (ok and cont and wpos) then return nil end
+    local ok2, _, mpos = pcall(C_Map.GetMapPosFromWorldPos, cont, wpos, toMap)
+    if ok2 and mpos and mpos.GetXY then
+        local mx, my = mpos:GetXY()
+        if mx and my and mx >= 0 and mx <= 1 and my >= 0 and my <= 1 then return mx, my end
+    end
+    return nil
+end
+
+-- An item objective just ticked up: you are standing in its hunting grounds, and whatever you just
+-- looted drops it
+function CFQ.OnItemProgress(questID, progKey)
+    local mapID, x, y = GetPlayerMapPositionSafe()
+    if mapID and x and y then
+        local list = CFQ.huntSpots[progKey]
+        if not list then
+            list = {}
+            CFQ.huntSpots[progKey] = list
+        end
+        local sub = strtrim((GetSubZoneText and GetSubZoneText()) or "")
+        local merged = false
+        local mergeR = P.HUNT_SPOT_RADIUS * 0.6
+        for _, sp in ipairs(list) do
+            if sp.m == mapID then
+                local dx, dy = sp.x - x, sp.y - y
+                if dx * dx + dy * dy < mergeR * mergeR then
+                    sp.n = math.min(50, (sp.n or 1) + 1)
+                    sp.x = P.Round4(sp.x + (x - sp.x) / sp.n)
+                    sp.y = P.Round4(sp.y + (y - sp.y) / sp.n)
+                    if sub ~= "" then sp.a = sub end
+                    merged = true
+                    break
+                end
+            end
+        end
+        if not merged then
+            table.insert(list, 1, { m = mapID, x = P.Round4(x), y = P.Round4(y), a = (sub ~= "") and sub or nil, n = 1 })
+            while #list > P.MAX_HUNT_SPOTS do table.remove(list) end
+        end
+    end
+
+    local src = CFQ.lastLootMob
+    if src and (GetTime() - src.t) < 8 and not (src.recorded and src.recorded[progKey]) then
+        local d = CFQ.DropperRecord(src.key, src.label)
+        d[progKey] = (d[progKey] or 0) + 1
+    end
+end
+
+-- ----------------------------------------------------------------------------
+-- WHO DROPS WHAT: evidence first, guesses last
+-- The game has no drop-table API, but the loot window is authoritative: every slot says which
+-- corpse it came from (GetLootSourceInfo) and what the item is. So each time you loot a mob we
+-- record, per npc id: how many of its corpses you looted while you still needed items ("loots"),
+-- and how many times each tally item was in the loot ([progKey] = hits). Hits make a mob a sure
+-- dropper; many loots and no hit rule a mob out even if its name looks right.
+-- ----------------------------------------------------------------------------
+CFQ.countedCorpses = {}
+
+function CFQ.DropperRecord(key, label)
+    local d = CFQ.learnedDroppers[key]
+    if not d then
+        d = { loots = 0 }
+        CFQ.learnedDroppers[key] = d
+    end
+    if label and label ~= "" then d.label = label end
+    return d
+end
+
+-- Name of the mob behind a GUID, if we have seen it (target, or the last thing you targeted)
+function P.NameForGUID(guid)
+    if not guid then return nil end
+    if UnitGUID and UnitGUID("target") == guid then return UnitName("target") end
+    if UnitGUID and UnitGUID("mouseover") == guid then return UnitName("mouseover") end
+    local last = CFQ.lastTargetMob
+    if last and last.guid == guid then return last.name end
+    return nil
+end
+
+-- Reads the open loot window: which corpses, and which tally items each one gave
+function CFQ.ScanLootWindow()
+    local needed, anyNeeded = {}, false
+    for _, q in pairs(questRewardMap) do
+        for _, o in ipairs(q.itemObjectives or {}) do
+            if not o.finished and o.itemName and o.itemName ~= "" then
+                needed[string.lower(o.itemName)] = o.progKey
+                anyNeeded = true
+            end
+        end
+    end
+    if not (anyNeeded and GetNumLootItems and GetLootSlotInfo and GetLootSourceInfo) then return {} end
+
+    local found = {}           -- [progKey] = true: items seen in this loot window
+    local corpses = {}         -- [guid] = npc key
+    local okN, n = pcall(GetNumLootItems)
+    for slot = 1, (okN and tonumber(n)) or 0 do
+        local okI, _, itemName = pcall(GetLootSlotInfo, slot)
+        local progKey = okI and type(itemName) == "string" and needed[string.lower(itemName)]
+        local src = { pcall(GetLootSourceInfo, slot) }       -- ok, guid1, qty1, guid2, qty2, ... (area loot)
+        if src[1] then
+            for j = 2, #src, 2 do
+                local guid = src[j]
+                local key = P.NpcKey(guid)
+                if key then
+                    corpses[guid] = key
+                    if progKey then
+                        local d = CFQ.DropperRecord(key, P.NameForGUID(guid))
+                        local mark = guid .. "|" .. progKey
+                        if not CFQ.countedCorpses[mark] then
+                            CFQ.countedCorpses[mark] = true
+                            d[progKey] = (d[progKey] or 0) + 1
+                        end
+                        found[progKey] = true
+                    end
+                end
+            end
+        end
+    end
+    -- every corpse looted once counts as a try at each item you still needed then, whether it
+    -- dropped or not (re-opening the same corpse doesn't count again)
+    for guid, key in pairs(corpses) do
+        if not CFQ.countedCorpses[guid] then
+            CFQ.countedCorpses[guid] = true
+            local d = CFQ.DropperRecord(key, P.NameForGUID(guid))
+            d.loots = (d.loots or 0) + 1
+            d.tries = d.tries or {}
+            for _, pk in pairs(needed) do d.tries[pk] = (d.tries[pk] or 0) + 1 end
+        end
+    end
+    -- keep the session's "already counted" list short
+    local c = 0
+    for _ in pairs(CFQ.countedCorpses) do c = c + 1 end
+    if c > 400 then CFQ.countedCorpses = {} end
+    return found
+end
+
+-- The loot window opened: read it, and remember which mob it's from (not herbs, chests or fishing)
+function CFQ.OnLootOpened()
+    CFQ.lastLootMob = nil
+    if IsFishingLoot and IsFishingLoot() then return end
+    local okScan, found = pcall(CFQ.ScanLootWindow)
+    found = okScan and found or {}
+    local srcGUID
+    if GetLootSourceInfo then
+        local ok, guid = pcall(GetLootSourceInfo, 1)
+        if ok then srcGUID = guid end
+    end
+    if type(srcGUID) == "string" and not P.NpcKey(srcGUID) then return end   -- a game object, not a mob
+
+    local name, guid
+    if UnitExists and UnitExists("target") and UnitIsDead and UnitIsDead("target")
+        and not (UnitIsPlayer and UnitIsPlayer("target")) then
+        name, guid = UnitName("target"), UnitGUID and UnitGUID("target")
+    end
+    if srcGUID and guid ~= srcGUID then
+        local last = CFQ.lastTargetMob
+        if last and last.guid == srcGUID then name, guid = last.name, last.guid else name, guid = nil, srcGUID end
+    end
+    local key = P.NpcKey(guid) or (name and string.lower(name))
+    if key then
+        -- "recorded": items the loot window already credited, so the quest-progress fallback
+        -- (CFQ.OnItemProgress) doesn't count the same drop twice
+        CFQ.lastLootMob = { key = key, label = name, t = GetTime(), recorded = found }
+    end
+end
+
+P.GENERIC_WORDS = {
+    small = true, large = true, piece = true, sample = true, fragment = true, shard = true, scrap = true,
+    token = true, bundle = true, pouch = true, part = true, essence = true, crate = true, supply = true,
+    ancient = true, elder = true, young = true, giant = true, greater = true, lesser = true, mature = true,
+    the = true, with = true, from = true, some = true, intact = true, pristine = true, fresh = true, rough = true,
+}
+
+function P.NameWords(s)
+    local out = {}
+    for word in string.gmatch(string.lower(s or ""), "[%a']+") do
+        word = string.gsub(word, "'s$", "")
+        if string.len(word) > 4 and string.sub(word, -1) == "s" then word = string.sub(word, 1, -2) end
+        if string.len(word) >= 4 and not P.GENERIC_WORDS[word] then out[word] = true end
+    end
+    return out
+end
+
+-- "Small Spider Leg" / "Webwood Spider", "Gnarlpine Fang" / "Gnarlpine Mystic": a distinctive word in common
+function P.NamesShareWord(itemName, mobName)
+    local a = P.NameWords(itemName)
+    for w in pairs(P.NameWords(mobName)) do
+        if a[w] then return true end
+    end
+    return false
+end
+
+-- Unit tooltip lines (lower case). Retail-style tooltips list the quest objectives a mob is part of.
+function CFQ.ReadUnitTooltip(unit)
+    local lines = {}
+    if C_TooltipInfo and C_TooltipInfo.GetUnit then
+        local ok, data = pcall(C_TooltipInfo.GetUnit, unit)
+        if ok and type(data) == "table" and type(data.lines) == "table" then
+            for _, ln in ipairs(data.lines) do
+                if type(ln.leftText) == "string" then table.insert(lines, string.lower(ln.leftText)) end
+            end
+            return lines
+        end
+    end
+    local tip = CFQ.scanTip
+    if not tip then
+        local ok, t = pcall(CreateFrame, "GameTooltip", "HKQ_ScanTooltip", nil, "GameTooltipTemplate")
+        if not ok or not t then return lines end
+        tip = t
+        CFQ.scanTip = tip
+    end
+    pcall(function()
+        tip:SetOwner(UIParent, "ANCHOR_NONE")
+        tip:ClearLines()
+        tip:SetUnit(unit)
+        local nLines = tip:NumLines()
+        for i = 1, tonumber(nLines) or 0 do
+            local fs = _G["HKQ_ScanTooltipTextLeft" .. i]
+            local txt = fs and fs.GetText and fs:GetText()
+            if type(txt) == "string" then table.insert(lines, string.lower(txt)) end
+        end
+        tip:Hide()
+    end)
+    return lines
+end
+
+P.RULE_OUT_LOOTS = 4    -- looted this many of a mob without ever getting the item: it doesn't drop it
+
+-- Which unfinished tally items could this mob drop? Returns { [progKey] = "sure" | "guess" } or nil.
+--   sure:  you've looted the item from this npc before, or its tooltip names the item / the quest
+--   guess: only the names look related (and nothing rules it out)
+function CFQ.FindTargetDrops(unit)
+    unit = unit or "target"
+    if not (UnitExists and UnitExists(unit)) then return nil end
+    if UnitIsPlayer and UnitIsPlayer(unit) then return nil end
+    if UnitCanAttack and not UnitCanAttack("player", unit) then return nil end   -- friendly NPCs don't drop loot
+    local name = UnitName and UnitName(unit)
+    if not name or name == "" then return nil end
+    local learnedA = CFQ.learnedDroppers[P.NpcKey(UnitGUID and UnitGUID(unit)) or ""]
+    local learnedB = CFQ.learnedDroppers[string.lower(name)]
+    local tipLines = CFQ.ReadUnitTooltip(unit)
+
+    -- Does the client say this unit is part of one of your quests? (nil = it can't tell us)
+    local related
+    if C_QuestLog and C_QuestLog.UnitIsRelatedToActiveQuest then
+        local ok, r = pcall(C_QuestLog.UnitIsRelatedToActiveQuest, unit)
+        if ok and type(r) == "boolean" then related = r end
+    end
+    -- Does its tooltip carry any quest of yours? Once we've seen tooltips do that on this client,
+    -- a tooltip *without* quest lines is evidence too.
+    local titles = {}
+    for _, q in pairs(questRewardMap) do
+        if q.title and q.title ~= "" then titles[string.lower(q.title)] = true end
+    end
+    local tipHasQuest = false
+    for _, ln in ipairs(tipLines) do
+        if titles[strtrim(ln)] then tipHasQuest = true break end
+    end
+    if tipHasQuest then CFQ.tooltipShowsQuests = true end
+
+    local keys, any = {}, false
+    for _, q in pairs(questRewardMap) do
+        local onlyItems = true
+        for _, o in ipairs(q.quantityObjectives or {}) do
+            if not o.isItem and not o.finished then onlyItems = false end
+        end
+        local lowerTitle = string.lower(q.title or "")
+        for _, obj in ipairs(q.itemObjectives or {}) do
+            if not obj.finished then
+                local k = obj.progKey
+                local level
+                local hits = ((learnedA and learnedA[k]) or 0) + ((learnedB and learnedB[k]) or 0)
+                local loots = ((learnedA and learnedA.tries and learnedA.tries[k]) or 0)
+                    + ((learnedB and learnedB.tries and learnedB.tries[k]) or 0)
+                if hits > 0 then
+                    level = "sure"
+                else
+                    local lowerItem = string.lower(obj.itemName or "")
+                    for _, ln in ipairs(tipLines) do
+                        if (lowerItem ~= "" and string.find(ln, lowerItem, 1, true))
+                            or (onlyItems and lowerTitle ~= "" and strtrim(ln) == lowerTitle) then
+                            level = "sure"
+                            break
+                        end
+                    end
+                end
+                if not level then
+                    local ruledOut = loots >= P.RULE_OUT_LOOTS                         -- looted often, never got it
+                        or related == false                                            -- client: not a quest mob
+                        or (CFQ.tooltipShowsQuests and not tipHasQuest)                -- tooltip would have said so
+                    if not ruledOut and P.NamesShareWord(obj.itemName, name) then level = "guess" end
+                end
+                if level then
+                    keys[k] = level
+                    any = true
+                end
+            end
+        end
+    end
+    return any and keys or nil
+end
+
+-- New target: set the tally alight for anything it may drop
+function CFQ.OnTargetChanged()
+    local guid = UnitGUID and UnitGUID("target")
+    if UnitExists and UnitExists("target") and not (UnitIsPlayer and UnitIsPlayer("target")) then
+        CFQ.lastTargetMob = { guid = guid, name = UnitName("target"), t = GetTime() }
+    end
+    local keys = CFQ.FindTargetDrops("target")
+    if not keys then
+        P.fire = nil
+        return
+    end
+    local now = GetTime()
+    P.fire = { keys = keys, guid = guid, since = now }
+    for k in pairs(keys) do
+        local qID = tonumber(string.match(k, "^(%d+)_"))
+        if qID then recentActiveQuests[qID] = now end     -- puts it on the "Near me" page
+    end
+    -- turn back to "Near me" so the burning line is in front of you
+    local f = shoppingListFrame
+    if f and f:IsShown() and P.selectedKey ~= P.CURRENT_KEY and not f.shuffle then
+        f.shuffle = { t = 0, dur = 0.55, key = P.CURRENT_KEY, swapped = false, dir = -1 }
+    end
+end
+
+-- Location snapshot for one render: where you are, and the quest objective areas on your map
+function CFQ.BuildHuntContext()
+    local mapID, x, y = GetPlayerMapPositionSafe()
+    local ctx = { mapID = mapID, x = x, y = y, pois = {},
+        sub = string.lower(strtrim((GetSubZoneText and GetSubZoneText()) or "")) }
+    if mapID and C_QuestLog and C_QuestLog.GetQuestsOnMap then
+        local ok, list = pcall(C_QuestLog.GetQuestsOnMap, mapID)
+        if ok and type(list) == "table" then
+            for _, info in ipairs(list) do
+                if info.questID and info.x and info.y then ctx.pois[info.questID] = { info.x, info.y } end
+            end
+        end
+    end
+    return ctx
+end
+
+function CFQ.IsInHuntGrounds(entry, ctx)
+    if not entry or not ctx then return false end
+    local px, py = ctx.x, ctx.y
+    local function Near(x, y, r)
+        if not (x and y and px and py) then return false end
+        local dx, dy = x - px, y - py
+        return dx * dx + dy * dy <= r * r
+    end
+    for _, sp in ipairs(CFQ.huntSpots[entry.progKey] or {}) do
+        if ctx.sub ~= "" and sp.a and string.lower(sp.a) == ctx.sub then return true end   -- same subzone
+        if ctx.mapID then
+            local sx, sy = P.TranslatePos(sp.m, sp.x, sp.y, ctx.mapID)
+            if Near(sx, sy, P.HUNT_SPOT_RADIUS) then return true end
+        end
+    end
+    local poi = ctx.pois[entry.questID]
+    if poi and Near(poi[1], poi[2], P.HUNT_POI_RADIUS) then return true end
+    local q = entry.qData
+    if q and not q.isComplete and q.mapID and q.mapID == ctx.mapID and Near(q.x, q.y, P.HUNT_POI_RADIUS) then
+        return true
+    end
+    return false
+end
+
+function CFQ.GetItemFXMode(entry, ctx)
+    if not CFQ.parchmentOpts.inkEffects or entry.finished then return nil end
+    local level = P.fire and P.fire.keys[entry.progKey]
+    if level == "sure" then return "fire" end           -- known to drop it: full flames
+    if level then return "smoulder" end                 -- only the names suggest it: a smoulder
+    if CFQ.IsInHuntGrounds(entry, ctx) then return "glow" end
+    return nil
+end
+
+-- Mobs you've looted this item from (most often first), with how many of their corpses you looted
+function CFQ.GetKnownDroppers(progKey)
+    local list = {}
+    for _, d in pairs(CFQ.learnedDroppers) do
+        if type(d) == "table" and type(d[progKey]) == "number" and d.label then
+            local tries = (d.tries and d.tries[progKey]) or d.loots or 0
+            table.insert(list, { name = d.label, n = d[progKey], loots = math.max(tries, d[progKey]) })
+        end
+    end
+    table.sort(list, function(a, b) if a.n ~= b.n then return a.n > b.n end return a.name < b.name end)
+    return list
+end
+
+function CFQ.AddHuntTooltipLines(tt, entry)
+    local level = P.fire and P.fire.keys[entry.progKey]
+    if level == "sure" and not entry.finished then
+        tt:AddLine("Your target drops this!", 1.0, 0.50, 0.10)
+    elseif level and not entry.finished then
+        tt:AddLine("Your target might drop this (going by its name)", 1.0, 0.65, 0.30)
+    elseif not entry.finished and CFQ.IsInHuntGrounds(entry, CFQ.BuildHuntContext()) then
+        tt:AddLine("You're in its hunting grounds", 1.0, 0.85, 0.35)
+    end
+    local spots = CFQ.huntSpots[entry.progKey]
+    if spots and #spots > 0 then
+        tt:AddLine(string.format("Found it in %d spot%s so far", #spots, (#spots == 1) and "" or "s"), 0.80, 0.72, 0.50)
+    end
+    local droppers = CFQ.GetKnownDroppers(entry.progKey)
+    if #droppers > 0 then
+        local names = {}
+        for i = 1, math.min(3, #droppers) do
+            local dr = droppers[i]
+            names[i] = string.format("%s (%d of %d)", dr.name, dr.n, dr.loots)
+        end
+        tt:AddLine("Looted from: " .. table.concat(names, ", "), 0.80, 0.72, 0.50, true)
+    end
+end
+
+-- Forget spots and droppers for quests that have left the log
+function CFQ.PruneHuntData()
+    if not next(questRewardMap) then return end      -- quest log not loaded yet: keep everything
+    local function Alive(progKey)
+        local qID = tonumber(string.match(tostring(progKey), "^(%d+)_"))
+        return qID and questRewardMap[qID] ~= nil
+    end
+    for k in pairs(CFQ.huntSpots) do
+        if not Alive(k) then CFQ.huntSpots[k] = nil end
+    end
+    for mob, d in pairs(CFQ.learnedDroppers) do
+        local keep = false
+        if type(d) == "table" then
+            for k, v in pairs(d) do
+                if type(v) == "number" and string.find(tostring(k), "^%d+_%d+$") then   -- per-item hit counts only
+                    if Alive(k) then keep = true else d[k] = nil end
+                end
+            end
+            for k in pairs(d.tries or {}) do
+                if Alive(k) then keep = true else d.tries[k] = nil end
+            end
+        end
+        if not keep then CFQ.learnedDroppers[mob] = nil end
+    end
+end
+
+-- ----------------------------------------------------------------------------
+-- CLICKING AN ITEM: track its quest exactly like clicking the quest's icon in the Objective Tracker
+-- (super-track it; click again to stop). Blizzard then draws its own shaded quest area on the map
+-- and its waypoint arrow, as for any super-tracked quest. (User decision, v1.4.)
+-- ----------------------------------------------------------------------------
+function CFQ.ToggleSuperTrack(questID)
+    if not questID then return end
+    local ST = C_SuperTrack
+    if not (ST and ST.SetSuperTrackedQuestID) then
+        ActivateQuestTarget(questID)          -- very old clients: the addon's own tracking
+    elseif IsQuestSuperTracked(questID) and ST.GetSuperTrackedQuestID and ST.GetSuperTrackedQuestID() == questID then
+        pcall(ST.SetSuperTrackedQuestID, 0)
+        if PlaySound and SOUNDKIT and SOUNDKIT.UI_MAP_WAYPOINT_SUPER_TRACK_OFF then
+            pcall(PlaySound, SOUNDKIT.UI_MAP_WAYPOINT_SUPER_TRACK_OFF)
+        end
+    else
+        pcall(ST.SetSuperTrackedQuestID, questID)
+        lastSelectedQuestID = questID
+        SaveState()
+        if PlaySound and SOUNDKIT and SOUNDKIT.UI_MAP_WAYPOINT_SUPER_TRACK_ON then
+            pcall(PlaySound, SOUNDKIT.UI_MAP_WAYPOINT_SUPER_TRACK_ON)
+        end
+    end
+    if LayoutObjectiveTrackerWithStacks then LayoutObjectiveTrackerWithStacks() end
+    if shoppingListFrame and shoppingListFrame:IsShown() then P.Render(shoppingListFrame) end
+end
+
+-- The map an item is gathered on: where you've looted it most, else the quest's zone, else yours
+function CFQ.GetHuntMapID(focus)
+    if not focus then return nil end
+    local votes, best, bestN = {}, nil, 0
+    for _, sp in ipairs(CFQ.huntSpots[focus.progKey] or {}) do
+        votes[sp.m] = (votes[sp.m] or 0) + (sp.n or 1)
+        if votes[sp.m] > bestN then best, bestN = sp.m, votes[sp.m] end
+    end
+    if best then return best end
+    local q = questRewardMap[focus.questID]
+    if q and q.mapID then return q.mapID end
+    return C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
+end
+
+-- A circled patch of map: just a dashed ink ring and a small pip in the middle. No fill, so the
+-- map and Blizzard's own quest-area highlights underneath stay fully visible.
+function P.AcquireHuntCircle(ov, i)
+    local c = ov.circles[i]
+    if c then return c end
+    c = CreateFrame("Frame", nil, ov)
+    c.dashes = {}
+    for k = 1, 20 do c.dashes[k] = c:CreateLine(nil, "OVERLAY") end
+    c.pip = c:CreateTexture(nil, "OVERLAY")
+    c.pip:SetTexture(CIRCLE_MASK_TEX)
+    c.pip:SetPoint("CENTER")
+    ov.circles[i] = c
+    return c
+end
+
+function P.PlaceHuntCircle(c, canvas, x, y, radiusPx, kind)
+    local W, H = canvas:GetWidth() or 0, canvas:GetHeight() or 0
+    c:ClearAllPoints()
+    c:SetSize(radiusPx * 2, radiusPx * 2)
+    c:SetPoint("CENTER", canvas, "TOPLEFT", x * W, -y * H)
+    -- spots you looted in: amber. The quest's objective area: the tally's red ink.
+    local r, g, b = 1.0, 0.62, 0.10
+    if kind == "poi" then r, g, b = 0.90, 0.18, 0.08 end
+    local n = #c.dashes
+    local thick = math.max(1.5, radiusPx * 0.035)
+    for k, ln in ipairs(c.dashes) do
+        local a0 = (k - 1) / n * 2 * math.pi
+        local a1 = a0 + (2 * math.pi / n) * 0.55
+        ln:SetStartPoint("CENTER", c, math.cos(a0) * radiusPx, math.sin(a0) * radiusPx)
+        ln:SetEndPoint("CENTER", c, math.cos(a1) * radiusPx, math.sin(a1) * radiusPx)
+        ln:SetThickness(thick)
+        ln:SetColorTexture(r, g, b, 0.90)
+        ln:Show()
+    end
+    local pip = math.max(4, radiusPx * 0.12)
+    c.pip:SetSize(pip, pip)
+    c.pip:SetVertexColor(r, g, b, 0.95)
+    c:Show()
+end
+
+-- Where an item is gathered, on one map: looted-here spots (amber) + the quest's objective area (red)
+function CFQ.CollectHuntMarks(questID, progKey, mapID)
+    local marks = {}
+    for _, sp in ipairs(CFQ.huntSpots[progKey] or {}) do
+        local x, y = P.TranslatePos(sp.m, sp.x, sp.y, mapID)
+        if x then table.insert(marks, { x = x, y = y, r = P.HUNT_SPOT_RADIUS, kind = "spot", n = sp.n or 1 }) end
+    end
+    local poiX, poiY
+    if C_QuestLog and C_QuestLog.GetQuestsOnMap then
+        local ok, list = pcall(C_QuestLog.GetQuestsOnMap, mapID)
+        if ok and type(list) == "table" then
+            for _, info in ipairs(list) do
+                if info.questID == questID and info.x and info.y then poiX, poiY = info.x, info.y end
+            end
+        end
+    end
+    if not poiX then
+        local q = questRewardMap[questID]
+        if q and q.mapID and not q.isComplete then poiX, poiY = P.TranslatePos(q.mapID, q.x, q.y, mapID) end
+    end
+    if poiX then table.insert(marks, { x = poiX, y = poiY, r = P.HUNT_POI_RADIUS, kind = "poi", n = 0 }) end
+    return marks
+end
+
+-- ----------------------------------------------------------------------------
+-- MAP PREVIEW ON HOVER
+-- A little map under the item's tooltip: the zone's own map art, cropped around where the item is
+-- gathered, with the quest's objective area, your looted-here spots and where you are now.
+-- It is a separate frame, so it never draws on (or covers anything on) the real world map.
+-- ----------------------------------------------------------------------------
+P.PREVIEW_W, P.PREVIEW_H = 220, 147
+
+function CFQ.EnsureMapPreview()
+    if CFQ.mapPreview then return CFQ.mapPreview end
+    local pv = CreateFrame("Frame", "HKQ_MapPreview", UIParent)
+    pv:SetSize(P.PREVIEW_W + 8, P.PREVIEW_H + 24)
+    pv:SetFrameStrata("TOOLTIP")
+    pv:SetClampedToScreen(true)
+    if pv.EnableMouse then pv:EnableMouse(false) end
+    local border = pv:CreateTexture(nil, "BACKGROUND", nil, 0)
+    border:SetAllPoints()
+    border:SetColorTexture(0.62, 0.62, 0.66, 0.95)
+    local bg = pv:CreateTexture(nil, "BACKGROUND", nil, 1)
+    bg:SetPoint("TOPLEFT", 1, -1)
+    bg:SetPoint("BOTTOMRIGHT", -1, 1)
+    bg:SetColorTexture(0.03, 0.03, 0.05, 0.96)
+    pv.title = pv:CreateFontString(nil, "OVERLAY")
+    pv.title:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", 11, "")
+    pv.title:SetPoint("TOPLEFT", pv, "TOPLEFT", 6, -5)
+    pv.title:SetPoint("RIGHT", pv, "RIGHT", -6, 0)
+    pv.title:SetJustifyH("LEFT")
+    pv.title:SetWordWrap(false)
+
+    -- clipping viewport onto the (larger) map
+    local sf = CreateFrame("ScrollFrame", nil, pv)
+    sf:SetPoint("TOPLEFT", pv, "TOPLEFT", 4, -20)
+    sf:SetSize(P.PREVIEW_W, P.PREVIEW_H)
+    local child = CreateFrame("Frame", nil, sf)
+    child:SetSize(P.PREVIEW_W, P.PREVIEW_H)
+    sf:SetScrollChild(child)
+    child.circles = {}
+    pv.sf, pv.child = sf, child
+    pv.tiles = {}
+    -- fallback when the client gives no map art: a plain parchment sketch
+    pv.paper = child:CreateTexture(nil, "BACKGROUND", nil, -1)
+    pv.paper:SetAllPoints(child)
+    pv.paper:SetColorTexture(0.80, 0.72, 0.54, 1)
+
+    -- Blizzard's own quest-area shape, drawn only inside this preview
+    local ok, blob = pcall(CreateFrame, "QuestPOIFrame", nil, child)
+    if ok and type(blob) == "table" and type(blob.DrawBlob) == "function" then
+        blob:SetAllPoints(child)
+        pcall(blob.SetFillTexture, blob, "Interface\\WorldMap\\UI-QuestBlob-Inside")
+        pcall(blob.SetBorderTexture, blob, "Interface\\WorldMap\\UI-QuestBlob-Outside")
+        pcall(blob.SetFillAlpha, blob, 128)
+        pcall(blob.SetBorderAlpha, blob, 220)
+        pcall(blob.SetBorderScalar, blob, 0.5)
+        pv.blob = blob
+    end
+
+    -- you are here
+    local you = CreateFrame("Frame", nil, child)
+    you:SetSize(9, 9)
+    you:SetFrameLevel(child:GetFrameLevel() + 20)
+    you.ring = you:CreateTexture(nil, "ARTWORK", nil, 0)
+    you.ring:SetTexture(CIRCLE_MASK_TEX)
+    you.ring:SetAllPoints()
+    you.ring:SetVertexColor(0, 0, 0, 0.9)
+    you.dot = you:CreateTexture(nil, "ARTWORK", nil, 1)
+    you.dot:SetTexture(CIRCLE_MASK_TEX)
+    you.dot:SetPoint("TOPLEFT", 1.5, -1.5)
+    you.dot:SetPoint("BOTTOMRIGHT", -1.5, 1.5)
+    you.dot:SetVertexColor(1.0, 0.92, 0.25, 1)
+    pv.you = you
+
+    pv.note = pv:CreateFontString(nil, "OVERLAY")
+    pv.note:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
+    pv.note:SetPoint("BOTTOM", sf, "BOTTOM", 0, 4)
+    pv.note:SetTextColor(1.0, 0.75, 0.45)
+    pv:Hide()
+    CFQ.mapPreview = pv
+    return pv
+end
+
+-- Map art for one map: layer size, tile size and the tile files (nil if the client has none)
+function P.GetMapArt(mapID)
+    if not (C_Map and C_Map.GetMapArtLayers and C_Map.GetMapArtLayerTextures) then return nil end
+    local ok, layers = pcall(C_Map.GetMapArtLayers, mapID)
+    local layer = ok and type(layers) == "table" and layers[1]
+    if not (layer and layer.layerWidth and layer.tileWidth) then return nil end
+    local ok2, files = pcall(C_Map.GetMapArtLayerTextures, mapID, 1)
+    if not (ok2 and type(files) == "table" and #files > 0) then return nil end
+    return { w = layer.layerWidth, h = layer.layerHeight, tw = layer.tileWidth, th = layer.tileHeight, files = files }
+end
+
+function CFQ.ShowMapPreview(entry, anchor)
+    if not CFQ.parchmentOpts.mapPreview or not entry then return end
+    local mapID = CFQ.GetHuntMapID({ questID = entry.questID, progKey = entry.progKey })
+    local pv = CFQ.EnsureMapPreview()
+    if not mapID then
+        pv:Hide()
+        return
+    end
+    local PW, PH = P.PREVIEW_W, P.PREVIEW_H
+    local art = P.GetMapArt(mapID)
+    local LW, LH = art and art.w or 1002, art and art.h or 668
+    local marks = CFQ.CollectHuntMarks(entry.questID, entry.progKey, mapID)
+
+    -- zoom to fit the marks with some margin (never closer than a fifth of the map, never past its edges)
+    local minX, maxX, minY, maxY = 1, 0, 1, 0
+    for _, mk in ipairs(marks) do
+        minX, maxX = math.min(minX, mk.x - mk.r), math.max(maxX, mk.x + mk.r)
+        minY, maxY = math.min(minY, mk.y - mk.r), math.max(maxY, mk.y + mk.r)
+    end
+    local scaleFit = math.max(PW / LW, PH / LH)            -- the whole map just fills the viewport
+    local s = scaleFit
+    local cx, cy = 0.5, 0.5
+    if #marks > 0 then
+        cx, cy = (minX + maxX) * 0.5, (minY + maxY) * 0.5
+        local ex = math.max(1, (maxX - minX) * LW * 1.5)
+        local ey = math.max(1, (maxY - minY) * LH * 1.5)
+        s = math.min(PW / ex, PH / ey, PW / (0.35 * LW))     -- at least a third of the zone across: stays sharp
+        s = math.max(s, scaleFit)
+    end
+    local CW, CH = LW * s, LH * s
+    local child = pv.child
+    child:SetSize(CW, CH)
+    local sx = math.max(0, math.min(CW - PW, cx * CW - PW * 0.5))
+    local sy = math.max(0, math.min(CH - PH, cy * CH - PH * 0.5))
+    pv.sf:SetHorizontalScroll(sx)
+    pv.sf:SetVerticalScroll(sy)
+
+    -- map tiles
+    local nTiles = 0
+    if art then
+        local cols = math.max(1, math.ceil(art.w / art.tw))
+        for i, fid in ipairs(art.files) do
+            local t = pv.tiles[i]
+            if not t then
+                t = child:CreateTexture(nil, "BACKGROUND", nil, 0)
+                pv.tiles[i] = t
+            end
+            local col, row = (i - 1) % cols, math.floor((i - 1) / cols)
+            t:SetTexture(fid)
+            t:ClearAllPoints()
+            t:SetSize(art.tw * s, art.th * s)
+            t:SetPoint("TOPLEFT", child, "TOPLEFT", col * art.tw * s, -row * art.th * s)
+            t:Show()
+            nTiles = i
+        end
+    end
+    for i = nTiles + 1, #pv.tiles do pv.tiles[i]:Hide() end
+    pv.paper:SetShown(nTiles == 0)
+
+    -- the quest's own area outline, then our rings on top
+    if pv.blob then
+        pcall(pv.blob.SetMapID, pv.blob, mapID)
+        pcall(pv.blob.DrawNone, pv.blob)
+        pcall(pv.blob.DrawBlob, pv.blob, entry.questID, true)
+    end
+    for i, mk in ipairs(marks) do
+        local c = P.AcquireHuntCircle(child, i)
+        c:SetFrameLevel(child:GetFrameLevel() + 10)          -- rings over the quest-area shape
+        P.PlaceHuntCircle(c, child, mk.x, mk.y, mk.r * CW, mk.kind)
+    end
+    for i = #marks + 1, #child.circles do child.circles[i]:Hide() end
+
+    local pMap, px, py = GetPlayerMapPositionSafe()
+    local yx, yy
+    if pMap and px and py then yx, yy = P.TranslatePos(pMap, px, py, mapID) end
+    if yx then
+        pv.you:ClearAllPoints()
+        pv.you:SetPoint("CENTER", child, "TOPLEFT", yx * CW, -yy * CH)
+        pv.you:Show()
+    else
+        pv.you:Hide()
+    end
+
+    local info = C_Map and C_Map.GetMapInfo and C_Map.GetMapInfo(mapID)
+    pv.title:SetText("|cFFFFD100" .. ((info and info.name) or "Map") .. "|r  |cFFCCCCCC" .. (entry.itemName or "") .. "|r")
+    pv.note:SetText((#marks == 0) and "no known spot yet: loot one and it's marked" or "")
+
+    P.PlacePreview(pv, anchor or GameTooltip)
+    pv:Show()
+end
+
+function CFQ.HideMapPreview()
+    if CFQ.mapPreview then CFQ.mapPreview:Hide() end
+end
+
+-- ----------------------------------------------------------------------------
+-- KEEPING POP-UPS CLEAR: the item tooltip goes beside the tally on whichever side has room, and
+-- the map preview tries a ring of spots round the tooltip and the tally and takes the one that
+-- stays on screen and covers the least: the tally and tooltip first, then other visible windows.
+-- ----------------------------------------------------------------------------
+function P.GetSuperTrackedID()
+    if C_SuperTrack and C_SuperTrack.GetSuperTrackedQuestID then
+        local ok, id = pcall(C_SuperTrack.GetSuperTrackedQuestID)
+        if ok then return (id and id > 0) and id or nil end
+    end
+    return lastSelectedQuestID
+end
+
+-- A visible frame's rectangle in UIParent units, grown by pad (nil if hidden / not laid out)
+function P.ScreenRect(frame, pad)
+    if type(frame) ~= "table" or not (frame.IsVisible and frame:IsVisible()) or not frame.GetRect then return nil end
+    local l, b, w, h = frame:GetRect()
+    if not (l and b and w and h) or w <= 0 or h <= 0 then return nil end
+    local k = (frame:GetEffectiveScale() or 1) / (UIParent:GetEffectiveScale() or 1)
+    pad = pad or 0
+    return { l = l * k - pad, b = b * k - pad, r = (l + w) * k + pad, t = (b + h) * k + pad }
+end
+
+function P.Overlap(a, b)
+    if not (a and b) then return 0 end
+    local w = math.min(a.r, b.r) - math.max(a.l, b.l)
+    local h = math.min(a.t, b.t) - math.max(a.b, b.b)
+    if w <= 0 or h <= 0 then return 0 end
+    return w * h
+end
+
+-- Windows and HUD pieces a pop-up shouldn't sit on (whichever exist and are showing)
+P.AVOID_FRAMES = {
+    "ObjectiveTrackerFrame", "MinimapCluster", "PlayerFrame", "TargetFrame", "FocusFrame", "BuffFrame",
+    "DebuffFrame", "MainMenuBar", "MainActionBar", "MultiBarBottomLeft", "MultiBarBottomRight", "MultiBarRight",
+    "MultiBarLeft", "MultiBar5", "MultiBar6", "MultiBar7", "MicroMenuContainer", "MicroButtonAndBagsBar",
+    "BagsBar", "StanceBar", "PetActionBar", "PartyFrame", "CompactRaidFrameContainer", "WorldMapFrame",
+    "QuestFrame", "GossipFrame", "CharacterFrame", "SpellBookFrame", "PlayerSpellsFrame", "MerchantFrame",
+    "ContainerFrameCombinedBags", "SettingsPanel", "QRF_OptionsStandalone", "DressUpFrame", "MailFrame",
+}
+
+function P.CollectAvoidRects()
+    local list, seen = {}, {}
+    local function Add(name)
+        if seen[name] then return end
+        seen[name] = true
+        local r = P.ScreenRect(_G[name], 2)
+        if r then table.insert(list, r) end
+    end
+    for _, name in ipairs(P.AVOID_FRAMES) do Add(name) end
+    for i = 1, (tonumber(NUM_CHAT_WINDOWS) or 10) do Add("ChatFrame" .. i) end
+    for i = 1, 6 do Add("ContainerFrame" .. i) end
+    for _, name in ipairs(UISpecialFrames or {}) do
+        if type(name) == "string" then Add(name) end
+    end
+    return list
+end
+
+-- The tally's footprint, including the pages fanned out underneath
+function P.TallyRect()
+    return P.ScreenRect(shoppingListFrame, 12)
+end
+
+-- Item tooltip beside the tally, on the side with more room, level with the row
+function P.PlaceTooltip(row)
+    local F = P.TallyRect()
+    if not F then
+        GameTooltip:SetOwner(row, "ANCHOR_LEFT")
+        return
+    end
+    GameTooltip:SetOwner(row, "ANCHOR_NONE")
+    GameTooltip:ClearAllPoints()
+    local screenW = UIParent:GetWidth() or 1920
+    local rowRight = (row.GetRight and row:GetRight()) or F.r
+    local rowLeft = (row.GetLeft and row:GetLeft()) or F.l
+    if (screenW - F.r) >= F.l then
+        GameTooltip:SetPoint("TOPLEFT", row, "TOPRIGHT", (F.r - rowRight) + 4, 4)
+    else
+        GameTooltip:SetPoint("TOPRIGHT", row, "TOPLEFT", -(rowLeft - F.l) - 4, 4)
+    end
+end
+
+function P.PlacePreview(pv, tip)
+    local W, H = pv:GetWidth() or 228, pv:GetHeight() or 171
+    local T = P.ScreenRect(tip, 0)
+    local F = P.TallyRect()
+    pv:ClearAllPoints()
+    if not T and not F then
+        -- nothing to measure against (very early, or a test client): plain under-the-tooltip spot
+        pv:SetPoint("TOPLEFT", tip, "BOTTOMLEFT", 0, -2)
+        return
+    end
+    local SW, SH = UIParent:GetWidth() or 1920, UIParent:GetHeight() or 1080
+    local others = P.CollectAvoidRects()
+    local cands = {}
+    local function Add(x, y) table.insert(cands, { x = x, y = y }) end
+    local g = 3
+    if T then
+        Add(T.l, T.b - g - H)               -- under the tooltip
+        Add(T.r - W, T.b - g - H)
+        Add(T.l, T.t + g)                   -- over it
+        Add(T.r - W, T.t + g)
+        Add(T.r + g, T.t - H)               -- beside it
+        Add(T.l - g - W, T.t - H)
+    end
+    if F then
+        Add(F.r + g, F.t - H)               -- beside the tally
+        Add(F.l - g - W, F.t - H)
+        Add(F.r + g, F.b)
+        Add(F.l - g - W, F.b)
+        Add(F.l, F.t + g)                   -- over / under it
+        Add(F.r - W, F.t + g)
+        Add(F.l, F.b - g - H)
+    end
+    local best, bestScore
+    local cx = T and (T.l + T.r) * 0.5 or (F.l + F.r) * 0.5
+    local cy = T and (T.b + T.t) * 0.5 or (F.b + F.t) * 0.5
+    for _, c in ipairs(cands) do
+        -- keep it fully on screen
+        local x = math.max(0, math.min(SW - W, c.x))
+        local y = math.max(0, math.min(SH - H, c.y))
+        local R = { l = x, b = y, r = x + W, t = y + H }
+        local score = 50 * (P.Overlap(R, F) + P.Overlap(R, T))
+        for _, o in ipairs(others) do score = score + P.Overlap(R, o) end
+        local dx, dy = (x + W * 0.5) - cx, (y + H * 0.5) - cy
+        score = score + 0.05 * math.sqrt(dx * dx + dy * dy)          -- prefer close by
+        if not bestScore or score < bestScore then best, bestScore = { x = x, y = y }, score end
+    end
+    pv:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", best.x, best.y)
+end
+
+-- ----------------------------------------------------------------------------
+-- MINIMAP PINS: amber pips where you've looted the items of the quest you're tracking.
+-- Blizzard already shows the tracked quest's own area / arrow; these add the spots you've
+-- actually found the items. Positions come from world coordinates, scaled by the minimap's
+-- zoom (yards across the minimap per zoom level, as every minimap-pin addon uses), and turned
+-- with the player when "Rotate Minimap" is on. Out-of-range spots sit on the rim.
+-- ----------------------------------------------------------------------------
+P.MINIMAP_YARDS = {
+    indoor = { [0] = 300, 240, 180, 120, 80, 50 },
+    outdoor = { [0] = 466 + 2 / 3, 400, 333 + 1 / 3, 266 + 2 / 6, 200, 133 + 1 / 3 },
+}
+P.MAX_MINIMAP_PINS = 8
+
+function P.AcquireMinimapPin(i)
+    P.mmPins = P.mmPins or {}
+    local pin = P.mmPins[i]
+    if pin then return pin end
+    pin = CreateFrame("Frame", nil, Minimap)
+    pin:SetSize(10, 10)
+    pin:SetFrameLevel((Minimap:GetFrameLevel() or 1) + 6)
+    pin.ring = pin:CreateTexture(nil, "ARTWORK", nil, 0)
+    pin.ring:SetTexture(CIRCLE_MASK_TEX)
+    pin.ring:SetAllPoints()
+    pin.ring:SetVertexColor(0.25, 0.12, 0.02, 0.95)
+    pin.dot = pin:CreateTexture(nil, "ARTWORK", nil, 1)
+    pin.dot:SetTexture(CIRCLE_MASK_TEX)
+    pin.dot:SetPoint("TOPLEFT", 2, -2)
+    pin.dot:SetPoint("BOTTOMRIGHT", -2, 2)
+    pin.dot:SetVertexColor(1.0, 0.66, 0.12, 1)
+    pin:EnableMouse(true)
+    pin:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine(self.itemName or "Quest item", 1.0, 0.82, 0)
+        GameTooltip:AddLine("You've found it here" .. ((self.n or 1) > 1 and string.format(" (%d times)", self.n) or ""), 0.9, 0.9, 0.9)
+        if self.questTitle then GameTooltip:AddLine(self.questTitle, 0.65, 0.65, 0.65) end
+        GameTooltip:Show()
+    end)
+    pin:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    P.mmPins[i] = pin
+    return pin
+end
+
+function CFQ.UpdateMinimapPins()
+    local shown = 0
+    local mm = Minimap
+    local qID = P.GetSuperTrackedID()
+    local q = qID and questRewardMap[qID]
+    if mm and q and CFQ.parchmentOpts.minimapPins and mm.IsVisible and mm:IsVisible() then
+        local pMap, px, py = GetPlayerMapPositionSafe()
+        local pc, pwx, pwy
+        if pMap and px and py then pc, pwx, pwy = CFQ.MapPosToWorld(pMap, px, py) end
+        if pc then
+            local rawZoom = mm.GetZoom and mm:GetZoom()
+            local zoom = tonumber(rawZoom) or 0
+            local sizes = (IsIndoors and IsIndoors()) and P.MINIMAP_YARDS.indoor or P.MINIMAP_YARDS.outdoor
+            local yardsAcross = sizes[zoom] or sizes[0]
+            local R = (mm:GetWidth() or 140) * 0.5
+            local pxPerYard = R / (yardsAcross * 0.5)
+            local facing = 0
+            if GetCVar and GetCVar("rotateMinimap") == "1" and GetPlayerFacing then facing = GetPlayerFacing() or 0 end
+            local cosF, sinF = math.cos(facing), math.sin(facing)
+
+            -- nearest spots first, across every unfinished item of the tracked quest
+            local spots = {}
+            for _, obj in ipairs(q.itemObjectives or {}) do
+                if not obj.finished then
+                    for _, sp in ipairs(CFQ.huntSpots[obj.progKey] or {}) do
+                        local c, wx, wy = CFQ.MapPosToWorld(sp.m, sp.x, sp.y)
+                        if c and c == pc then
+                            -- world X runs north, world Y runs west
+                            local east, north = -(wy - pwy), (wx - pwx)
+                            table.insert(spots, { east = east, north = north, d = east * east + north * north,
+                                item = obj.itemName, n = sp.n })
+                        end
+                    end
+                end
+            end
+            table.sort(spots, function(a, b) return a.d < b.d end)
+            for _, s in ipairs(spots) do
+                if shown >= P.MAX_MINIMAP_PINS then break end
+                local x = (s.east * cosF + s.north * sinF) * pxPerYard
+                local y = (-s.east * sinF + s.north * cosF) * pxPerYard
+                local dist = math.sqrt(x * x + y * y)
+                local edge = R - 6
+                local onRim = dist > edge
+                if onRim and dist > 0 then x, y = x / dist * edge, y / dist * edge end
+                shown = shown + 1
+                local pin = P.AcquireMinimapPin(shown)
+                pin:ClearAllPoints()
+                pin:SetPoint("CENTER", mm, "CENTER", x, y)
+                pin:SetAlpha(onRim and 0.55 or 1)
+                pin.itemName, pin.n, pin.questTitle = s.item, s.n, q.title
+                pin:Show()
+            end
+        end
+    end
+    for i = shown + 1, #(P.mmPins or {}) do P.mmPins[i]:Hide() end
+end
+
+-- moves with you: refreshed a few times a second while a tracked quest has known spots
+function CFQ.EnsureMinimapDriver()
+    if CFQ.mmDriver or not Minimap then return end
+    local drv = CreateFrame("Frame", nil, Minimap)
+    drv.acc = 0
+    drv:SetScript("OnUpdate", function(self, elapsed)
+        self.acc = self.acc + (elapsed or 0)
+        if self.acc < 0.1 then return end
+        self.acc = 0
+        local ok, err = pcall(CFQ.UpdateMinimapPins)
+        if not ok then
+            CFQ.ReportError(err)
+            self:SetScript("OnUpdate", nil)     -- don't spam errors every frame
+        end
+    end)
+    CFQ.mmDriver = drv
 end
 
 -- ============================================================================
@@ -3902,6 +5569,27 @@ function CFQ.DebugDumpTracker()
     out(n .. " children")
 end
 
+-- /hanky items: every counted objective, its type, and whether it is on the tally (for "why is X listed?")
+function CFQ.DebugDumpItems()
+    print("|cFFFFD100Handkerquest items:|r objectives with counts (+ = on the Field Tally)")
+    local ids = {}
+    for qID in pairs(questRewardMap) do table.insert(ids, qID) end
+    table.sort(ids)
+    local n = 0
+    for _, qID in ipairs(ids) do
+        local q = questRewardMap[qID]
+        for _, o in ipairs(q.quantityObjectives or {}) do
+            n = n + 1
+            local spots = CFQ.huntSpots[o.progKey]
+            print(string.format("  %s %s: %s  [type=%s] %d/%d%s", o.isItem and "|cFF40FF40+|r" or "|cFF888888-|r",
+                q.title or tostring(qID), o.itemName or "?", tostring(o.objType or "none"),
+                o.numFulfilled or 0, o.numRequired or 0,
+                (spots and #spots > 0) and string.format("  (%d hunt spots)", #spots) or ""))
+        end
+    end
+    if n == 0 then print("  (no counted objectives in your quest log)") end
+end
+
 function CFQ.ScheduleTrackerRelayout(delay)
     if C_Timer and C_Timer.After then
         C_Timer.After(delay or 0.1, function()
@@ -4456,6 +6144,11 @@ local function UpdateWorldMapPins()
         if pool and pool.EnumerateActive then
             for pin in pool:EnumerateActive() do
                 local qID = pin.questID or pin.questId or (pin.GetQuestID and pin:GetQuestID())
+                -- Quest-area highlights ("blobs") also carry a questID, but they are the shaded
+                -- collection zones, not pins: never dim them or hang a badge on them.
+                local isAreaHighlight = type(pin.DrawBlob) == "function"
+                    or (pin.GetObjectType and pin:GetObjectType() == "QuestPOIFrame")
+                if isAreaHighlight then qID = nil end   -- the branch below restores any old badge / dim
                 if qID and type(qID) == "number" then
                     if uiMapID and pin.normalizedX and pin.normalizedY then
                         cachedQuestCoords[qID] = { mapID = uiMapID, x = pin.normalizedX, y = pin.normalizedY }
@@ -5895,7 +7588,7 @@ function CFQ.BuildOptionsPanel()
         fill:SetColorTexture(1.0, 0.82, 0.0, 0.85)
         local thumb = slider:CreateTexture(nil, "OVERLAY")
         thumb:SetSize(18, 18)
-        thumb:SetTexture("Interface\Buttons\UI-SliderBar-Button-Horizontal")
+        thumb:SetTexture("Interface\\Buttons\\UI-SliderBar-Button-Horizontal")
         slider:SetThumbTexture(thumb)
         local valText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         valText:SetPoint("LEFT", slider, "RIGHT", 10, 0)
@@ -6011,13 +7704,45 @@ function CFQ.BuildOptionsPanel()
         function() return CFQ.parchmentOpts.hideWhenNothingNearby end,
         function(v) CFQ.parchmentOpts.hideWhenNothingNearby = v; RefreshParchment() end)
 
+    Check("Mark the tracked quest's item spots on the minimap",
+        "Amber pips on the minimap where you've looted the items of the quest you're tracking (click an item on the tally to track its quest). Pips beyond the minimap's edge sit on the rim, pointing the way.",
+        function() return CFQ.parchmentOpts.minimapPins end,
+        function(v) CFQ.parchmentOpts.minimapPins = v; CFQ.UpdateMinimapPins() end)
+    Check("Little map when you hover an item",
+        "Shows a small map under the item's tooltip: the quest's objective area, the spots you've looted it in, and where you are.",
+        function() return CFQ.parchmentOpts.mapPreview end,
+        function(v) CFQ.parchmentOpts.mapPreview = v; if not v then CFQ.HideMapPreview() end end)
+    Check("Glowing & burning ink",
+        "An item's line glows when you walk into its hunting grounds, and catches fire while your target is a mob that may drop it.",
+        function() return CFQ.parchmentOpts.inkEffects end,
+        function(v) CFQ.parchmentOpts.inkEffects = v; RefreshParchment() end)
+
     y = y - 4
+    local lookBtn = Button("Look: Handkerchief notes", 210, 24, function()
+        P.CycleStyle()
+        SaveState()
+        P.ApplyStyle()
+        RefreshParchment()
+    end, function(self)
+        self:SetText("Look: " .. P.GetStyle().label)
+    end)
+    lookBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Look of the Field Tally", 1, 0.82, 0)
+        GameTooltip:AddLine("Handkerchief notes: scribbled on a hemmed, folded handkerchief.", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine("Parchment: a pile of torn parchment pages.", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine("Transparent window: a see-through WoW-style panel in the standard font.", 0.9, 0.9, 0.9, true)
+        GameTooltip:Show()
+    end)
+    lookBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    y = y - 28
     Button("Handwriting: Quill script", 190, 24, function()
         P.CycleFontStyle()
         SaveState()
         RefreshParchment()
     end, function(self)
         self:SetText("Handwriting: " .. P.GetFontStyle().label)
+        self:SetAlpha(P.GetStyle().font and 0.45 or 1)     -- the see-through window always uses the UI font
     end)
     Button("Reset Position & Size", 160, 220, function()
         showShoppingList = true
@@ -6071,7 +7796,7 @@ function CFQ.BuildOptionsPanel()
     hint:SetPoint("TOPLEFT", p, "TOPLEFT", 20, y)
     hint:SetPoint("RIGHT", p, "RIGHT", -24, 0)
     hint:SetJustifyH("LEFT")
-    hint:SetText("Slash: /hanky (filter menu), /hanky options, /hanky lvl, /hanky dist, /hanky list, /hanky resetlist, /hanky reset")
+    hint:SetText("Slash: /hanky (filter menu), /hanky options, /hanky lvl, /hanky dist, /hanky list, /hanky look, /hanky resetlist, /hanky items, /hanky reset")
 
     p:SetScript("OnShow", function() CFQ.RefreshOptionsPanel() end)
     CFQ.optionsPanel = p
@@ -6177,6 +7902,18 @@ SlashCmdList["HANDKERQUEST"] = function(msg)
         CFQ.RefreshOptionsPanel()
     elseif cmd == "debug" then
         CFQ.DebugDumpTracker()
+    elseif cmd == "items" then
+        CFQ.DebugDumpItems()
+    elseif cmd == "look" or cmd == "style" or string.find(cmd, "^look ") or string.find(cmd, "^style ") then
+        local want = string.match(cmd, "^%a+%s+(%a+)")
+        local alias = { handkerchief = "HANDKERCHIEF", hanky = "HANDKERCHIEF", parchment = "PARCHMENT",
+            window = "NATIVE", transparent = "NATIVE", native = "NATIVE" }
+        if want and alias[want] then CFQ.parchmentStyle = alias[want] else P.CycleStyle() end
+        SaveState()
+        P.ApplyStyle()
+        UpdateShoppingListUI()
+        CFQ.RefreshOptionsPanel()
+        print("|cFFFFD100Handkerquest:|r Field Tally look: " .. P.GetStyle().label)
     elseif cmd == "options" or cmd == "opt" or cmd == "config" or cmd == "settings" then
         CFQ.OpenOptions()
     else
@@ -6201,12 +7938,17 @@ loader:RegisterEvent("ZONE_CHANGED_INDOORS")
 loader:RegisterEvent("ZONE_CHANGED_NEW_AREA")
 loader:RegisterEvent("PLAYER_TARGET_CHANGED")
 loader:RegisterEvent("PLAYER_REGEN_ENABLED")
+loader:RegisterEvent("LOOT_OPENED")
 loader:SetScript("OnEvent", function(self, event, arg1)
     if event == "PLAYER_REGEN_ENABLED" then
         if CFQ.openOptionsAfterCombat then
             CFQ.openOptionsAfterCombat = false
             CFQ.OpenOptions()
         end
+        return
+    end
+    if event == "LOOT_OPENED" then
+        pcall(CFQ.OnLootOpened)
         return
     end
     if event == "ADDON_LOADED" and arg1 == "Handkerquest" then
@@ -6218,6 +7960,7 @@ loader:SetScript("OnEvent", function(self, event, arg1)
         EnsureShoppingListFrame()
         HookAllMapTooltips()
         CFQ.RegisterOptions()
+        CFQ.EnsureMinimapDriver()
 
         -- Chat frames settle into their Edit Mode layout a moment after login; re-seat the
         -- parchment above the chat box if it is still on its default anchor.
@@ -6227,6 +7970,8 @@ loader:SetScript("OnEvent", function(self, event, arg1)
                     CFQ.P.ApplyPosition(shoppingListFrame)
                 end
             end)
+            -- once the quest log has settled, forget hunting spots / droppers of quests you no longer have
+            C_Timer.After(15, function() pcall(CFQ.PruneHuntData) end)
         end
 
         if QuestLogQuests_Update then
@@ -6302,6 +8047,12 @@ loader:SetScript("OnEvent", function(self, event, arg1)
                     end
                 end
             end
+        end
+        -- a mob that may drop a tally item sets its line alight (cleared when you change target)
+        local hadFire = CFQ.P.fire ~= nil
+        local ok, err = pcall(CFQ.OnTargetChanged)
+        if not ok then CFQ.P.fire = nil; CFQ.ReportError(err) end
+        if (targetName and targetName ~= "") or hadFire or CFQ.P.fire then
             UpdateShoppingListUI()
         end
     elseif event == "ZONE_CHANGED" or event == "ZONE_CHANGED_INDOORS" or event == "ZONE_CHANGED_NEW_AREA" then

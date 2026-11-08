@@ -39,6 +39,7 @@ function methods:GetLeft() return 100 + (self.__px or 0) end
 function methods:GetTop() return 500 + (self.__py or 0) end
 function methods:GetBottom() return 300 end
 function methods:GetRight() return 400 end
+function methods:GetRect() if self.__rect then return unpack(self.__rect) end return nil end
 function methods:GetEffectiveScale() return 1 end
 function methods:GetScale() return 1 end
 function methods:SetAlpha(a) self.__alpha = a end
