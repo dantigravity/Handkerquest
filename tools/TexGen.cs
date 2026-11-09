@@ -3,7 +3,8 @@ using System.IO;
 using System.Drawing;
 using System.Drawing.Imaging;
 
-// Procedural textures for the Handkerquest tally: crumpled paper, a torn rag, a flat stone, a bark slab.
+// Procedural textures for the Handkerquest tally: crumpled paper, a torn rag, a flat stone, a bark slab,
+// a pipe-weed leaf, a piece of soft hide, the arcane haze and rune circle, chalk grain.
 public static class TexGen
 {
     // ---------------------------------------------------------------- noise
@@ -394,15 +395,48 @@ public static class TexGen
         Save(img, tga, png);
     }
 
-    // ---------------------------------------------------------------- etched leather
-    // A piece of saddle-brown hide cut from a larger skin: pebbled grain, soft wrinkles, burnished dark
-    // edges, a tooled border groove with stitch holes outside it. The list is pressed into it.
+    // ---------------------------------------------------------------- soft hide (the "Etched leather" look)
+    // A rough-cut piece of supple tan leather, the kind a jerkin or a pair of breeches is cut from: a
+    // hide-like outline (lobes where the legs were, knife-cut facets, a nick or two), soft drape folds,
+    // a fine grain with pores, a darker band down the spine and paler belly towards the edges. The cut
+    // edge shows the fibrous flesh side; no tooling, no stitching. The list is pressed into it.
     public static void Leather(string tga, string png, int size, int seed)
     {
         Seed = seed;
         int W = size, H = size;
-        double cx0 = W * 0.5, cy0 = H * 0.5, ax = W * 0.475, ay = H * 0.445;
+        double cx0 = W * 0.5, cy0 = H * 0.5, ax = W * 0.455, ay = H * 0.425;
         double R = Math.Min(ax, ay);
+        var rnd = new Random(seed);
+        // lobes where the legs were (angle, height, width); y points down, so +45 deg is bottom-right
+        double[] lobeA = { -2.30, -0.80, 2.35, 0.78 }, lobeH = { 0.19, 0.15, 0.17, 0.08 }, lobeW = { 0.19, 0.17, 0.21, 0.17 };
+        for (int i = 0; i < 4; i++) lobeA[i] += (rnd.NextDouble() - 0.5) * 0.15;
+        // knife cuts: the outline is a run of short straight-ish strokes
+        int nCut = 46;
+        var cut = new double[nCut];
+        for (int i = 0; i < nCut; i++) cut[i] = (rnd.NextDouble() - 0.5) * 0.026;
+        // two small nicks in the edge
+        double[] nickA = { -1.55 + (rnd.NextDouble() - 0.5) * 0.3, 2.95 + (rnd.NextDouble() - 0.5) * 0.3 };
+        // soft drape folds: rounded ridges and troughs along random lines, fading out along their length
+        int nFold = 9;
+        var fold = new double[nFold * 6];
+        for (int i = 0; i < nFold; i++)
+        {
+            double t = rnd.NextDouble() * Math.PI;
+            fold[i * 6] = W * (0.1 + rnd.NextDouble() * 0.8); fold[i * 6 + 1] = H * (0.1 + rnd.NextDouble() * 0.8);
+            fold[i * 6 + 2] = Math.Cos(t); fold[i * 6 + 3] = Math.Sin(t);
+            fold[i * 6 + 4] = (rnd.NextDouble() < 0.6 ? 1 : -1) * (2.6 + rnd.NextDouble() * 3.0);   // height
+            fold[i * 6 + 5] = W * (0.18 + rnd.NextDouble() * 0.30);                                   // length
+        }
+        // a few healed scratches across the grain
+        int nScr = 4;
+        var scr = new double[nScr * 4];
+        for (int i = 0; i < nScr; i++)
+        {
+            double sx = W * (0.25 + rnd.NextDouble() * 0.5), sy = H * (0.25 + rnd.NextDouble() * 0.5);
+            double t = rnd.NextDouble() * Math.PI, l = W * (0.04 + rnd.NextDouble() * 0.07);
+            scr[i * 4] = sx; scr[i * 4 + 1] = sy; scr[i * 4 + 2] = sx + Math.Cos(t) * l; scr[i * 4 + 3] = sy + Math.Sin(t) * l;
+        }
+
         var hgt = new double[W, H];
         var col = new double[W, H, 3];
         var alpha = new double[W, H];
@@ -411,42 +445,83 @@ public static class TexGen
             {
                 double dx = (x - cx0) / ax, dy = (y - cy0) / ay;
                 double th = Math.Atan2(dy, dx), ct = Math.Cos(th), st = Math.Sin(th);
-                double p = 4.2;
-                double q = Math.Pow(Math.Pow(Math.Abs(dx), p) + Math.Pow(Math.Abs(dy), p), 1.0 / p);
-                double rim = 1.0 + (Fbm(ct * 1.3 + 3, st * 1.3 + 3, 3, 401) - 0.5) * 0.10     // the hide's lobes
-                    + (Value(th * 9.0 + 20, 0.5, 402) - 0.5) * 0.012;                        // knife facets
+                double q = Math.Pow(Math.Pow(Math.Abs(dx), 3.2) + Math.Pow(Math.Abs(dy), 3.2), 1.0 / 3.2);
+                double rim = 1.0 + (Fbm(ct * 1.1 + 5, st * 1.1 + 5, 3, 401) - 0.5) * 0.14   // the hide wanders
+                    + (Fbm(ct * 4.0 + 9, st * 4.0 + 9, 2, 402) - 0.5) * 0.08;               // and the knife with it
+                for (int i = 0; i < 4; i++)
+                {
+                    double da = Math.Atan2(Math.Sin(th - lobeA[i]), Math.Cos(th - lobeA[i]));
+                    rim += lobeH[i] * Math.Exp(-da * da / (2 * lobeW[i] * lobeW[i]));
+                    rim -= 0.06 * Math.Exp(-Math.Pow(da - lobeW[i] * 2.2, 2) / 0.03);        // the hollow beside a leg
+                }
+                double ci = (th + Math.PI) / (2 * Math.PI) * nCut;
+                int c0 = (int)Math.Floor(ci); double cf = ci - c0;
+                rim += cut[c0 % nCut] * (1 - cf) + cut[(c0 + 1) % nCut] * cf;                  // straight knife strokes
+                for (int i = 0; i < 2; i++)
+                {
+                    double da = Math.Atan2(Math.Sin(th - nickA[i]), Math.Cos(th - nickA[i]));
+                    rim -= Math.Max(0, 0.035 - Math.Abs(da) * 0.9);                            // a V nick
+                }
                 q /= rim;
                 double inside = (1 - q) * R;                       // ~ pixels in from the cut edge
-                alpha[x, y] = Clamp(inside / 1.2, 0, 1);
+                double fz = Value(x * 0.8, y * 0.8, 409);
+                alpha[x, y] = Clamp((inside + (fz - 0.5) * 1.6) / 1.4, 0, 1);              // a slightly fuzzy cut
 
-                // ---- relief
-                double h = Math.Sqrt(Clamp(inside / 10.0, 0, 1)) * 6.0;                    // the edge rounds off
+                // ---- relief: soft drape folds, a fine grain with pores, the edge curling a touch
+                double h = 0;
+                h += (Fbm(x / 150.0, y / 150.0, 3, 405) - 0.5) * 10.0;                       // the hide's swell
+                double crease = 0;
+                for (int i = 0; i < nFold; i++)
+                {
+                    double ddx = x - fold[i * 6], ddy = y - fold[i * 6 + 1];
+                    double along = ddx * fold[i * 6 + 2] + ddy * fold[i * 6 + 3];
+                    double across = -ddx * fold[i * 6 + 3] + ddy * fold[i * 6 + 2] + (Fbm(along / 60.0, i * 3.7, 2, 406) - 0.5) * 30;
+                    double wdt = 7 + 7 * Value(along / 80.0, i * 5.3, 407);
+                    double fl = Math.Exp(-along * along / (fold[i * 6 + 5] * fold[i * 6 + 5]));
+                    double v = fold[i * 6 + 4] * Math.Exp(-across * across / (2 * wdt * wdt)) * fl;
+                    h += v; crease = Math.Max(crease, Math.Abs(v) / 5.6);
+                }
+                h += (Ridged(x / 110.0, y / 80.0, 2, 413) - 0.6) * 1.6;                     // and gentle buckling
+                h += (Fbm(x / 35.0, y / 35.0, 3, 408) - 0.5) * 1.4;                          // supple, a bit lumpy
                 double f1, f2;
-                Cell(x / 5.2 + Fbm(x / 40.0, y / 40.0, 2, 403) * 1.5, y / 5.2, 404, out f1, out f2);
-                double pebble = Math.Sqrt(Clamp(1 - f1 * 1.15, 0, 1));                     // each grain a little dome
-                double crease = Clamp(1 - (f2 - f1) / 0.10, 0, 1);                          // fine creases between them
-                h += pebble * 0.85 - crease * 0.55;
-                h += (Fbm(x / 120.0, y / 120.0, 3, 405) - 0.5) * 7.0;                      // the hide's swell
-                h += (Ridged(x / 70.0, y / 22.0, 3, 406) - 0.55) * 2.2;                     // soft wrinkles
-                double groove = Math.Exp(-Math.Pow(inside - 15.0, 2) / (2 * 1.1 * 1.1));     // tooled border
-                double groove2 = Math.Exp(-Math.Pow(inside - 19.5, 2) / (2 * 0.6 * 0.6));
-                h -= groove * 2.4 + groove2 * 1.0;
-                double perim = (th + Math.PI) * R * 1.05;                                   // ~ distance round the edge
-                double fr = perim / 9.0 - Math.Floor(perim / 9.0);
-                double hole = (Math.Abs(inside - 8.0) < 1.4 && Math.Abs(fr - 0.5) < 0.14) ? 1 : 0;   // stitch holes
-                h -= hole * 2.0;
+                Cell(x / 2.6 + Fbm(x / 30.0, y / 30.0, 2, 403), y / 2.6, 404, out f1, out f2);
+                double grain = Clamp(1 - (f2 - f1) / 0.16, 0, 1);                            // fine grain lines
+                h -= grain * 0.22;
+                double pore = Hash(x, y, 420) < 0.005 ? 0.6 + 0.4 * Hash(x, y, 422) : 0;                               // pores
+                h -= pore * 0.3;
+                double scar = 0;
+                for (int i = 0; i < nScr; i++)
+                {
+                    double d = SegDist(x, y, scr[i * 4], scr[i * 4 + 1], scr[i * 4 + 2], scr[i * 4 + 3]);
+                    scar = Math.Max(scar, Clamp(1 - d / 1.4, 0, 1) * (0.5 + 0.5 * Value(x / 6.0, y / 6.0, 421 + i)));
+                }
+                h -= scar * 0.35;
+                h += Clamp(1 - inside / 14.0, 0, 1) * (0.6 + 1.6 * Fbm(x / 25.0, y / 25.0, 2, 414));   // the edge lifts here and there
                 hgt[x, y] = h;
 
-                // ---- colour: saddle brown, mottled, burnished darker at the edges and in the tooling
-                double m = Fbm(x / 80.0, y / 80.0, 4, 410);
-                double r = 0.50 + (m - 0.5) * 0.16, g = 0.31 + (m - 0.5) * 0.11, b = 0.17 + (m - 0.5) * 0.06;
-                double worn = Clamp((Fbm(x / 50.0, y / 50.0, 3, 411) - 0.58) * 3, 0, 1) * 0.25;   // rubbed paler
-                r += (0.68 - r) * worn; g += (0.48 - g) * worn; b += (0.30 - b) * worn;
-                double dk = crease * 0.10 + groove * 0.38 + groove2 * 0.20;
-                double edge = Clamp(1 - inside / 12.0, 0, 1);
-                dk = Math.Max(dk, edge * 0.50);
-                r *= 1 - dk; g *= 1 - dk * 1.08; b *= 1 - dk * 1.12;
-                if (hole > 0) { r *= 0.30; g *= 0.25; b *= 0.22; }
+                // ---- colour: tan, darker down the spine, paler belly, mottled, darker in the folds
+                double m = Fbm(x / 70.0, y / 70.0, 4, 410);
+                double r = 0.78 + (m - 0.5) * 0.10, g = 0.60 + (m - 0.5) * 0.08, b = 0.41 + (m - 0.5) * 0.06;
+                double spineY = H * 0.47 + (Fbm(x / 160.0, 0.5, 2, 412) - 0.5) * H * 0.10;
+                double spine = Math.Exp(-Math.Pow((y - spineY) / (H * 0.17), 2));
+                r -= spine * 0.07; g -= spine * 0.075; b -= spine * 0.06;
+                double belly = Clamp(1 - inside / (R * 0.45), 0, 1);
+                r += belly * 0.035; g += belly * 0.035; b += belly * 0.03;
+                double blot = Clamp((Fbm(x / 45.0, y / 45.0, 3, 411) - 0.62) * 3.0, 0, 1) * 0.06;   // uneven tanning
+                r -= blot; g -= blot * 1.1; b -= blot * 1.1;
+                double dk = pore * 0.07 + grain * 0.02 + scar * 0.05 + crease * 0.05;
+                r *= 1 - dk; g *= 1 - dk * 1.05; b *= 1 - dk * 1.1;
+                // the cut edge: the paler, fibrous flesh side shows in a thin band, darkened by handling
+                if (inside < 3.0)
+                {
+                    double k = Clamp(1 - inside / 3.0, 0, 1) * (0.6 + 0.4 * fz);
+                    r += (0.82 - r) * k * 0.35; g += (0.69 - g) * k * 0.35; b += (0.52 - b) * k * 0.35;
+                }
+                else if (inside < 10.0)
+                {
+                    double k = Clamp(1 - (inside - 3.0) / (2.0 + 5.0 * fz), 0, 1);
+                    r *= 1 - 0.12 * k; g *= 1 - 0.14 * k; b *= 1 - 0.16 * k;
+                }
                 col[x, y, 0] = r; col[x, y, 1] = g; col[x, y, 2] = b;
             }
 
@@ -460,8 +535,8 @@ public static class TexGen
                 double nX = -gx, nY = -gy, nZ = 1;
                 double nl = Math.Sqrt(nX * nX + nY * nY + nZ * nZ); nX /= nl; nY /= nl; nZ /= nl;
                 double diff = Clamp(nX * lx + nY * ly + nZ * lz, 0, 1);
-                double sheen = Math.Pow(diff, 12) * 0.10;                                   // waxed
-                double tone = 0.46 + 0.64 * diff;
+                double sheen = Math.Pow(diff, 8) * 0.04;                                    // soft, nearly matte
+                double tone = 0.58 + 0.50 * diff;
                 for (int c = 0; c < 3; c++) img[x, y, c] = col[x, y, c] * tone + sheen;
                 img[x, y, 3] = alpha[x, y];
             }
@@ -571,6 +646,77 @@ public static class TexGen
                 if (r > 1.0) a = 0;
                 img[x, y, 0] = 1; img[x, y, 1] = 1; img[x, y, 2] = 1; img[x, y, 3] = a;
             }
+        Save(img, tga, png);
+    }
+
+    // ---------------------------------------------------------------- ink blots
+    // Drops of ink shaken off a quill and soaked into the material ("Blotted scrawl"): a 2x2 atlas of
+    // blots, white (the addon tints them with the ink). Each: an irregular body that's never round, darkest
+    // in the middle where the drop landed and thinning towards its edge, then bled out into the cloth along
+    // a ragged front (furthest along the threads it wicks into), and a few satellite specks. Cells: 0 big blot, 1 smaller blot, 2 splash with specks,
+    // 3 teardrop (a drop that landed at an angle).
+    public static void InkBlots(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        int W = size, H = size, C = size / 2;
+        var img = new double[W, H, 4];
+        var rnd = new Random(seed);
+        for (int cell = 0; cell < 4; cell++)
+        {
+            int ox = (cell % 2) * C, oy = (cell / 2) * C;
+            double cx = C * 0.5, cy = C * 0.5;
+            double R = C * (cell == 1 ? 0.24 : cell == 2 ? 0.22 : 0.27);
+            double stretch = cell == 3 ? 1.55 : 1.0 + rnd.NextDouble() * 0.15;     // teardrop: drawn out
+            double ang = rnd.NextDouble() * Math.PI;
+            double ca = Math.Cos(ang), sa = Math.Sin(ang);
+            // satellite specks
+            int nSp = cell == 2 ? 7 : 2 + rnd.Next(3);
+            var sp = new double[nSp * 3];
+            for (int i = 0; i < nSp; i++)
+            {
+                double a = rnd.NextDouble() * 2 * Math.PI, d = R * (1.35 + rnd.NextDouble() * (cell == 2 ? 1.2 : 0.6));
+                sp[i * 3] = cx + Math.Cos(a) * d; sp[i * 3 + 1] = cy + Math.Sin(a) * d;
+                sp[i * 3 + 2] = R * (0.07 + rnd.NextDouble() * (cell == 2 ? 0.16 : 0.10));
+            }
+            int s = 900 + cell * 31;
+            for (int y = 0; y < C; y++)
+                for (int x = 0; x < C; x++)
+                {
+                    double dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+                    double u = dx * ca + dy * sa, v = -dx * sa + dy * ca;
+                    if (cell == 3 && u > 0) u /= stretch; else if (cell != 3) u /= stretch;
+                    if (cell == 3 && u < 0) u *= 1.15;                                    // the round head of the drop
+                    double th = Math.Atan2(v, u), r = Math.Sqrt(u * u + v * v);
+                    double ct = Math.Cos(th), st = Math.Sin(th);
+                    double rim = R * (1 + (Fbm(ct * 1.6 + cell * 7, st * 1.6 + cell * 3, 3, s) - 0.5) * 0.55
+                                        + (Fbm(ct * 5 + cell, st * 5, 2, s + 1) - 0.5) * 0.18);
+                    // fibres: the ink wicks out along a few threads, thin and fading
+                    double wick = Math.Pow(Clamp(Value(th * 7.0 / Math.PI + cell * 13, 0.5, s + 2) * 1.35 - 0.35, 0, 1), 3) * R * 0.55;
+                    // the core: darkest in the middle where the drop landed, thinning towards its edge
+                    double tc = Clamp(r / Math.Max(1, rim), 0, 1);
+                    double soak = 0.94 + 0.06 * Fbm(x / 7.0 + cell * 5, y / 7.0, 3, s + 3);
+                    double a = r <= rim ? (1 - 0.45 * Math.Pow(tc, 1.8)) * soak : 0;
+                    // the bleed: the cloth drinks the ink out past the edge, fading to nothing along a ragged
+                    // front, furthest along the threads it wicks into
+                    double spread = R * 0.45 * (0.55 + 0.9 * Fbm(ct * 6 + cell * 3, st * 6 + cell, 3, s + 6)) + wick * 1.6;
+                    if (r > rim && r < rim + spread)
+                    {
+                        double k = 1 - (r - rim) / spread;
+                        double fibre = 0.7 + 0.3 * Value(x * 0.8, y * 0.8, s + 4);
+                        a = 0.55 * Math.Pow(k, 1.6) * fibre;
+                    }
+                    for (int i = 0; i < nSp; i++)
+                    {
+                        double ex = x + 0.5 - sp[i * 3], ey = y + 0.5 - sp[i * 3 + 1];
+                        double rr = sp[i * 3 + 2] * (1 + (Value(Math.Atan2(ey, ex) * 2 + i, 0.5, s + 5) - 0.5) * 0.6);
+                        double sd = Math.Sqrt(ex * ex + ey * ey);
+                        // a speck: dark at its heart, bleeding out a little way
+                        a = Math.Max(a, Clamp(1 - sd / (rr * 1.6), 0, 1) * (sd < rr ? 0.95 : 0.6));
+                    }
+                    img[ox + x, oy + y, 0] = 1; img[ox + x, oy + y, 1] = 1; img[ox + x, oy + y, 2] = 1;
+                    img[ox + x, oy + y, 3] = Clamp(a, 0, 1);
+                }
+        }
         Save(img, tga, png);
     }
 

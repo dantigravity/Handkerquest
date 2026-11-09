@@ -2,7 +2,7 @@
 -- Handkerquest.lua - WoW Forever Edition
 -- "Don't go off on an adventure without your handkerchief." (the name: handkerchief + quest)
 -- Objective Tracker sorting, filters & (?)/(•••) quest stacks, plus the Field Tally:
--- a handwritten list (on a torn rag, leather, slate, bark, a pipe-weed leaf, glowing arcane script and
+-- a handwritten list (on a torn rag, soft hide, slate, bark, a pipe-weed leaf, glowing arcane script and
 -- more) of the quest items still to gather and the tasks still to do, with a map preview on hover and
 -- minimap pins.
 --
@@ -15,7 +15,8 @@
 --   Tally colours, borders and each look ................ P.STYLES
 --   Paper / rag / stone / bark / leaf / leather / arcane  textures\ (made by tools\TexGen.cs)
 --   Items / tasks toggles beside the tally's gear ....... P.QUICK_GLYPHS, P.QUICK_SIZE
---   Handwriting fonts and their sizes ................... P.FONT_STYLES
+--   Handwriting fonts and their sizes ................... P.FONT_STYLES (text size slider: P.TEXT_SCALE_MIN/MAX)
+--   Ink drops of "Blotted scrawl" ........................ P.SetInkDrops, textures\ink_blots
 --   Gap between the tally and the chat box .............. P.PILE_MARGIN_X / P.PILE_MARGIN_Y
 --   How many rows / pages the tally shows ............... MAX_SHOPPING_ROWS, P.MAX_AREAS
 --   "Hunting grounds" distances (glow) .................. P.HUNT_SPOT_RADIUS, P.HUNT_POI_RADIUS
@@ -28,7 +29,7 @@
 -- EDIT: names and labels shown on the filter buttons and menu headers
 local CONFIG = {
     ADDON_NAME          = "Handkerquest",
-    VERSION             = "2.2.0",
+    VERSION             = "2.3.0",
     REWARD_BTN_ALL      = "Rewards: All",
     LEVEL_BTN_ALL       = "Levels: All",
     TRACKER_BTN_ALL     = "Filter: All",
@@ -71,7 +72,8 @@ local CFQ = {
     learnedDroppers = {},               -- ["npc:ID"] = { label = name, loots = n, tries = {}, [progKey] = times the item dropped }
     pageRadiusPercent = 16,             -- own page radius (% of the zone map) when not following the tracker
     nearRadiusPercent = 10,             -- "Near me" page: how close (% of the zone map) the items must be
-    pageGrouping = "AREA",              -- area pages by "AREA" (map areas), "ZONE" or "RADIUS" (distance)
+    tallyTextScale = 100,               -- the tally's writing size, % of the usual (options slider, 80-150)
+    pageGrouping = "AREA",              -- other pages by "AREA" (map areas), "ZONE" or "RADIUS" (clusters)
     learnedQuestAreas = {},             -- [questID] = "Subzone name" where the quest's objectives were last worked
     stackHiddenRegistry = setmetatable({}, { __mode = "k" }), -- every native tracker frame we have hidden
     reportedErrors = {},
@@ -369,6 +371,7 @@ local function SaveState()
     QRF_SavedState.parchmentFont = CFQ.parchmentFont
     QRF_SavedState.pageRadiusPercent = CFQ.pageRadiusPercent
     QRF_SavedState.nearRadiusPercent = CFQ.nearRadiusPercent
+    QRF_SavedState.tallyTextScale = CFQ.tallyTextScale
     QRF_SavedState.pageGrouping = CFQ.pageGrouping
     QRF_SavedState.tallySort = nil          -- line-order setting from a v2.2 preview build: no longer used
     QRF_SavedState.shoppingListCfg = shoppingListCfg
@@ -421,6 +424,9 @@ local function LoadState()
         if type(QRF_SavedState.parchmentFont) == "string" then CFQ.parchmentFont = QRF_SavedState.parchmentFont end
         if QRF_SavedState.pageGrouping == "AREA" or QRF_SavedState.pageGrouping == "ZONE" or QRF_SavedState.pageGrouping == "RADIUS" then
             CFQ.pageGrouping = QRF_SavedState.pageGrouping
+        end
+        if type(QRF_SavedState.tallyTextScale) == "number" then
+            CFQ.tallyTextScale = math.max(80, math.min(150, math.floor(QRF_SavedState.tallyTextScale + 0.5)))   -- P.TEXT_SCALE_MIN/MAX
         end
         if type(QRF_SavedState.nearRadiusPercent) == "number" then
             CFQ.nearRadiusPercent = math.max(1, math.min(50, math.floor(QRF_SavedState.nearRadiusPercent + 0.5)))
@@ -810,6 +816,37 @@ local function ActivateQuestTarget(questID)
     SaveState()
 end
 
+-- The quest's objective area as the world map would place it (C_QuestLog.GetQuestsOnMap), on the map
+-- you're on or one of its parents (Northshire -> Elwynn Forest), so a new character needn't open the
+-- map first. Each map's list is read once a second at most.
+CFQ.mapQuestCache = {}
+function CFQ.QuestPosNearPlayer(questID)
+    if not (C_Map and C_Map.GetBestMapForUnit and C_QuestLog and C_QuestLog.GetQuestsOnMap) then return nil end
+    local mapID = C_Map.GetBestMapForUnit("player")
+    local now = GetTime()
+    for _ = 1, 3 do
+        if not mapID or mapID == 0 then break end
+        local c = CFQ.mapQuestCache[mapID]
+        if not c or now - c.t > 1 then
+            c = { t = now, pos = {} }
+            local ok, list = pcall(C_QuestLog.GetQuestsOnMap, mapID)
+            if ok and type(list) == "table" then
+                for _, info in ipairs(list) do
+                    if info.questID and info.x and info.y and (info.x > 0 or info.y > 0) then
+                        c.pos[info.questID] = { info.x, info.y }
+                    end
+                end
+            end
+            CFQ.mapQuestCache[mapID] = c
+        end
+        local p = c.pos[questID]
+        if p then return mapID, p[1], p[2] end
+        local okI, info = pcall(C_Map.GetMapInfo, mapID)
+        mapID = okI and info and info.parentMapID or nil
+    end
+    return nil
+end
+
 local function QueryQuestCoordinates(questID)
     if not questID then return nil, nil, nil end
 
@@ -819,6 +856,14 @@ local function QueryQuestCoordinates(questID)
     if C_QuestLog and C_QuestLog.GetNextWaypoint then
         local ok, mapID, x, y = pcall(C_QuestLog.GetNextWaypoint, questID)
         if ok and mapID and x and y and (x > 0 or y > 0) then
+            cachedQuestCoords[questID] = { mapID = mapID, x = x, y = y }
+            return mapID, x, y
+        end
+    end
+
+    do
+        local mapID, x, y = CFQ.QuestPosNearPlayer(questID)
+        if mapID then
             cachedQuestCoords[questID] = { mapID = mapID, x = x, y = y }
             return mapID, x, y
         end
@@ -2234,7 +2279,10 @@ P.FONT_STYLES = {
     { key = "SCRAWL", label = "Rough scrawl", path = "Fonts\\SKURRI.TTF",   item = 12, title = 14, small = 10 },   -- also carved bark's letters
     { key = "PLAIN",  label = "Plain print",  path = nil,                   item = 11, title = 12, small = 9 },
     -- a rough hand with drops of ink shaken off the quill here and there (P.SetInkDrops)
-    { key = "BLOTTED", label = "Blotted scrawl", path = "Fonts\\SKURRI.TTF", item = 12, title = 14, small = 10, drops = true },
+    -- bold = a second pass of the quill (px to the right), so the letters read as soaked-in ink, not hairlines;
+    -- haloScale = wet ink spreads less round them (a tight bleed, not a blur)
+    { key = "BLOTTED", label = "Blotted scrawl", path = "Fonts\\SKURRI.TTF", item = 12, title = 14, small = 10, drops = true,
+      bold = 0.8, haloScale = 0.55 },
 }
 
 -- The handwriting actually used: some looks bring their own lettering (style.font)
@@ -2262,15 +2310,25 @@ function P.CycleFontStyle()
     CFQ.parchmentFont = P.FONT_STYLES[(idx % #P.FONT_STYLES) + 1].key
 end
 
+-- Text size (options slider, % of the usual): the list's lines and notes. The heading grows by half
+-- as much so it keeps clear of its underline.
+P.TEXT_SCALE_MIN, P.TEXT_SCALE_MAX = 80, 150
+function P.TextScale(kind)
+    local pct = CFQ.tallyTextScale or 100
+    if kind == "title" then pct = 100 + (pct - 100) * 0.5 end
+    return math.floor(pct + 0.5) / 100
+end
+
 -- Applies the chosen handwriting face; falls back to the standard UI font if the client can't load it
 function P.SetInkFont(fs, kind, flags)
     local look = P.GetStyle()
     local st = P.EffectiveFont()
-    local cacheKey = st.key .. ":" .. look.key
+    local scale = P.TextScale(kind)
+    local cacheKey = st.key .. ":" .. look.key .. ":" .. scale
     if fs.inkKey == cacheKey and fs.inkKind == kind then return end
-    local ok = st.path and fs:SetFont(st.path, st[kind] or st.item, flags or "")
+    local ok = st.path and fs:SetFont(st.path, math.floor((st[kind] or st.item) * scale + 0.5), flags or "")
     if not st.path or ok == false then
-        fs:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", P.FONT_STYLES[3][kind] or 11, flags or "")   -- [3] = Plain print
+        fs:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", math.floor((P.FONT_STYLES[3][kind] or 11) * scale + 0.5), flags or "")   -- [3] = Plain print
     end
     if fs.SetShadowColor then
         local sh = look.inkShadow
@@ -2295,7 +2353,56 @@ function P.PlainText(s)
     return (string.gsub(string.gsub(s or "", "|c%x%x%x%x%x%x%x%x", ""), "|r", ""))
 end
 
+-- Places a copy of a font string (bold pass, wet ink) dx, dy off it, wrapping or cutting off exactly
+-- like it: a one-line heading's copies span the same box (so they end in the same "..." instead of
+-- wrapping a word onto a second line), a list line's copies get its width and wrap setting
+function P.MatchCopy(c, fs, dx, dy)
+    c:ClearAllPoints()
+    c:SetPoint("TOPLEFT", fs, "TOPLEFT", dx, dy)
+    if fs.singleLine then
+        c:SetPoint("TOPRIGHT", fs, "TOPRIGHT", dx, dy)
+        c:SetWordWrap(false)
+        if c.SetMaxLines then c:SetMaxLines(1) end
+        return
+    end
+    local w = fs:GetWidth()
+    if w and w > 0 then c:SetWidth(w) end
+    local wrap = true
+    if fs.GetWordWrap then
+        local ok, v = pcall(fs.GetWordWrap, fs)
+        if ok and v ~= nil then wrap = v end
+    end
+    c:SetWordWrap(wrap)
+end
+
+-- A second pass of the quill a fraction of a pixel to the right, for faces with style.bold: thicker
+-- strokes in the same colours (colour codes kept), drawn with the words
+function P.SetBold(fs, text, color)
+    local b = P.EffectiveFont().bold
+    if not b or not text or text == "" then
+        if fs.boldCopy then fs.boldCopy:Hide() end
+        return
+    end
+    local c = fs.boldCopy
+    if not c then
+        local layer, sub = fs:GetDrawLayer()
+        c = fs:GetParent():CreateFontString(nil, layer or "ARTWORK", nil, sub or 0)
+        c:SetJustifyH("LEFT")
+        c:SetJustifyV("TOP")
+        fs.boldCopy = c
+    end
+    local path, size, flags = fs:GetFont()
+    c:SetFont(path or STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", size or 12, flags or "")
+    if c.SetShadowColor then c:SetShadowColor(0, 0, 0, 0) end
+    P.MatchCopy(c, fs, b, 0)
+    local col = color or P.INK
+    c:SetTextColor(col[1], col[2], col[3], 1)
+    c:SetText(text)
+    c:Show()
+end
+
 function P.SetHalo(fs, text, color)
+    P.SetBold(fs, text, color)
     local hl = P.GetStyle().halo
     if not hl or not text or text == "" then
         if fs.halo then for _, c in ipairs(fs.halo) do c:Hide() end end
@@ -2313,21 +2420,12 @@ function P.SetHalo(fs, text, color)
     end
     local path, size, flags = fs:GetFont()
     local plain = P.PlainText(text)
-    local w = fs:GetWidth()
-    local wrap = true
-    if fs.GetWordWrap then
-        local ok, v = pcall(fs.GetWordWrap, fs)
-        if ok and v ~= nil then wrap = v end
-    end
     local col = hl.color or color or P.INK
-    local r = hl.radius or 0.8
+    local r = (hl.radius or 0.8) * (hl.color and 1 or (P.EffectiveFont().haloScale or 1))
     for k, c in ipairs(fs.halo) do
         c:SetFont(path or STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", size or 12, flags or "")
         if c.SetShadowColor then c:SetShadowColor(0, 0, 0, 0) end
-        c:ClearAllPoints()
-        c:SetPoint("TOPLEFT", fs, "TOPLEFT", P.HALO_OFFS[k][1] * r, P.HALO_OFFS[k][2] * r)
-        if w and w > 0 then c:SetWidth(w) end
-        c:SetWordWrap(wrap)
+        P.MatchCopy(c, fs, P.HALO_OFFS[k][1] * r, P.HALO_OFFS[k][2] * r)
         c:SetText(plain)
         c:SetTextColor(col[1], col[2], col[3], hl.alpha or 0.2)
         c.haloCol = col
@@ -2337,7 +2435,12 @@ end
 
 -- "Blotted scrawl": drops of ink shaken off the quill, placed by a hash of the line so they stay put.
 -- d = { key, lastW (width of the last line), textH, lines, textW, ink }; nil = no drops on this row.
-P.DROP_MAX = 5
+P.DROP_MAX = 8
+-- 2x2 atlas of soaked-in blots (tools/TexGen.cs InkBlots): dark where the drop landed, fading out along a
+-- ragged front as the material drinks it. 1 big blot, 2 smaller blot, 3 splash with
+-- specks, 4 teardrop. Each blot fills about half its cell, so a texture is drawn twice the blot's size.
+P.INK_BLOTS_TEX = "Interface\\AddOns\\Handkerquest\\textures\\ink_blots"
+P.BLOT_CELLS = { { 0, 0.5, 0, 0.5 }, { 0.5, 1, 0, 0.5 }, { 0, 0.5, 0.5, 1 }, { 0.5, 1, 0.5, 1 } }
 function P.StrHash(s)
     local h = 7
     for i = 1, string.len(s) do h = (h * 31 + string.byte(s, i)) % 1000003 end
@@ -2354,7 +2457,7 @@ function P.SetInkDrops(row, d)
         drops = {}
         for k = 1, P.DROP_MAX do
             local t = row:CreateTexture(nil, "ARTWORK", nil, 5)
-            t:SetTexture(CIRCLE_MASK_TEX)
+            t:SetTexture(P.INK_BLOTS_TEX)
             t:Hide()
             drops[k] = t
         end
@@ -2364,36 +2467,49 @@ function P.SetInkDrops(row, d)
     local used = 0
     local lineH = d.textH / math.max(1, d.lines)
     local ink = d.ink
-    local function Drop(x, y, size, a)
+    -- size = the blot itself; cell = which blot in the atlas, mirrored either way so no two repeat
+    local function Drop(x, y, size, a, cell)
         if used >= P.DROP_MAX then return end
         used = used + 1
         local t = drops[used]
-        local squash = 0.78 + 0.34 * P.Hash01(h, used, 5)          -- never quite round
+        local tc = P.BLOT_CELLS[cell]
+        local l, r, tp, bt = tc[1], tc[2], tc[3], tc[4]
+        if P.Hash01(h, used, 11) < 0.5 then l, r = r, l end
+        if P.Hash01(h, used, 12) < 0.5 then tp, bt = bt, tp end
+        local squash = 0.85 + 0.25 * P.Hash01(h, used, 5)
+        t:SetTexture(P.INK_BLOTS_TEX)
+        t:SetTexCoord(l, r, tp, bt)
         t:ClearAllPoints()
-        t:SetSize(size, size * squash)
+        t:SetSize(size * 2, size * 2 * squash)
         t:SetPoint("CENTER", row.itemText, "TOPLEFT", x, y)
         t:SetVertexColor(ink[1], ink[2], ink[3], a)
         t:Show()
     end
-    local function Splash(x, y, size, salt)
-        Drop(x, y, size, 0.92)
-        local n = 1 + math.floor(P.Hash01(h, salt, 6) * 2.99)       -- one to three specks flicked off it
-        for k = 1, n do
-            local ang = P.Hash01(h, k + salt, 7) * 2 * math.pi
-            local dist = size * 0.7 + 2 + P.Hash01(h, k + salt, 8) * 4
-            Drop(x + math.cos(ang) * dist, y + math.sin(ang) * dist, 1.0 + P.Hash01(h, k + salt, 9) * 1.1, 0.85)
-        end
+    local function OnLine(salt)                                       -- a written line and how long it is
+        local li = 1 + math.floor(P.Hash01(h, salt, 31) * d.lines * 0.999)
+        return li, (li == d.lines) and d.lastW or d.textW
     end
-    -- about half the lines: the quill lifted after the last word and let a drop go
-    if P.Hash01(h, 1, 1) < 0.5 then
-        Splash(math.min(d.textW + 6, d.lastW + 6 + P.Hash01(h, 2, 1) * 8),
-            -(d.textH - lineH * 0.5) + (P.Hash01(h, 7, 1) - 0.5) * lineH * 0.8,      -- anywhere from mid-line to just under it
-            3.0 + P.Hash01(h, 3, 1) * 2.4, 10)
+    -- every line: tiny spatters round the stroke, flicked off as the nib scraped across the grain
+    local nSp = 2 + math.floor(P.Hash01(h, 30, 1) * 3.99)             -- two to five
+    for k = 1, nSp do
+        local li, w = OnLine(k)
+        Drop(2 + P.Hash01(h, k, 32) * math.max(6, w - 2),
+            -(li - 0.5) * lineH + (P.Hash01(h, k, 33) - 0.5) * lineH * 1.1,
+            0.9 + P.Hash01(h, k, 34) * 1.1, 0.85, 2)
     end
-    -- one line in five: a drip fallen under the words
-    if P.Hash01(h, 4, 1) < 0.2 then
-        Splash(4 + P.Hash01(h, 5, 1) * math.max(10, math.min(d.lastW, d.textW) - 8), -(lineH + 1),
-            2.4 + P.Hash01(h, 6, 1) * 1.8, 20)
+    -- one line in five: the quill rested on the surface a moment, a bigger blot on the stroke (just
+    -- under the letters' middle, so the word stays readable)
+    if P.Hash01(h, 1, 1) < 0.2 then
+        local li, w = OnLine(40)
+        Drop(math.max(4, (0.15 + 0.85 * P.Hash01(h, 41, 1)) * w),
+            -(li - 0.5) * lineH + lineH * 0.35,
+            4.0 + P.Hash01(h, 42, 1) * 2.5, 0.95, (P.Hash01(h, 43, 1) < 0.6) and 1 or 4)
+    end
+    -- rarely: the quill lifted after the last word and let a proper splash go
+    if P.Hash01(h, 4, 1) < 0.08 then
+        Drop(math.min(d.textW + 6, d.lastW + 8 + P.Hash01(h, 2, 1) * 6),
+            -(d.textH - lineH * 0.5) + (P.Hash01(h, 7, 1) - 0.5) * lineH * 0.6,
+            5.5 + P.Hash01(h, 3, 1) * 2.0, 1.0, 3)
     end
     for k = used + 1, P.DROP_MAX do drops[k]:Hide() end
 end
@@ -2563,39 +2679,41 @@ P.STYLES = {
         -- the leaves underneath fan out from the shared stem (pivot = x fraction of the width from the
         -- middle) instead of lying flipped: angles in radians, tips swung upward; flips = 0 none, 2 upside down
         fan = { pivot = -0.47, angles = { 0.17, 0.34, 0.51 }, flips = { 2, 0, 2 } },
-        ink = { 0.19, 0.10, 0.04 }, inkRed = { 0.50, 0.10, 0.05 }, inkGreen = { 0.16, 0.30, 0.08 },
-        title = { 0.19, 0.10, 0.04 }, faded = { 0.45, 0.33, 0.20 }, footer = { 0.32, 0.20, 0.09 },
-        sub = { 0.40, 0.26, 0.12 }, close = { 0.30, 0.17, 0.07 }, gear = { 0.30, 0.17, 0.07 },
+        -- near-black oak-gall ink: brown ink vanished into the brown curing spots
+        ink = { 0.05, 0.05, 0.03 }, inkRed = { 0.46, 0.04, 0.02 }, inkGreen = { 0.06, 0.20, 0.04 },
+        title = { 0.04, 0.04, 0.02 }, faded = { 0.27, 0.20, 0.11 }, footer = { 0.12, 0.09, 0.04 },
+        sub = { 0.20, 0.14, 0.06 }, close = { 0.12, 0.09, 0.04 }, gear = { 0.12, 0.09, 0.04 },
         wash = { 0.45, 0.30, 0.10, 0.06 }, washFlash = { 0.95, 0.72, 0.20, 0.45 },
         divider = { 0.35, 0.22, 0.08, 0.14 }, highlight = { 0.40, 0.25, 0.05, 0.10 },
         grip = { 0.40, 0.26, 0.12, 0.85 }, pad = 8,
         inset = { 0.148, 0.203, 0.273, 0.156 },  -- inside the blade, clear of the tapering tip
+        foldAtEdge = true,                       -- its long edge runs along the fold: dog-ear on the leaf's corner
         halo = { alpha = 0.14, radius = 0.7 }, bleedWidth = 1.8, bleedAlpha = 0.30,   -- ink creeping along the leaf's fibres
         corner = { u1 = { 0.42, 0.28, 0.12 }, u2 = { 0.70, 0.52, 0.28 }, tip = { 0.86, 0.68, 0.40 },
                    crease = { 0.62, 0.44, 0.22 }, edge = { 0.35, 0.22, 0.08, 0.70 }, cut = { 0.45, 0.30, 0.12, 0.60 },
                    shadow = { 0.10, 0.06, 0.02 } },
     },
     {
-        -- a piece of saddle-brown hide: pebbled grain, a tooled border with stitch holes, burnished edges.
-        -- The list is pressed in: dark letters with a pale lip below-right where the leather catches the light.
+        -- a rough-cut piece of supple tan leather, the garment kind: hide-shaped (leg lobes, knife-cut edges),
+        -- soft drape folds, fine grain. The list is pressed in: dark letters with a pale lip below-right.
         key = "LEATHER", label = "Etched leather",
         image = "Interface\\AddOns\\Handkerquest\\textures\\etched_leather",
         paper = { 1, 1, 1, 1 }, depth = 1,
-        back = { { 0.90, 0.86, 0.82, 1 }, { 0.80, 0.75, 0.70, 1 }, { 0.70, 0.65, 0.60, 1 } },
-        imageCorner = { 0.109, 0.109 },
-        shadowAlpha = 0.40, pile = true,
-        inkShadow = { 0.88, 0.68, 0.46, 0.50, 1, -1 },  -- the lit lower-right wall of each pressed letter
-        bleed = { 0.88, 0.68, 0.46, 0.34 },
-        ink = { 0.13, 0.06, 0.03 }, inkRed = { 0.42, 0.07, 0.04 }, inkGreen = { 0.15, 0.26, 0.10 },
-        title = { 0.18, 0.09, 0.04 }, faded = { 0.36, 0.22, 0.12 }, footer = { 0.26, 0.14, 0.07 },
-        sub = { 0.34, 0.20, 0.10 }, close = { 0.24, 0.12, 0.06 }, gear = { 0.24, 0.12, 0.06 },
-        wash = { 0.20, 0.10, 0.05, 0.08 }, washFlash = { 0.95, 0.72, 0.20, 0.40 },
-        divider = { 0.20, 0.10, 0.04, 0.16 }, highlight = { 0.95, 0.75, 0.45, 0.08 },
-        grip = { 0.24, 0.12, 0.06, 0.85 }, pad = 8,
-        inset = { 0.102, 0.117, 0.117, 0.125 },  -- inside the tooled border
-        corner = { u1 = { 0.30, 0.17, 0.08 }, u2 = { 0.48, 0.30, 0.16 }, tip = { 0.62, 0.42, 0.24 },
-                   crease = { 0.40, 0.24, 0.12 }, edge = { 0.20, 0.10, 0.04, 0.75 }, cut = { 0.30, 0.16, 0.08, 0.65 },
-                   shadow = { 0.06, 0.03, 0.01 } },
+        back = { { 0.92, 0.88, 0.84, 1 }, { 0.83, 0.78, 0.73, 1 }, { 0.74, 0.69, 0.64, 1 } },
+        imageCorner = { 0.133, 0.133 },
+        shadowAlpha = 0.35, pile = true,
+        inkShadow = { 0.96, 0.84, 0.66, 0.45, 1, -1 },  -- the lit lower-right wall of each pressed letter
+        bleed = { 0.96, 0.84, 0.66, 0.30 },
+        ink = { 0.17, 0.09, 0.04 }, inkRed = { 0.46, 0.09, 0.05 }, inkGreen = { 0.17, 0.28, 0.11 },
+        title = { 0.21, 0.11, 0.05 }, faded = { 0.44, 0.31, 0.19 }, footer = { 0.30, 0.18, 0.09 },
+        sub = { 0.38, 0.24, 0.13 }, close = { 0.28, 0.16, 0.08 }, gear = { 0.28, 0.16, 0.08 },
+        wash = { 0.30, 0.18, 0.08, 0.08 }, washFlash = { 0.95, 0.72, 0.20, 0.40 },
+        divider = { 0.30, 0.18, 0.08, 0.16 }, highlight = { 1.00, 0.86, 0.62, 0.10 },
+        grip = { 0.30, 0.18, 0.09, 0.85 }, pad = 8,
+        inset = { 0.078, 0.109, 0.109, 0.148 },  -- the largest rectangle on the hide ([TexGen]::SafeRect)
+        corner = { u1 = { 0.50, 0.36, 0.22 }, u2 = { 0.68, 0.52, 0.34 }, tip = { 0.80, 0.64, 0.44 },
+                   crease = { 0.58, 0.42, 0.26 }, edge = { 0.32, 0.20, 0.10, 0.70 }, cut = { 0.42, 0.28, 0.15, 0.60 },
+                   shadow = { 0.10, 0.06, 0.02 } },
     },
     {
         -- a mage's writing hanging in the air: words of violet-white light over a faint haze, a rune circle
@@ -2997,6 +3115,81 @@ function P.TexGradient(tex, r1, g1, b1, a1, r2, g2, b2, a2)
     end
 end
 
+-- One scanline of the fold (the page beneath, the flap, the crease); made when first needed, since a
+-- fold that reaches the image's corner can need more rows than the corner button is tall
+function P.CornerRow(c, j)
+    if not c.under[j] then
+        c.under[j] = c:CreateTexture(nil, "ARTWORK", nil, 1)
+        c.flap[j] = c:CreateTexture(nil, "ARTWORK", nil, 3)
+    end
+    c.crease = c.crease or {}
+    if not c.crease[j] then c.crease[j] = c:CreateTexture(nil, "ARTWORK", nil, 4) end
+    return c.under[j], c.flap[j], c.crease[j]
+end
+
+-- The fold on a texture look: an N-px square in the sheet's bottom-right corner (sheet pixels, from
+-- the top-left), folded on its diagonal. Each row: the uncovered part past the fold (the same
+-- material, in the flap's shadow), the flap (the corner mirrored across the fold, back side up) and a
+-- short crease at the fold. All three sample the image, so they only show where there is material.
+function P.DrawMaterialFold(c, sheet, pw, ph, N, lift, sqX, sqY)
+    local st = P.GetStyle()
+    local x0, y0 = sqX or (pw - N), sqY or (ph - N)      -- the square's top-left (default: in the image's corner)
+    local function TX(a) return (x0 + a) / pw end
+    local function TY(b) return (y0 + b) / ph end
+    local d = 0.60 - 0.08 * lift                         -- shadow right under the fold
+    local t, k = 1.04 - 0.05 * lift, 0.80 - 0.07 * lift  -- the flap: light at the tip, shaded at the crease
+    local cr = 0.42 - 0.06 * lift
+    for j = 1, N do
+        local under, flap, crease = P.CornerRow(c, j)
+        local vTop, vBot = j - 1, j
+        local cut = N - (j - 0.5)                        -- where the fold crosses this row
+        local uw = N - cut
+        local y = -(y0 + vTop)
+        under:ClearAllPoints()
+        under:SetPoint("TOPLEFT", sheet, "TOPLEFT", x0 + cut, y)
+        under:SetSize(math.max(0.5, uw), 1)
+        under:SetTexture(st.image)
+        under:SetTexCoord(TX(cut), TX(N), TY(vTop), TY(vBot))
+        -- the cast shadow fades out over ~18px, however long the row is
+        local far = d + (0.88 - d) * math.min(1, uw / 18)
+        P.TexGradient(under, d, d, d, 1, far, far, far, 1)
+        under:Show()
+        if cut > 0.4 then
+            flap:ClearAllPoints()
+            flap:SetPoint("TOPLEFT", sheet, "TOPLEFT", x0, y)
+            flap:SetSize(cut, 1)
+            flap:SetTexture(st.image)
+            -- what was at (N - v, N - u) now lies at (u, v): the corner mirrored across the fold
+            flap:SetTexCoord(
+                TX(N - vTop), TY(N),            -- top-left     <- (u = 0,   v = top)
+                TX(N - vBot), TY(N),            -- bottom-left  <- (u = 0,   v = bottom)
+                TX(N - vTop), TY(N - cut),      -- top-right    <- (u = cut, v = top)
+                TX(N - vBot), TY(N - cut))      -- bottom-right <- (u = cut, v = bottom)
+            -- light at the tip, shading into the crease over the last ~20px
+            local tipV = k + (t - k) * math.min(1, cut / 20)
+            P.TexGradient(flap, tipV, tipV, tipV * 0.98, 1, k, k, k * 0.97, 1)
+            flap:Show()
+        else
+            flap:Hide()
+        end
+        -- the crease: a dark line of the material itself, so it stops where the material does
+        local cw = 1.6 + 0.6 * lift
+        crease:ClearAllPoints()
+        crease:SetPoint("TOPLEFT", sheet, "TOPLEFT", x0 + cut - cw * 0.5, y)
+        crease:SetSize(cw, 1)
+        crease:SetTexture(st.image)
+        crease:SetTexCoord(TX(cut - cw * 0.5), TX(cut + cw * 0.5), TY(vTop), TY(vBot))
+        crease:SetVertexColor(cr, cr * 0.95, cr * 0.9, 1)
+        crease:Show()
+    end
+    for j = N + 1, #c.under do
+        c.under[j]:Hide(); c.flap[j]:Hide()
+        if c.crease[j] then c.crease[j]:Hide() end
+    end
+    -- the straight drawn edges and lines belong to the drawn looks; the material shows its own
+    c.flapTop:Hide(); c.flapLeft:Hide(); c.foldEdge:Hide(); c.foldShadow:Hide()
+end
+
 function P.DrawCorner(c)
     local S = math.max(2, math.min(P.CORNER_MAX, c.size or P.CORNER_REST))
     local st = P.GetStyle()
@@ -3017,7 +3210,8 @@ function P.DrawCorner(c)
     -- Rigid looks (stone, bark) can't fold: a dog-ear is chalked or carved onto the surface instead,
     -- drawn bigger on hover. foldShadow becomes the dust / the cut's shadow beside the diagonal.
     if st.rigid then
-        for j = 1, P.CORNER_MAX do c.under[j]:Hide(); c.flap[j]:Hide() end
+        for j = 1, #c.under do c.under[j]:Hide(); c.flap[j]:Hide() end
+        for j = 1, #(c.crease or {}) do c.crease[j]:Hide() end
         local e, sh = cs.edge, st.inkShadow
         local th = 1.4 + 0.4 * lift
         local function Mark(line, x0, y0, x1, y1)
@@ -3039,19 +3233,27 @@ function P.DrawCorner(c)
         return
     end
 
-    -- Texture looks: the fold shows the material itself. Square-local point (a, b) (a right, b down
-    -- from the active square's top-left) -> texture coords of the sheet underneath the button.
+    -- Texture looks: the fold runs right across the material, so everything past the fold line folds
+    -- over. The square reaches the image's own corner (not just the material's), which makes the flap's
+    -- outline the material's real edge (curved, lobed, torn) mirrored, and the uncovered part follow
+    -- that edge too: transparent texels stay transparent. Square-local point (a, b) (a right, b down
+    -- from the square's top-left) -> texture coords of the sheet. The fold is as far in from the
+    -- material's corner (P.PlaceCorner) as on other looks; the square just grows by that inset.
     local img = st.image and pw > 0 and ph > 0
-    local TX, TY
     if img then
-        local offX, offY = c.offX or 3, c.offY or -3     -- where P.PlaceCorner anchored the button
-        local sx = pw + offX - P.CORNER_MAX + ox        -- square's left edge, from the sheet's left
-        local sy = ph - offY - P.CORNER_MAX + ox        -- square's top edge, from the sheet's top
-        TX = function(a) return (sx + a) / pw end
-        TY = function(b) return (sy + b) / ph end
+        local offX, offY = c.offX or 0, c.offY or 0
+        if st.foldAtEdge then
+            -- an edge that runs along the fold (the leaf's long side) would fold over its whole length:
+            -- keep the square on the material's corner instead
+            P.DrawMaterialFold(c, parent, pw, ph, n, lift, pw + offX - n, ph - offY - n)
+        else
+            local N = math.max(n, math.floor(S + math.max(0, -offX) + math.max(0, offY) + 0.5))
+            P.DrawMaterialFold(c, parent, pw, ph, N, lift)
+        end
+        return
     end
 
-    for j = 1, P.CORNER_MAX do
+    for j = 1, #c.under do
         local under, flap = c.under[j], c.flap[j]
         if j <= n then
             local y = -(ox + j - 1)
@@ -3062,41 +3264,19 @@ function P.DrawCorner(c)
             under:ClearAllPoints()
             under:SetPoint("TOPLEFT", c, "TOPLEFT", ox + cut, y)
             under:SetSize(math.max(0.5, uw), 1)
-            if img then
-                -- the page beneath: the same material, in the shadow of the lifted flap
-                under:SetTexture(st.image)
-                under:SetTexCoord(TX(cut), TX(S), TY(vTop), TY(vBot))
-                local d = 0.62 - 0.08 * lift
-                P.TexGradient(under, d, d, d, 1, 0.86, 0.86, 0.86, 1)
-            else
-                -- the page beneath, darkened right under the fold where the flap shades it
-                under:SetTexCoord(0, 1, 0, 1)
-                P.HGradient(under, u1[1], u1[2], u1[3], 1, u2[1], u2[2], u2[3], 1)
-            end
+            -- the page beneath, darkened right under the fold where the flap shades it
+            under:SetTexCoord(0, 1, 0, 1)
+            P.HGradient(under, u1[1], u1[2], u1[3], 1, u2[1], u2[2], u2[3], 1)
             under:Show()
 
             if cut > 0.4 then
                 flap:ClearAllPoints()
                 flap:SetPoint("TOPLEFT", c, "TOPLEFT", ox, y)
                 flap:SetSize(cut, 1)
-                if img then
-                    -- the corner folded over: what was at (S - v, S - u) now lies at (u, v),
-                    -- i.e. the corner mirrored across the fold line, back side up
-                    flap:SetTexture(st.image)
-                    flap:SetTexCoord(
-                        TX(S - vTop), TY(S),            -- top-left     <- (u = 0,   v = top)
-                        TX(S - vBot), TY(S),            -- bottom-left  <- (u = 0,   v = bottom)
-                        TX(S - vTop), TY(S - cut),      -- top-right    <- (u = cut, v = top)
-                        TX(S - vBot), TY(S - cut))      -- bottom-right <- (u = cut, v = bottom)
-                    -- the back of the material catches the light at the tip and shades into the crease
-                    local t, k = 1.04 - 0.05 * lift, 0.80 - 0.07 * lift
-                    P.TexGradient(flap, t, t, t * 0.98, 1, k, k, k * 0.97, 1)
-                else
-                    flap:SetTexCoord(0, 1, 0, 1)
-                    -- underside of the parchment: lighter at the tip, shading into the crease
-                    P.HGradient(flap, tip[1] * tipK, tip[2] * tipK, tip[3] * tipK, 1,
-                        cr[1] - 0.08 * lift, cr[2] - 0.08 * lift, cr[3] - 0.06 * lift, 1)
-                end
+                flap:SetTexCoord(0, 1, 0, 1)
+                -- underside of the parchment: lighter at the tip, shading into the crease
+                P.HGradient(flap, tip[1] * tipK, tip[2] * tipK, tip[3] * tipK, 1,
+                    cr[1] - 0.08 * lift, cr[2] - 0.08 * lift, cr[3] - 0.06 * lift, 1)
                 flap:Show()
             else
                 flap:Hide()
@@ -3106,9 +3286,8 @@ function P.DrawCorner(c)
             flap:Hide()
         end
     end
-    -- texture looks: the material's own edge shows, so no drawn straight edges on the flap
-    c.flapTop:SetShown(not img)
-    c.flapLeft:SetShown(not img)
+    for j = 1, #(c.crease or {}) do c.crease[j]:Hide() end
+    c.flapTop:Show(); c.flapLeft:Show(); c.foldEdge:Show(); c.foldShadow:Show()
 
     -- crease, cast shadow and the flap's cut edges
     c.foldShadow:SetStartPoint("TOPLEFT", c, ox + S + 1.2, -ox - 1.2)
@@ -3757,6 +3936,8 @@ local function EnsureShoppingListFrame()
     titleFS:SetPoint("RIGHT", f.itemsBtn, "LEFT", -6, 0)
     titleFS:SetJustifyH("LEFT")
     titleFS:SetWordWrap(false)
+    if titleFS.SetMaxLines then titleFS:SetMaxLines(1) end
+    titleFS.singleLine = true          -- its bold pass / wet-ink copies cut off with it, never wrap under it
     titleFS:SetTextColor(P.INK[1], P.INK[2], P.INK[3], 1)
     f.titleFS = titleFS
     f.titleRule = P.NewStroke(chrome, "ARTWORK", 4)
@@ -3916,11 +4097,16 @@ function P.CollectQuests()
             table.insert(eligible, qData)
             local near, learnHere = false, false
 
-            -- 1) Distance from you to where the items are gathered (same map only)
-            local comparable = playerMapID and px and py and qData.mapID == playerMapID and qData.x and qData.y
+            -- 1) Distance from you to where the items are gathered (on your map; a quest placed on a
+            --    parent or child map, e.g. Elwynn Forest vs Northshire, is translated onto yours)
+            local qx, qy = qData.x, qData.y
+            if playerMapID and qData.mapID and qx and qy and qData.mapID ~= playerMapID then
+                qx, qy = P.TranslatePos(qData.mapID, qx, qy, playerMapID)
+            end
+            local comparable = playerMapID and px and py and qData.mapID and qx and qy
             qData.playerDist = nil
             if comparable then
-                local dx, dy = px - qData.x, py - qData.y
+                local dx, dy = px - qx, py - qy
                 qData.playerDist = math.sqrt(dx * dx + dy * dy)
                 if qData.playerDist <= nearTol then
                     near, learnHere = true, true
@@ -3938,8 +4124,12 @@ function P.CollectQuests()
             --    fall back to wording / zone clues
             if not near and not comparable then
                 local lowerHeader = string.lower(qData.header or "")
-                local isSameZone = (realZone ~= "" and (lowerHeader == realZone
-                    or string.find(realZone, lowerHeader, 1, true) or string.find(lowerHeader, realZone, 1, true)))
+                -- the quest log heading names your zone or the sub-zone you're in (e.g. "Northshire Valley")
+                local isSameZone = lowerHeader ~= "" and (
+                    (realZone ~= "" and (lowerHeader == realZone
+                        or string.find(realZone, lowerHeader, 1, true) or string.find(lowerHeader, realZone, 1, true)))
+                    or (subZone ~= "" and (lowerHeader == subZone
+                        or string.find(subZone, lowerHeader, 1, true) or string.find(lowerHeader, subZone, 1, true))))
                 if subZone ~= "" and string.len(subZone) >= 4 then
                     local lowerTitle = string.lower(qData.title or "")
                     local lowerObj   = string.lower(qData.objectiveText or "")
@@ -4289,7 +4479,7 @@ end
 P.GROUPINGS = {
     { key = "AREA",   label = "Map areas" },   -- the explored subzone the items are in (world-map area names)
     { key = "ZONE",   label = "Zones" },       -- one page per zone
-    { key = "RADIUS", label = "Distance" },    -- clusters by the Area page size slider
+    { key = "RADIUS", label = "Clusters" },    -- quests close together share a page (the Cluster size slider)
 }
 
 function P.GetGrouping()
@@ -4474,7 +4664,8 @@ function P.Render(f)
     else
         f.titleFS:SetText(title)
     end
-    P.SetHalo(f.titleFS, f.titleFS:GetText(), st.title)
+    P.SetHalo(f.titleFS, f.titleFS:GetText(),
+        (area.isCurrent and now < (P.currentGlowUntil or 0)) and P.INK_RED or st.title)
     local ruleW = math.min(w - 20 - padL - padR, math.max(60, (f.titleFS:GetStringWidth() or 80) + 22))
     P.DrawStroke(f.titleRule, f.chrome, 8 + padL, -25 - padT, 8 + padL + ruleW, -24 - padT, 1.2, 0.70)
     P.DrawStroke(f.titleRule2, f.chrome, 14 + padL, -27.5 - padT, 8 + padL + ruleW * 0.55, -27 - padT, 0.7, 0.40)
@@ -4499,7 +4690,7 @@ function P.Render(f)
         row:ClearAllPoints()
         row:SetPoint("TOPLEFT", f.content, "TOPLEFT", 0, -2)
         row:SetPoint("TOPRIGHT", f.content, "TOPRIGHT", 0, -2)
-        row:SetHeight(36)
+        row:SetHeight(math.max(36, math.ceil(row.itemText:GetStringHeight() or 30) + 6))
         row:SetScript("OnClick", nil)
         row:SetScript("OnEnter", nil)
         row:SetScript("OnLeave", nil)
@@ -4728,6 +4919,32 @@ UpdateShoppingListUI = function()
     P.Render(f)
     P.UpdateCorner(f)
     P.ApplyStackLayout(f)
+end
+
+-- Why the tally stays put away right after you switch it on (or nil if it's up), so it never seems broken
+function P.HiddenReason()
+    local f = EnsureShoppingListFrame()
+    if not showShoppingList or f:IsShown() then return nil end
+    local o = CFQ.parchmentOpts
+    local a, b = o.tallyLoot, o.tallyTasks
+    o.tallyLoot, o.tallyTasks = true, true
+    local ok, _, eligible = pcall(P.CollectQuests)
+    o.tallyLoot, o.tallyTasks = a, b
+    if not ok or type(eligible) ~= "table" then return nil end
+    if #eligible == 0 then
+        return "the Field Tally is on, but there's nothing to list yet: it appears when a tracked quest has items to gather or tasks to do."
+    elseif o.hideWhenNothingNearby then
+        return "the Field Tally is on, but hidden until something is nearby (Options: \"...only when something is nearby\")."
+    end
+    return "the Field Tally is on, but there's nothing near you and \"Pages for other areas\" is off."
+end
+
+-- Switching the tally on: show it, or say in chat why it isn't up
+function P.TurnTallyOn()
+    showShoppingList = true
+    UpdateShoppingListUI()
+    local why = P.HiddenReason()
+    if why then print("|cFFFFD100Handkerquest:|r " .. why) end
 end
 
 -- ============================================================================
@@ -6311,7 +6528,7 @@ local function EnsureTrackerControlBar(trackerModule)
             slider:SetOrientation("HORIZONTAL")
             slider:SetSize(62, 14)
             slider:SetPoint("LEFT", toggleBtn, "RIGHT", 5, 0)
-            slider:SetMinMaxValues(1, 50)
+            slider:SetMinMaxValues(lo, hi)
             slider:SetValueStep(1)
             if slider.SetObeyStepOnDrag then slider:SetObeyStepOnDrag(true) end
 
@@ -8443,9 +8660,30 @@ end
 function CFQ.BuildOptionsPanel()
     if CFQ.optionsPanel then return CFQ.optionsPanel end
 
-    local p = CreateFrame("Frame", "QRF_OptionsPanel")
-    p.name = CONFIG.ADDON_NAME
-    p:Hide()
+    -- The panel scrolls: it's taller than the Settings window. Everything below is built on the scroll
+    -- child (p); the registered panel is the outer frame.
+    local outer = CreateFrame("Frame", "QRF_OptionsPanel")
+    outer.name = CONFIG.ADDON_NAME
+    outer:Hide()
+    local okS, scroll = pcall(CreateFrame, "ScrollFrame", nil, outer, "UIPanelScrollFrameTemplate")
+    if not okS or not scroll then scroll = CreateFrame("ScrollFrame", nil, outer) end
+    scroll:SetPoint("TOPLEFT", outer, "TOPLEFT", 0, -4)
+    scroll:SetPoint("BOTTOMRIGHT", outer, "BOTTOMRIGHT", -28, 4)
+    scroll:EnableMouseWheel(true)
+    if not scroll.ScrollBar then
+        scroll:SetScript("OnMouseWheel", function(self, delta)
+            local max = math.max(0, (self:GetScrollChild() and self:GetScrollChild():GetHeight() or 0) - (self:GetHeight() or 0))
+            self:SetVerticalScroll(math.max(0, math.min(max, (self:GetVerticalScroll() or 0) - delta * 40)))
+        end)
+    end
+    local p = CreateFrame("Frame", nil, scroll)
+    p:SetSize(560, 900)
+    scroll:SetScrollChild(p)
+    local function FitWidth()
+        local w = scroll:GetWidth()
+        if w and w > 100 then p:SetWidth(w) end
+    end
+    outer:SetScript("OnSizeChanged", FitWidth)
     local y = -16
 
     local title = p:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
@@ -8469,10 +8707,10 @@ function CFQ.BuildOptionsPanel()
         y = y - 22
     end
 
-    local function Check(label, tip, getFn, setFn)
+    local function Check(label, tip, getFn, setFn, indent)
         local cb = CreateFrame("CheckButton", nil, p, "UICheckButtonTemplate")
         cb:SetSize(24, 24)
-        cb:SetPoint("TOPLEFT", p, "TOPLEFT", 20, y)
+        cb:SetPoint("TOPLEFT", p, "TOPLEFT", 20 + (indent or 0), y)
         cb.label = cb:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         cb.label:SetPoint("LEFT", cb, "RIGHT", 4, 1)
         cb.label:SetText(label)
@@ -8521,9 +8759,23 @@ function CFQ.BuildOptionsPanel()
     Check("Show the parchment tally list",
         "The checklist of quest items you still need to gather around you.",
         function() return showShoppingList end,
-        function(v) showShoppingList = v; RefreshParchment() end)
+        function(v) if v then P.TurnTallyOn() else showShoppingList = false; RefreshParchment() end end)
+    -- right under it (it decides whether the tally is up at all), greyed out while the tally is off
+    local hideCb = Check("...only when something is nearby",
+        "On: the tally only appears when the area you're in has something to gather or do, and puts itself away when it doesn't. Off: the pile stays up so you can leaf through other areas.",
+        function() return CFQ.parchmentOpts.hideWhenNothingNearby end,
+        function(v)
+            CFQ.parchmentOpts.hideWhenNothingNearby = v
+            if showShoppingList then P.TurnTallyOn() end      -- says so in chat if this just put it away
+        end, 24)
+    local hideRefresh = hideCb.Refresh
+    hideCb.Refresh = function(self)
+        hideRefresh(self)
+        self:SetAlpha(showShoppingList and 1 or 0.45)
+    end
     -- Radius slider row: label, 1-50% slider, value, hint. get() returns the value; set(v) applies it.
-    local function RadiusSlider(labelText, tipTitle, tipBody, get, set, hintFn, enabledFn)
+    local function RadiusSlider(labelText, tipTitle, tipBody, get, set, hintFn, enabledFn, lo, hi)
+        lo, hi = lo or 1, hi or 50
         local row = CreateFrame("Frame", nil, p)
         row:SetSize(440, 26)
         row:SetPoint("TOPLEFT", p, "TOPLEFT", 48, y)
@@ -8534,7 +8786,7 @@ function CFQ.BuildOptionsPanel()
         slider:SetOrientation("HORIZONTAL")
         slider:SetSize(170, 16)
         slider:SetPoint("LEFT", row, "LEFT", 110, 0)
-        slider:SetMinMaxValues(1, 50)
+        slider:SetMinMaxValues(lo, hi)
         slider:SetValueStep(1)
         if slider.SetObeyStepOnDrag then slider:SetObeyStepOnDrag(true) end
         slider:EnableMouseWheel(true)
@@ -8557,7 +8809,7 @@ function CFQ.BuildOptionsPanel()
         hint:SetPoint("LEFT", valText, "RIGHT", 8, 0)
 
         local function Show(v)
-            fill:SetWidth(math.max(1, (v - 1) / 49 * 168))
+            fill:SetWidth(math.max(1, (v - lo) / (hi - lo) * 168))
             valText:SetText(v .. "%")
         end
         slider:SetScript("OnValueChanged", function(self, val)
@@ -8615,26 +8867,27 @@ function CFQ.BuildOptionsPanel()
         function(v) CFQ.parchmentOpts.tallySeparate = v; P.OnTallyChoiceChanged() end)
 
     Check("Pages for other areas",
-        "Each area with items still to gather gets its own page in the pile. Click the dog-eared corner to turn to the next page (right-click to go back).",
+        "Quests that aren't near you go on more pages in the pile, one per place (see Other pages by). Click the dog-eared corner to turn to the next page (right-click to go back).",
         function() return CFQ.parchmentOpts.showTabs end,
         function(v) CFQ.parchmentOpts.showTabs = v; RefreshParchment() end)
 
     -- How area pages (page 2+) are divided up
-    local groupBtn = Button("Area pages by: Map areas", 210, 48, function()
+    local groupBtn = Button("Other pages by: Map areas", 230, 48, function()
         P.CycleGrouping()
         shoppingScrollOffset = 0
         SaveState()
         RefreshParchment()
     end, function(self)
-        self:SetText("Area pages by: " .. P.GetGrouping().label)
+        self:SetText("Other pages by: " .. P.GetGrouping().label)
         self:SetAlpha(CFQ.parchmentOpts.showTabs and 1 or 0.45)
     end)
     groupBtn:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:AddLine("Area pages by", 1, 0.82, 0)
-        GameTooltip:AddLine("Map areas: one page per explored subzone your quest items are in (the names on your world map).", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine("Other pages by", 1, 0.82, 0)
+        GameTooltip:AddLine("How the quests that aren't near you are split into pages (page 1 is always Near me).", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine("Map areas: one page per explored subzone the quest is in (the names on your world map).", 0.9, 0.9, 0.9, true)
         GameTooltip:AddLine("Zones: one page per zone.", 0.9, 0.9, 0.9, true)
-        GameTooltip:AddLine("Distance: quests near each other share a page, sized by the Area page size slider below.", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine("Clusters: quests close together share a page, named after the place. How close is the Cluster size below.", 0.9, 0.9, 0.9, true)
         GameTooltip:AddLine("Pages with the same name are always merged.", 0.55, 0.85, 0.55, true)
         GameTooltip:Show()
     end)
@@ -8642,8 +8895,8 @@ function CFQ.BuildOptionsPanel()
     y = y - 30
 
     local function DistanceMode() return CFQ.parchmentOpts.showTabs and P.GetGrouping().key == "RADIUS" end
-    local followCb = Check("Area page size follows the tracker's (•••) stacking slider",
-        "Distance grouping only. On: quests within the same radius you use for (•••) stacks in the Objective Tracker share a page. Off: set the area page size yourself below.",
+    local followCb = Check("Cluster size follows the tracker's (•••) stacking slider",
+        "Clusters only. On: quests that would share a (•••) stack in the Objective Tracker share a page. Off: set the cluster size yourself below.",
         function() return CFQ.parchmentOpts.pagesFollowTracker end,
         function(v) CFQ.parchmentOpts.pagesFollowTracker = v; RefreshParchment() end)
     local baseRefresh = followCb.Refresh
@@ -8653,9 +8906,9 @@ function CFQ.BuildOptionsPanel()
     end
 
 
-    -- Area pages (page 2+): how far apart quests can be and still share a page
-    CFQ.pageRadiusRow = RadiusSlider("Area page size", "Area page size",
-        "Distance grouping only. Quests whose items lie within this distance of each other (as % of the zone map) share an area page. Smaller = more, tighter pages.",
+    -- Clusters (page 2+): how far apart quests can be and still share a page
+    CFQ.pageRadiusRow = RadiusSlider("Cluster size", "Cluster size",
+        "Clusters only. Quests within this distance of each other (as % of the zone map) share a page. Smaller = more, tighter pages.",
         function() return P.GetPageRadius() end,
         function(v)
             if CFQ.parchmentOpts.pagesFollowTracker then
@@ -8674,10 +8927,6 @@ function CFQ.BuildOptionsPanel()
         "When you enter a new area, the pile turns back to the Near me page and its heading is written in fresh red ink.",
         function() return CFQ.parchmentOpts.autoFrontOnAreaChange end,
         function(v) CFQ.parchmentOpts.autoFrontOnAreaChange = v end)
-    Check("Hide the parchment when nothing is nearby",
-        "Off: the pile stays up so you can leaf through other areas. On: it only appears when the area you're in has something to gather.",
-        function() return CFQ.parchmentOpts.hideWhenNothingNearby end,
-        function(v) CFQ.parchmentOpts.hideWhenNothingNearby = v; RefreshParchment() end)
 
     Check("Mark the tracked quest's item spots on the minimap",
         "Amber pips on the minimap where you've looted the items of the quest you're tracking (click an item on the tally to track its quest). Pips beyond the minimap's edge sit on the rim, pointing the way.",
@@ -8691,6 +8940,11 @@ function CFQ.BuildOptionsPanel()
         "An item's line glows when you walk into its hunting grounds, and catches fire while your target is a mob that may drop it.",
         function() return CFQ.parchmentOpts.inkEffects end,
         function(v) CFQ.parchmentOpts.inkEffects = v; RefreshParchment() end)
+    CFQ.textSizeRow = RadiusSlider("Text size", "Text size",
+        "How big the tally's writing is, as % of the usual size. The page heading grows by half as much.",
+        function() return CFQ.tallyTextScale or 100 end,
+        function(v) CFQ.tallyTextScale = v; SaveState(); RefreshParchment() end,
+        nil, nil, P.TEXT_SCALE_MIN, P.TEXT_SCALE_MAX)
 
     y = y - 4
     local lookBtn = Button("Look: Torn rag", 210, 24, function()
@@ -8711,7 +8965,7 @@ function CFQ.BuildOptionsPanel()
         GameTooltip:AddLine("Chalked slate: a smooth dark river stone, written on in chalk.", 0.9, 0.9, 0.9, true)
         GameTooltip:AddLine("Carved bark: a jagged slab of dark bark, the list carved into the red underbark.", 0.9, 0.9, 0.9, true)
         GameTooltip:AddLine("Pipe-weed leaf: a cured leaf of Longbottom's finest, written in ink.", 0.9, 0.9, 0.9, true)
-        GameTooltip:AddLine("Etched leather: a piece of tooled hide, the list pressed into it.", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine("Etched leather: a rough-cut piece of soft tan hide, the list pressed into it.", 0.9, 0.9, 0.9, true)
         GameTooltip:AddLine("Arcane script: a mage's words of light hanging in the air, a rune circle turning behind them.", 0.9, 0.9, 0.9, true)
         GameTooltip:AddLine("Transparent window: a see-through WoW-style panel in the standard font.", 0.9, 0.9, 0.9, true)
         GameTooltip:Show()
@@ -8733,8 +8987,8 @@ function CFQ.BuildOptionsPanel()
         self:SetAlpha(forced and 0.45 or 1)
     end)
     Button("Reset Position & Size", 160, 220, function()
-        showShoppingList = true
         ResetShoppingListPosition()
+        P.TurnTallyOn()
     end)
     y = y - 34
 
@@ -8786,10 +9040,11 @@ function CFQ.BuildOptionsPanel()
     hint:SetJustifyH("LEFT")
     hint:SetText("Slash: /hanky (filter menu), /hanky options, /hanky lvl, /hanky dist, /hanky list, /hanky look, /hanky resetlist, /hanky items, /hanky reset")
 
-    p:SetScript("OnShow", function() CFQ.RefreshOptionsPanel() end)
-    CFQ.optionsPanel = p
+    p:SetHeight(math.abs(y) + 40)
+    outer:SetScript("OnShow", function() FitWidth(); CFQ.RefreshOptionsPanel() end)
+    CFQ.optionsPanel = outer
     CFQ.optionsPanelHeight = math.abs(y) + 30
-    return p
+    return outer
 end
 
 function CFQ.RegisterOptions()
@@ -8814,7 +9069,7 @@ function CFQ.ShowStandaloneOptions()
     local host = CFQ.optionsStandalone
     if not host then
         host = CreateFrame("Frame", "QRF_OptionsStandalone", UIParent)
-        host:SetSize(520, (CFQ.optionsPanelHeight or 560) + 10)
+        host:SetSize(540, math.min((CFQ.optionsPanelHeight or 560) + 10, 620))
         host:SetPoint("CENTER")
         host:SetFrameStrata("DIALOG")
         host:SetClampedToScreen(true)
@@ -8880,13 +9135,17 @@ SlashCmdList["HANDKERQUEST"] = function(msg)
     elseif cmd == "dist" or cmd == "distance" then
         CFQ.CycleSortMode("DIST")
     elseif cmd == "list" or cmd == "tally" then
-        showShoppingList = not showShoppingList
-        UpdateShoppingListUI()
+        if showShoppingList then
+            showShoppingList = false
+            UpdateShoppingListUI()
+        else
+            P.TurnTallyOn()
+        end
         SaveState()
         CFQ.RefreshOptionsPanel()
     elseif cmd == "resetlist" then
-        showShoppingList = true
         ResetShoppingListPosition()
+        P.TurnTallyOn()
         CFQ.RefreshOptionsPanel()
     elseif cmd == "debug" then
         CFQ.DebugDumpTracker()
@@ -8898,7 +9157,7 @@ SlashCmdList["HANDKERQUEST"] = function(msg)
             crumpled = "CRUMPLED", paper = "CRUMPLED", rag = "RAG", torn = "RAG", shirt = "RAG",
             stone = "STONE", rock = "STONE", chalk = "STONE", slate = "STONE", bark = "BARK", carved = "BARK", wood = "BARK",
             leaf = "LEAF", pipeweed = "LEAF", tobacco = "LEAF", longbottom = "LEAF",
-            leather = "LEATHER", etched = "LEATHER", tooled = "LEATHER",
+            leather = "LEATHER", etched = "LEATHER", tooled = "LEATHER", hide = "LEATHER", suede = "LEATHER",
             arcane = "ARCANE", mage = "ARCANE", magic = "ARCANE", rune = "ARCANE", runes = "ARCANE",
             window = "NATIVE", transparent = "NATIVE", native = "NATIVE" }
         if want and alias[want] then CFQ.parchmentStyle = alias[want] else P.CycleStyle() end

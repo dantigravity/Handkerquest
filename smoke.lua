@@ -529,9 +529,18 @@ check(flap1.__tex == "Interface\\AddOns\\Handkerquest\\textures\\torn_rag" and u
 check(flap1.__tc and #flap1.__tc == 8, "folded corner: the flap samples the corner through a mirrored mapping")
 -- mirrored: along the flap's top row the texture runs vertically (x fixed, y changes)
 check(flap1.__tc[1] == flap1.__tc[5] and flap1.__tc[2] ~= flap1.__tc[6], "folded corner: flap is the corner reflected across the fold")
+-- the fold square reaches the image's own corner, so the flap is the material's real (torn, curved)
+-- edge mirrored: more rows than the button is tall, the last row ending at the image's corner
+local cpw, cph = corner:GetParent():GetWidth(), corner:GetParent():GetHeight()
+local NF = P.CORNER_REST + (-corner.offX) + corner.offY
 local tcOk = true
-for _, v in ipairs(flap1.__tc) do if v < 0.8 or v > 1.05 then tcOk = false end end
+for _, v in ipairs(flap1.__tc) do if v < 1 - NF / math.min(cpw, cph) - 0.01 or v > 1.0001 then tcOk = false end end
 check(tcOk, "folded corner: samples come from the sheet's bottom-right corner")
+check(NF > P.CORNER_REST and corner.under[NF] and corner.under[NF].__shown and not (corner.under[NF + 1] and corner.under[NF + 1].__shown),
+    "folded corner: the fold covers the whole corner of the image (" .. NF .. " rows)")
+check(corner.under[NF].__tc[2] > 0.999 and corner.crease and corner.crease[1].__shown and corner.crease[1].__tex == flap1.__tex,
+    "folded corner: rows reach the image's corner; the crease is drawn from the material itself")
+check(not corner.foldEdge.__shown and not corner.foldShadow.__shown, "folded corner: no straight drawn lines that would overhang a curved edge")
 check(not corner.flapTop.__shown and not corner.flapLeft.__shown, "folded corner: no drawn straight edges on a texture look")
 corner.size = P.CORNER_HOVER; P.DrawCorner(corner)
 check(corner.flap[20].__shown and corner.flap[20].__tex, "folded corner: still the material when lifted on hover")
@@ -635,7 +644,7 @@ Fire("ADDON_LOADED", "Handkerquest")
 check(CFQ.parchmentStyle == "BARK", "saved bark look loads")
 CFQ.parchmentStyle = "RAG"; P.ApplyStyle()
 for _, tx in ipairs({ { "crumpled_paper", 512 }, { "torn_rag", 512 }, { "stone", 512 }, { "bark", 512 }, { "pipeweed_leaf", 512 },
-                       { "etched_leather", 512 }, { "arcane_ring", 512 }, { "arcane_haze", 256 } }) do
+                       { "etched_leather", 512 }, { "arcane_ring", 512 }, { "arcane_haze", 256 }, { "ink_blots", 256 } }) do
     local name, size = tx[1], tx[2]
     local fh = io.open(here .. "/textures/" .. name .. ".tga", "rb")
     local hdr = fh and fh:read(18)
@@ -655,8 +664,11 @@ P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
 check(CFQ.parchmentStyle == "LEAF" and f.topSheet.body.__tex == "Interface\\AddOns\\Handkerquest\\textures\\pipeweed_leaf",
     "carved bark -> pipe-weed leaf, with its texture")
 P.UpdateCorner(f); f.corner.drawnKey = nil; P.DrawCorner(f.corner)
-check(anyShown(f.corner.flap) and f.titleFS.__shadow[4] == 0 and not (f.inkGrain and f.inkGrain.__shown) and P.INK[1] < 0.3,
-    "leaf: dark ink, and the corner is a real fold of the leaf")
+check(anyShown(f.corner.flap) and f.titleFS.__shadow[4] == 0 and not (f.inkGrain and f.inkGrain.__shown) and P.INK[1] < 0.1
+    and P.GetStyle().title[1] < 0.1, "leaf: near-black ink that stands out on the brown leaf, and the corner is a real fold of the leaf")
+check(f.corner.under[P.CORNER_REST] and f.corner.under[P.CORNER_REST].__shown
+    and not (f.corner.under[P.CORNER_REST + 1] and f.corner.under[P.CORNER_REST + 1].__shown),
+    "leaf: the dog-ear stays on the leaf's corner (its long edge runs along the fold)")
 check(f.padR == math.floor(f:GetWidth() * 0.273 + 0.5), "leaf: writing kept clear of the tapering tip")
 SlashCmdList["HANDKERQUEST"]("look pipeweed")
 check(CFQ.parchmentStyle == "LEAF", "/hanky look pipeweed")
@@ -676,17 +688,20 @@ do  -- the leaves underneath fan out from the stem instead of lying flipped
         "rag pile still alternates (flipped pages, small tilts)")
     CFQ.parchmentStyle = "LEAF"; P.ApplyStyle()
 end
--- etched leather: dark pressed letters with a pale lip below-right; leather bends, so a real fold
+-- etched leather (soft tan hide): dark pressed letters with a pale lip below-right; leather bends, so a real fold
 P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
 check(CFQ.parchmentStyle == "LEATHER" and f.topSheet.body.__tex == "Interface\\AddOns\\Handkerquest\\textures\\etched_leather",
     "pipe-weed leaf -> etched leather, with its texture")
 P.UpdateCorner(f); f.corner.drawnKey = nil; P.DrawCorner(f.corner)
 check(anyShown(f.corner.flap) and f.titleFS.__shadow[1] > 0.8 and f.titleFS.__shadowOff[1] == 1 and f.titleFS.__shadowOff[2] == -1
     and P.INK[1] < 0.3, "leather: dark letters with a pale pressed lip (shadow down-right), real fold")
-check(f.padL == math.floor(f:GetWidth() * 0.102 + 0.5), "leather: writing inside the tooled border")
+check(f.padL == math.floor(f:GetWidth() * 0.078 + 0.5) and f.padB == math.floor(f:GetHeight() * 0.148 + 0.5),
+    "leather: writing kept on the hide (margins follow the window)")
 check(not (f.titleFS.halo and f.titleFS.halo[1].__shown), "leather: no wet-ink halo (pressed, not inked)")
 SlashCmdList["HANDKERQUEST"]("look tooled")
 check(CFQ.parchmentStyle == "LEATHER", "/hanky look tooled")
+CFQ.parchmentStyle = "RAG"; SlashCmdList["HANDKERQUEST"]("look hide")
+check(CFQ.parchmentStyle == "LEATHER", "/hanky look hide")
 
 -- arcane script: words of light in the air, a turning rune circle, drifting motes, no pile
 P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
@@ -878,12 +893,14 @@ check(not f:IsShown(), "parchment hides via options checkbox")
 
 -- area-page grouping button in the options panel
 local gBtn
-for _, w in ipairs(CFQ.optionWidgets) do if type(w.__text) == "string" and w.__text:find("^Area pages by: ") then gBtn = w end end
-check(gBtn ~= nil and gBtn.__text == "Area pages by: Map areas", "options show Area pages by: Map areas")
+for _, w in ipairs(CFQ.optionWidgets) do if type(w.__text) == "string" and w.__text:find("^Other pages by: ") then gBtn = w end end
+check(gBtn ~= nil and gBtn.__text == "Other pages by: Map areas", "options show Other pages by: Map areas")
 if gBtn then
     gBtn:GetScript("OnClick")(gBtn)
-    check(gBtn.__text == "Area pages by: Zones", "grouping button cycles to Zones")
-    gBtn:GetScript("OnClick")(gBtn); gBtn:GetScript("OnClick")(gBtn)
+    check(gBtn.__text == "Other pages by: Zones", "grouping button cycles to Zones")
+    gBtn:GetScript("OnClick")(gBtn)
+    check(gBtn.__text == "Other pages by: Clusters", "grouping button: Clusters (not \"Distance\")")
+    gBtn:GetScript("OnClick")(gBtn)
 end
 
 -- page radius slider in the options panel
@@ -1029,6 +1046,7 @@ do
         end
         return out
     end
+    CFQ.parchmentFont = "QUILL"                      -- the options tests above left the handwriting elsewhere
     CFQ.parchmentStyle = "RAG"; P.ApplyStyle(); Fire("ZONE_CHANGED")
     local rows = ShownRows()
     local r1 = rows[1]
@@ -1058,6 +1076,78 @@ do
     local n2, p2 = Drops()
     check(n1 > 0 and n1 == n2 and p1 == p2, "blotted scrawl: drops of ink here and there (" .. n1 .. "), in the same spots every redraw")
     check(rows[1].itemText.inkKey:find("^BLOTTED:"), "blotted scrawl writes in the rough hand")
+    -- the drops are soaked-in blots from the atlas (a cell, mirrored either way), not plain dots
+    local blotOk, nBlot = true, 0
+    for _, row in ipairs(ShownRows()) do
+        for _, d in ipairs(row.drops or {}) do
+            if d.__shown then
+                nBlot = nBlot + 1
+                local tc = d.__tc
+                if d.__tex ~= "Interface\\AddOns\\Handkerquest\\textures\\ink_blots" or not tc or #tc ~= 4
+                    or math.abs(math.abs(tc[2] - tc[1]) - 0.5) > 1e-6 or math.abs(math.abs(tc[4] - tc[3]) - 0.5) > 1e-6 then blotOk = false end
+            end
+        end
+    end
+    check(nBlot > 0 and blotOk, "blotted scrawl: drops are irregular soaked-in blots from the ink_blots atlas")
+    -- mostly tiny spatters round the stroke, every line; big blots are the exception
+    local small, big, rowsWithSpatter, nRows = 0, 0, 0, 0
+    for _, row in ipairs(ShownRows()) do
+        nRows = nRows + 1
+        local sp = 0
+        for _, d in ipairs(row.drops or {}) do
+            if d.__shown then
+                if d.__w <= 4.1 then small = small + 1; sp = sp + 1 else big = big + 1 end
+            end
+        end
+        if sp >= 2 then rowsWithSpatter = rowsWithSpatter + 1 end
+    end
+    check(rowsWithSpatter == nRows and small > big * 3,
+        "blotted scrawl: tiny spatters on every line, few big blots (" .. small .. " small, " .. big .. " big)")
+    -- over many lines: the quill rests (a bigger blot) on about one line in five, a splash rarely
+    do
+        local bigLines, splashes, lines = 0, 0, 200
+        local fake = { drops = nil, itemText = rows[1].itemText }
+        fake.CreateTexture = function(_, ...) return rows[1]:CreateTexture(...) end
+        for i = 1, lines do
+            P.SetInkDrops(fake, { key = "line " .. i, lastW = 120, textH = 14, lines = 1, textW = 160, ink = P.INK })
+            local hasBig = false
+            for _, d in ipairs(fake.drops) do
+                if d.__shown and d.__w > 4.1 then hasBig = true end
+                if d.__shown and d.__tc and d.__tc[3] == 0.5 and math.min(d.__tc[1], d.__tc[2]) == 0 then splashes = splashes + 1 end
+            end
+            if hasBig then bigLines = bigLines + 1 end
+        end
+        check(bigLines >= 20 and bigLines <= 70 and splashes <= 30,
+            "blotted scrawl: a big blot on roughly one line in five (" .. bigLines .. "/200), splashes rare (" .. splashes .. ")")
+    end
+    -- bolder letters: a second pass of the quill, colours kept; the wet ink hugs them (a bleed, not a blur)
+    local it = rows[1].itemText
+    check(it.boldCopy and it.boldCopy.__shown and it.boldCopy.__points[1][4] == 0.8 and it.boldCopy.__text == it.__text,
+        "blotted scrawl: bolder letters (a second pass 0.8px right, same words and colours)")
+    check(math.abs(it.halo[1].__points[1][4] - 0.8 * 0.55) < 1e-6, "blotted scrawl: the wet ink spreads less round the letters")
+    -- the heading is one line cut off with "...": its copies span the same box, so a long sub-zone
+    -- ("Northshire Valley") never wraps a word under it onto the Items heading
+    local tb, th = f.titleFS.boldCopy, f.titleFS.halo and f.titleFS.halo[1]
+    check(f.titleFS.singleLine and tb and tb.__points[2] and tb.__points[2][1] == "TOPRIGHT" and tb.__points[2][2] == f.titleFS
+        and th and th.__points[2] and th.__points[2][1] == "TOPRIGHT",
+        "heading's bold pass and wet-ink copies cut off with the heading instead of wrapping")
+    check(not (it.boldCopy.__points[2]), "list lines' copies still wrap with their line")
+    CFQ.parchmentFont = "QUILL"; Fire("ZONE_CHANGED")
+    check(not it.boldCopy.__shown and it.halo[1].__points[1][4] == 0.8, "other hands: no second pass, the usual spread")
+    CFQ.parchmentFont = "BLOTTED"; Fire("ZONE_CHANGED")
+
+    -- text size: the lines grow with the slider, the heading by half as much; saved and clamped
+    CFQ.tallyTextScale = 150; Fire("ZONE_CHANGED")
+    local _, sz = it:GetFont()
+    local _, tsz = f.titleFS:GetFont()
+    check(sz == 18 and tsz == 18, "text size 150%: lines 12 -> 18, heading 14 -> 18 (half as much) (" .. tostring(sz) .. ", " .. tostring(tsz) .. ")")
+    check(it.boldCopy.__font and it.boldCopy.__font[2] == 18 and it.halo[1].__font[2] == 18, "...and the bold pass and wet ink follow")
+    check(CFQ.textSizeRow and CFQ.textSizeRow.slider, "options: Text size slider")
+    if CFQ.textSizeRow then
+        CFQ.textSizeRow.slider:GetScript("OnValueChanged")(CFQ.textSizeRow.slider, 90)
+        check(CFQ.tallyTextScale == 90 and QRF_SavedState.tallyTextScale == 90, "Text size slider sets and saves the size")
+    end
+    CFQ.tallyTextScale = 100; Fire("ZONE_CHANGED")
     CFQ.parchmentStyle = "BARK"; P.ApplyStyle(); Fire("ZONE_CHANGED")
     check(Drops() == 0, "carved bark keeps its knife-cut letters: no ink drops")
     CFQ.parchmentFont = "QUILL"; P.CycleFontStyle(); P.CycleFontStyle(); P.CycleFontStyle()
@@ -1066,6 +1156,87 @@ do
     check(CFQ.parchmentFont == "QUILL", "...and back round to the quill")
     CFQ.parchmentStyle = "RAG"; P.ApplyStyle(); Fire("ZONE_CHANGED")
     check(Drops() == 0, "no drops in the other hands")
+end
+
+-- Near me on a fresh character: the quest's area as the world map shows it (no waypoint, map never
+-- opened), possibly on a parent map of yours; a quest heading naming your sub-zone; and a chat note
+-- when switching the tally on leaves it hidden
+do
+    local saved = { C_QuestLog.GetNextWaypoint, C_QuestLog.GetQuestsOnMap, C_Map.GetBestMapForUnit, C_Map.GetMapInfo,
+                    C_Map.GetMapPosFromWorldPos, ZONE, SUBZONE }
+    C_QuestLog.GetNextWaypoint = function() return nil end
+    C_Map.GetBestMapForUnit = function() return 425 end      -- Northshire, inside Elwynn Forest (1429)
+    C_Map.GetMapInfo = function(id) if id == 425 then return { name = "Northshire", parentMapID = 1429 } end return { name = "Elwynn Forest" } end
+    C_QuestLog.GetQuestsOnMap = function(m) if m == 1429 then return { { questID = 777, x = 0.48, y = 0.41 } } end return {} end
+    CFQ.mapQuestCache = {}
+    local m, x, y = CFQ.QuestPosNearPlayer(777)
+    check(m == 1429 and x == 0.48 and y == 0.41, "quest area found on the parent map (Northshire -> Elwynn) without opening the world map")
+    check(CFQ.QuestPosNearPlayer(778) == nil, "...and nothing made up for a quest the map doesn't show")
+
+    -- a quest placed on another map than yours is measured after translating it onto yours
+    local q101 = __QMAP()[101]
+    P.CollectQuests()
+    check(q101.playerDist == nil, "no shared map and no translation: no distance")
+    C_Map.GetMapPosFromWorldPos = function(_, w) local wx, wy = w.GetXY(); return 1, CreateVector2D(wx / 4000, wy / 4000) end
+    local nearSet = P.CollectQuests()
+    check(q101.playerDist and q101.playerDist < 0.03 and nearSet[101], "quest on a parent map translated onto yours: near me")
+    C_Map.GetMapPosFromWorldPos = saved[5]
+
+    -- no position at all: a quest log heading naming the sub-zone you're in counts as here
+    local q104 = __QMAP()[104]
+    local sx, sy, sm = q104.x, q104.y, q104.mapID
+    q104.x, q104.y, q104.mapID = nil, nil, nil
+    ZONE, SUBZONE = "Elwynn Forest", "Darkshore"
+    WATCHED[104] = true
+    nearSet = P.CollectQuests()
+    check(nearSet[104], "tracked quest whose heading is your sub-zone (e.g. Northshire Valley) is near you")
+    WATCHED[104] = nil
+    q104.x, q104.y, q104.mapID = sx, sy, sm
+    C_QuestLog.GetNextWaypoint, C_QuestLog.GetQuestsOnMap, C_Map.GetBestMapForUnit, C_Map.GetMapInfo = saved[1], saved[2], saved[3], saved[4]
+    ZONE, SUBZONE = saved[6], saved[7]
+    CFQ.mapQuestCache = {}
+
+    -- switching the tally on while "...only when something is nearby" keeps it away says why in chat
+    local printed = {}
+    local realPrint = print
+    print = function(s) table.insert(printed, tostring(s)) end
+    CFQ.parchmentOpts.hideWhenNothingNearby = true
+    local tabs = CFQ.parchmentOpts.showTabs
+    CFQ.parchmentOpts.showTabs = true
+    local px, py = PX, PY
+    PX, PY = 0.02, 0.02
+    NOW = NOW + 1000                                  -- nothing progressed lately
+    SlashCmdList["HANDKERQUEST"]("tally")             -- off
+    SlashCmdList["HANDKERQUEST"]("tally")             -- on again
+    print = realPrint
+    local said = false
+    for _, s in ipairs(printed) do if s:find("hidden until something is nearby") then said = true end end
+    check(not f:IsShown() and said, "tally switched on but nothing nearby: a chat note says why it's hidden")
+    CFQ.parchmentOpts.hideWhenNothingNearby = false
+    printed = {}
+    print = function(s) table.insert(printed, tostring(s)) end
+    P.TurnTallyOn()
+    print = realPrint
+    check(f:IsShown() and #printed == 0, "...and nothing said when it does come up")
+    CFQ.parchmentOpts.showTabs = false
+    CFQ.parchmentOpts.hideWhenNothingNearby = true
+    SlashCmdList["HANDKERQUEST"]("tally"); printed = {}
+    print = function(s) table.insert(printed, tostring(s)) end
+    SlashCmdList["HANDKERQUEST"]("tally")
+    print = realPrint
+    check(printed[1] and printed[1]:find("hidden until something is nearby"), "other pages off too: still the nearby reason, not \"nothing to list\"")
+    CFQ.parchmentOpts.showTabs, CFQ.parchmentOpts.hideWhenNothingNearby = tabs, false
+    PX, PY = px, py
+
+    -- options: the hide choice sits right under "Show the parchment tally list", indented; the panel scrolls
+    local showIdx, hideIdx, hideCb
+    for i, w in ipairs(CFQ.optionWidgets) do
+        if w.label and w.label.__text == "Show the parchment tally list" then showIdx = i end
+        if w.label and w.label.__text == "...only when something is nearby" then hideIdx, hideCb = i, w end
+    end
+    check(showIdx and hideIdx == showIdx + 1, "options: \"...only when something is nearby\" right under the tally checkbox")
+    check(CFQ.optionsPanel == QRF_OptionsPanel and hideCb and hideCb.__parent ~= QRF_OptionsPanel,
+        "options: built on a scroll child inside the registered panel, so it fits the Settings window")
 end
 
 -- ticker with distance sort

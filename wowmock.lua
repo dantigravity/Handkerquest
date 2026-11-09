@@ -59,7 +59,8 @@ function methods:GetText() return self.__text end
 function methods:GetStringWidth() return 6 * #tostring(self.__text or "") end
 function methods:GetUnboundedStringWidth() return 6 * #tostring(self.__text or "") end
 function methods:GetStringHeight() return 12 end
-function methods:GetFont() return "Fonts\\FRIZQT__.TTF", 12, "" end
+function methods:SetFont(path, size, flags) self.__font = { path, size, flags }; return true end
+function methods:GetFont() local f = self.__font; if f then return f[1], f[2], f[3] end return "Fonts\\FRIZQT__.TTF", 12, "" end
 function methods:GetChecked() return self.__checked end
 function methods:SetChecked(v) self.__checked = v end
 function methods:IsMouseEnabled() return self.__mouse end

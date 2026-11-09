@@ -23,6 +23,7 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
   - `::ArcaneHaze(tga, png, 256, 2)` → arcane_haze (256), `::ArcaneRing(tga, png, 512, 7)` → arcane_ring
     (white lines; tinted and added in game)
   - `::ChalkGrain(tga, png, 128, 21, 0.165, 0.175, 0.195)` → chalk_grain (128, tiles)
+  - `::InkBlots(tga, png, 256, 11)` → ink_blots (256, 2x2 atlas of white blots; tinted with the ink in game)
 
   Re-measure `inset` / `imageCorner` with `[TexGen]::SafeRect(tga)` after regenerating.
   `media/` (CurseForge GIFs) and `tools/` are excluded from the package in `.pkgmeta`.
@@ -57,10 +58,21 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
 - **Page 1 is always "Near me"** (items within the Near me distance of the player, or progressed in the
   last 3 min). Pages 2+ are area pages grouped by `CFQ.pageGrouping`: `AREA` (explored subzone via
   `C_MapExplorationInfo`), `ZONE`, or `RADIUS` (leader clustering, optionally linked to the ••• slider).
-  Pages with the same name always merge — never "Name II".
+  Pages with the same name always merge — never "Name II". In the options `RADIUS` is called **"Clusters"**
+  and its slider "Cluster size" (user decision: "Distance" read as a distance, not a place).
+  Quest positions: waypoint, then `CFQ.QuestPosNearPlayer` (`C_QuestLog.GetQuestsOnMap` on your map and its
+  parents, so a new character needn't open the world map), then the world-map pin cache. A position on another
+  map (Elwynn vs Northshire) is translated onto yours (`P.TranslatePos`). With none, a tracked quest whose log
+  heading names your zone **or sub-zone** counts as near.
+- "...only when something is nearby" (`hideWhenNothingNearby`) sits indented right under "Show the parchment
+  tally list" (user decision). Switching the tally on while it stays hidden prints why (`P.TurnTallyOn`,
+  `P.HiddenReason`). The options panel is a scroll frame (it's taller than the Settings window).
 - Dog-eared bottom-right corner turns pages; resize grip is bottom-left. No ribbons, no Area/Zone/All cycle.
-  On texture looks the fold is the material itself (`P.DrawCorner`): flap strips sample the corner mirrored
-  across the fold (8-value `SetTexCoord`), the uncovered part samples the page beneath, shaded.
+  On texture looks the fold is the material itself (`P.DrawMaterialFold`): the fold square reaches the
+  **image's** corner, so the flap is the material's real edge (curved, lobed, torn) mirrored across the fold
+  (8-value `SetTexCoord`) and the uncovered part follows that edge too; the crease is a dark strip of the
+  material itself. No straight drawn edges/lines there (they'd overhang a curved edge). Rows are made lazily.
+  `style.foldAtEdge` (leaf) keeps the square on the material's corner: its long edge runs along the fold.
   `P.PlaceCorner` puts it on the image's real corner (`style.imageCorner`, fractions measured from the TGA),
   re-placed on resize.
 - No brass tack / yellow square at the top of the pile (removed at the user's request in v1.4).
@@ -92,10 +104,12 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
     at the user's request), soot ink.
   - `STONE`: smooth dark river slate, chalk.
   - `BARK`: jagged chocolate-brown bark slab, letters carved into the reddish underbark.
-  - `LEAF`: cured pipe-weed leaf (a nod to Longbottom Leaf): gold-brown, veins, dark ink; bends, so it keeps
+  - `LEAF`: cured pipe-weed leaf (a nod to Longbottom Leaf): gold-brown, veins, **near-black** ink (brown ink
+    vanished into the curing spots, user feedback); bends, so it keeps
     the textured fold. Its back pages **fan out from the stem** (`style.fan`) instead of lying flipped.
-  - `LEATHER`: tooled saddle-brown hide, pebbled grain, stitch holes; letters pressed in (dark ink, pale lip
-    below-right via `inkShadow`); real fold.
+  - `LEATHER` ("Etched leather"): a rough-cut piece of supple tan garment leather, hide-shaped (leg lobes,
+    knife-cut edges, a nick or two), soft drape folds, fine grain; no tooling or stitching (user decision).
+    Letters pressed in (dark ink, pale lip below-right via `inkShadow`); real fold.
   - `ARCANE`: a mage's writing hanging in the air: violet haze, a rune circle (`style.arcane`, added light,
     turning slowly on the top sheet), rising motes, a pulsing violet glow round the words, glowing corner
     mark, no pile (`P.LayoutArcane` / `P.AnimateArcane`). The circle is our own triangle-and-random-runes
@@ -114,8 +128,18 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
   bleedAlpha` widen the bleed round ticks and strikes (`P.BLEED_W/A` in `P.DrawStroke`). A `halo.color` makes it a
   glow instead (arcane; `pulse` = breathes). Dry looks (pencil, chalk, carved, pressed) have no halo.
 - **"Blotted scrawl"** handwriting (`P.FONT_STYLES`, `drops = true`; Skurri): drops of ink flicked off the quill
-  (`P.SetInkDrops`: a blot plus 1-3 specks after about half the lines, a drip under one line in five), placed by a
-  hash of the line so they never move between redraws. Not on looks that force their own lettering.
+  (`P.SetInkDrops`), placed by a hash of the line so they never move between redraws. Mostly **tiny spatters**
+  round the stroke (2-5 per line, ~1-2px: the nib scraping the grain); a bigger blot where the quill rested on
+  about one line in five (just under the letters' middle); a splash after the last word only rarely (~1 in 12).
+  User decision: lots of big blots looked too concentrated on a busy list. Not on looks that force their own lettering.
+  The drops are soaked-in blots from `textures/ink_blots` (irregular; dark in the middle, lighter towards a
+  ragged bleeding edge — user decision; cells mirrored by the hash), sized so the shape reads — **not** plain circles (user feedback: "computer dots"). The face is drawn
+  bolder (`bold` = a second pass 0.8px right, `P.SetBold`) and wet ink hugs it (`haloScale`), so it reads as
+  ink soaked in, not blurred. Every copy of a text (bold pass, wet ink) is placed by `P.MatchCopy`: the
+  one-line heading (`singleLine`) has copies spanning its box so they cut off with it — a copy that wraps
+  drops a word ("Valley") onto the Items heading.
+- **Text size** slider (options, `CFQ.tallyTextScale`, 80-150%, saved): lines, notes and footer scale; the heading
+  by half as much (`P.TextScale`) so it keeps clear of its underline.
 - **Margins follow the window** on texture looks: `style.inset = { l, t, r, b }` fractions (`P.GetPads`,
   `P.LayoutPads` on resize; `pad` is only the minimum). Measure with `[TexGen]::SafeRect(tga)` after regenerating.
 - The handkerchief must read as **cloth, not paper**: rounded corners, scalloped lace edge with eyelets
