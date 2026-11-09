@@ -43,6 +43,8 @@ function methods:GetRect() if self.__rect then return unpack(self.__rect) end re
 function methods:SetTexture(t) self.__tex = t; self.__color = nil; return true end
 function methods:SetColorTexture(r, g, b, a) self.__color = { r, g, b, a }; self.__tex = nil end
 function methods:SetVertexColor(r, g, b, a) self.__vc = { r, g, b, a or 1 } end
+function methods:SetShadowColor(r, g, b, a) self.__shadow = { r, g, b, a or 1 } end
+function methods:SetShadowOffset(x, y) self.__shadowOff = { x, y } end
 function methods:SetTexCoord(...) self.__tc = { ... } end
 function methods:GetEffectiveScale() return 1 end
 function methods:GetScale() return 1 end

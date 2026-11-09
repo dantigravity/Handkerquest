@@ -3,7 +3,7 @@ using System.IO;
 using System.Drawing;
 using System.Drawing.Imaging;
 
-// Procedural textures for the Handkerquest tally: crumpled paper and a torn rag.
+// Procedural textures for the Handkerquest tally: crumpled paper, a torn rag, a flat stone, a bark slab.
 public static class TexGen
 {
     // ---------------------------------------------------------------- noise
@@ -258,6 +258,650 @@ public static class TexGen
                 }
 
                 img[x, y, 0] = r; img[x, y, 1] = g; img[x, y, 2] = b; img[x, y, 3] = a;
+            }
+        Save(img, tga, png);
+    }
+
+    // ---------------------------------------------------------------- cured pipe-weed leaf
+    // A broad tobacco leaf, air-cured to gold and brown: stem stub at the left, tip at the right,
+    // a pale flattened midrib, lateral veins sweeping toward the tip, a fine network of veinlets
+    // puckering the leaf into little cells, crinkles from drying, darker curing spots, wavy edges
+    // with a couple of dry splits.
+    static void Cell(double x, double y, int s, out double f1, out double f2)
+    {
+        int xi = (int)Math.Floor(x), yi = (int)Math.Floor(y);
+        f1 = 9; f2 = 9;
+        for (int j = -1; j <= 1; j++)
+            for (int i = -1; i <= 1; i++)
+            {
+                double px = xi + i + Hash(xi + i, yi + j, s), py = yi + j + Hash(xi + i, yi + j, s + 1);
+                double d = Math.Sqrt((px - x) * (px - x) + (py - y) * (py - y));
+                if (d < f1) { f2 = f1; f1 = d; } else if (d < f2) f2 = d;
+            }
+    }
+    public static void Leaf(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        int W = size, H = size;
+        double x0 = W * 0.035, x1 = W * 0.975;             // stem end, tip
+        double yc = H * 0.50;
+        var hgt = new double[W, H];
+        var col = new double[W, H, 3];
+        var alpha = new double[W, H];
+        var rnd = new Random(seed);
+        int nVein = 9;
+        var vu = new double[nVein];
+        for (int i = 0; i < nVein; i++) vu[i] = 0.06 + i * 0.105 + (rnd.NextDouble() - 0.5) * 0.03;
+
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double u = (x - x0) / (x1 - x0);           // 0 at the stem, 1 at the tip
+                // the midrib bows gently
+                double ym = yc + Math.Sin(u * Math.PI) * H * 0.025 + (Fbm(u * 3, 0.5, 2, 301) - 0.5) * 8;
+                double dy = y - ym, ady = Math.Abs(dy);
+                // broad ovate outline: widest a third of the way along, drawn to a point at the tip
+                double uu = Clamp(u, 0, 1);
+                // rounded base, widest at 38%, then drawn out to a pointed tip
+                double half;
+                if (u < 0) half = 0;                                                    // only the stem out here
+                else if (uu < 0.42) { double tb = (0.42 - uu) / 0.43; half = Math.Sqrt(Math.Max(0, 1 - Math.Pow(tb, 2.6))); }
+                else { double tt = (uu - 0.42) / 0.58; half = Math.Pow(Math.Max(0, 1 - Math.Pow(tt, 2.3)), 1.15); }
+                half *= H * 0.445;
+                half *= 1 + (Fbm(x / 40.0, dy > 0 ? 3.0 : 7.0, 3, 302) - 0.5) * 0.10;   // wavy, a little uneven
+                half += (Value(x / 7.0, dy > 0 ? 11.0 : 13.0, 303) - 0.5) * 3.0;          // crinkled rim
+                // dry splits running in from the edge along a vein
+                for (int k = 0; k < 1; k++)
+                {
+                    double su = k == 0 ? 0.64 : 0.30, side = k == 0 ? -1 : 1;     // upper edge: clear of the page-turn corner
+                    if (dy * side > 0)
+                    {
+                        double xv = x0 + su * (x1 - x0) + ady * 0.55;
+                        double depthIn = H * (k == 0 ? 0.08 : 0.09);
+                        double open = ady - (half - depthIn);                           // the split opens toward the edge
+                        if (open > 0 && Math.Abs(x - xv) < 0.8 + open * 0.16) half = Math.Min(half, ady - 0.5);
+                    }
+                }
+                double inside = half - ady;
+                // stem stub sticking out at the left
+                double stem = (u < 0.02 && u > -0.035) ? 5.5 - ady : -9;
+                double a = Clamp(Math.Max(inside, stem) / 1.2, 0, 1);
+                if (u < -0.035 || u > 1) a = 0;
+                alpha[x, y] = a;
+
+                // ---- relief
+                double h = 0;
+                double rib = Math.Max(0, 1 - ady / (11.0 * (1 - uu * 0.8) + 1.5));
+                h += Math.Sqrt(rib) * 3.6;                                                   // raised midrib, thick at the stem
+                // lateral veins: leave the midrib at an angle and sweep toward the tip
+                double vein = 0;
+                for (int vi = 0; vi < nVein; vi++)
+                {
+                    // alternate: the veins on the lower side sit half a step further along
+                    double v0 = vu[vi] + (dy > 0 ? 0.05 : 0);
+                    double xv = x0 + v0 * (x1 - x0) + ady * 0.40 + ady * ady / H * 1.9;
+                    double reach = Clamp(ady / Math.Max(1, half), 0, 1);
+                    double w = 2.4 * (1 - reach) + 0.5;
+                    double dist = Math.Abs(x - xv) * 0.7;
+                    if (dist < w * 2) vein = Math.Max(vein, (1 - dist / (w * 2)) * Clamp((1 - reach) * 4, 0, 1));
+                }
+                h += vein * 1.3;
+                // veinlets: a cell network that puckers the leaf between them
+                double f1, f2;
+                Cell(x / 13.0 + Fbm(x / 30.0, y / 30.0, 2, 304), y / 13.0, 305, out f1, out f2);
+                double net = Clamp(1 - (f2 - f1) / 0.12, 0, 1);
+                h += net * 0.55 + Math.Sqrt(Clamp(f1, 0, 1)) * -0.35;
+                // drying crinkles
+                h += (Fbm(x / 45.0, y / 18.0, 4, 306) - 0.5) * 7.0 + (Ridged(x / 25.0, y / 12.0, 3, 307) - 0.5) * 2.5;
+                // the edges curl up a little
+                h += Clamp(1 - inside / 18.0, 0, 1) * 3.0;
+                hgt[x, y] = h;
+
+                // ---- colour: cured gold to brown, darker patches and spots, paler veins
+                double m = Fbm(x / 70.0, y / 70.0, 4, 310);
+                double r = 0.66, g = 0.46, b = 0.22;                                       // golden
+                double dark = Clamp((m - 0.42) * 2.2, 0, 1);
+                r += (0.47 - r) * dark; g += (0.29 - g) * dark; b += (0.12 - b) * dark;   // to brown
+                double green = Clamp((Fbm(x / 90.0, y / 90.0, 3, 311) - 0.70) * 4, 0, 0.35);
+                r += (0.52 - r) * green; g += (0.47 - g) * green; b += (0.22 - b) * green; // a trace of unripe green
+                double spots = Clamp((Fbm(x / 9.0, y / 9.0, 3, 312) - 0.68) * 5, 0, 1) * Clamp((m - 0.35) * 3, 0, 1);
+                r *= 1 - 0.30 * spots; g *= 1 - 0.36 * spots; b *= 1 - 0.40 * spots;    // curing spots
+                double pale = Math.Max(rib, vein * 0.75);
+                r += (0.80 - r) * pale * 0.55; g += (0.64 - g) * pale * 0.55; b += (0.38 - b) * pale * 0.55;
+                r += net * 0.025; g += net * 0.02;
+                // edges browner and drier
+                double edge = Clamp(1 - inside / 14.0, 0, 1);
+                r *= 1 - 0.22 * edge; g *= 1 - 0.30 * edge; b *= 1 - 0.35 * edge;
+                if (stem > 0 && inside <= 0) { r = 0.55; g = 0.40; b = 0.22; }
+                col[x, y, 0] = r; col[x, y, 1] = g; col[x, y, 2] = b;
+            }
+
+        double lx, ly, lz; Light(out lx, out ly, out lz);
+        var img = new double[W, H, 4];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                int xa = Math.Max(0, x - 1), xb = Math.Min(W - 1, x + 1), ya = Math.Max(0, y - 1), yb = Math.Min(H - 1, y + 1);
+                double gx = (hgt[xb, y] - hgt[xa, y]) * 0.5, gy = (hgt[x, yb] - hgt[x, ya]) * 0.5;
+                double nX = -gx * 1.3, nY = -gy * 1.3, nZ = 1;
+                double nl = Math.Sqrt(nX * nX + nY * nY + nZ * nZ); nX /= nl; nY /= nl; nZ /= nl;
+                double diff = Clamp(nX * lx + nY * ly + nZ * lz, 0, 1);
+                double sheen = Math.Pow(diff, 14) * 0.08;                                  // the leaf''s oils
+                double tone = 0.50 + 0.62 * diff;
+                for (int c = 0; c < 3; c++) img[x, y, c] = col[x, y, c] * tone + sheen;
+                img[x, y, 3] = alpha[x, y];
+            }
+        Save(img, tga, png);
+    }
+
+    // ---------------------------------------------------------------- etched leather
+    // A piece of saddle-brown hide cut from a larger skin: pebbled grain, soft wrinkles, burnished dark
+    // edges, a tooled border groove with stitch holes outside it. The list is pressed into it.
+    public static void Leather(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        int W = size, H = size;
+        double cx0 = W * 0.5, cy0 = H * 0.5, ax = W * 0.475, ay = H * 0.445;
+        double R = Math.Min(ax, ay);
+        var hgt = new double[W, H];
+        var col = new double[W, H, 3];
+        var alpha = new double[W, H];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double dx = (x - cx0) / ax, dy = (y - cy0) / ay;
+                double th = Math.Atan2(dy, dx), ct = Math.Cos(th), st = Math.Sin(th);
+                double p = 4.2;
+                double q = Math.Pow(Math.Pow(Math.Abs(dx), p) + Math.Pow(Math.Abs(dy), p), 1.0 / p);
+                double rim = 1.0 + (Fbm(ct * 1.3 + 3, st * 1.3 + 3, 3, 401) - 0.5) * 0.10     // the hide's lobes
+                    + (Value(th * 9.0 + 20, 0.5, 402) - 0.5) * 0.012;                        // knife facets
+                q /= rim;
+                double inside = (1 - q) * R;                       // ~ pixels in from the cut edge
+                alpha[x, y] = Clamp(inside / 1.2, 0, 1);
+
+                // ---- relief
+                double h = Math.Sqrt(Clamp(inside / 10.0, 0, 1)) * 6.0;                    // the edge rounds off
+                double f1, f2;
+                Cell(x / 5.2 + Fbm(x / 40.0, y / 40.0, 2, 403) * 1.5, y / 5.2, 404, out f1, out f2);
+                double pebble = Math.Sqrt(Clamp(1 - f1 * 1.15, 0, 1));                     // each grain a little dome
+                double crease = Clamp(1 - (f2 - f1) / 0.10, 0, 1);                          // fine creases between them
+                h += pebble * 0.85 - crease * 0.55;
+                h += (Fbm(x / 120.0, y / 120.0, 3, 405) - 0.5) * 7.0;                      // the hide's swell
+                h += (Ridged(x / 70.0, y / 22.0, 3, 406) - 0.55) * 2.2;                     // soft wrinkles
+                double groove = Math.Exp(-Math.Pow(inside - 15.0, 2) / (2 * 1.1 * 1.1));     // tooled border
+                double groove2 = Math.Exp(-Math.Pow(inside - 19.5, 2) / (2 * 0.6 * 0.6));
+                h -= groove * 2.4 + groove2 * 1.0;
+                double perim = (th + Math.PI) * R * 1.05;                                   // ~ distance round the edge
+                double fr = perim / 9.0 - Math.Floor(perim / 9.0);
+                double hole = (Math.Abs(inside - 8.0) < 1.4 && Math.Abs(fr - 0.5) < 0.14) ? 1 : 0;   // stitch holes
+                h -= hole * 2.0;
+                hgt[x, y] = h;
+
+                // ---- colour: saddle brown, mottled, burnished darker at the edges and in the tooling
+                double m = Fbm(x / 80.0, y / 80.0, 4, 410);
+                double r = 0.50 + (m - 0.5) * 0.16, g = 0.31 + (m - 0.5) * 0.11, b = 0.17 + (m - 0.5) * 0.06;
+                double worn = Clamp((Fbm(x / 50.0, y / 50.0, 3, 411) - 0.58) * 3, 0, 1) * 0.25;   // rubbed paler
+                r += (0.68 - r) * worn; g += (0.48 - g) * worn; b += (0.30 - b) * worn;
+                double dk = crease * 0.10 + groove * 0.38 + groove2 * 0.20;
+                double edge = Clamp(1 - inside / 12.0, 0, 1);
+                dk = Math.Max(dk, edge * 0.50);
+                r *= 1 - dk; g *= 1 - dk * 1.08; b *= 1 - dk * 1.12;
+                if (hole > 0) { r *= 0.30; g *= 0.25; b *= 0.22; }
+                col[x, y, 0] = r; col[x, y, 1] = g; col[x, y, 2] = b;
+            }
+
+        double lx, ly, lz; Light(out lx, out ly, out lz);
+        var img = new double[W, H, 4];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                int xa = Math.Max(0, x - 1), xb = Math.Min(W - 1, x + 1), ya = Math.Max(0, y - 1), yb = Math.Min(H - 1, y + 1);
+                double gx = (hgt[xb, y] - hgt[xa, y]) * 0.5, gy = (hgt[x, yb] - hgt[x, ya]) * 0.5;
+                double nX = -gx, nY = -gy, nZ = 1;
+                double nl = Math.Sqrt(nX * nX + nY * nY + nZ * nZ); nX /= nl; nY /= nl; nZ /= nl;
+                double diff = Clamp(nX * lx + nY * ly + nZ * lz, 0, 1);
+                double sheen = Math.Pow(diff, 12) * 0.10;                                   // waxed
+                double tone = 0.46 + 0.64 * diff;
+                for (int c = 0; c < 3; c++) img[x, y, c] = col[x, y, c] * tone + sheen;
+                img[x, y, 3] = alpha[x, y];
+            }
+        Save(img, tga, png);
+    }
+
+    // ---------------------------------------------------------------- arcane script
+    // Mage writing hanging in the air: a soft violet haze for the words to sit on (ArcaneHaze) and a
+    // glowing rune circle drawn white (ArcaneRing; the addon tints it, adds it and turns it slowly).
+    public static void ArcaneHaze(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        int W = size, H = size;
+        var img = new double[W, H, 4];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double dx = (x - W * 0.5) / (W * 0.5), dy = (y - H * 0.5) / (H * 0.5);
+                double q = Math.Pow(Math.Pow(Math.Abs(dx), 3) + Math.Pow(Math.Abs(dy), 3), 1.0 / 3);
+                double t = Clamp((q - 0.45) / 0.55, 0, 1);
+                double fall = 1 - t * t * (3 - 2 * t);                                        // smooth fade to the edge
+                double wisp = Fbm(x / 40.0, y / 28.0, 4, 501);
+                double a = 0.62 * fall * (0.80 + 0.40 * wisp);
+                double mix = Fbm(x / 70.0, y / 70.0, 3, 502);
+                img[x, y, 0] = 0.06 + 0.05 * mix; img[x, y, 1] = 0.03; img[x, y, 2] = 0.13 + 0.06 * (1 - mix);
+                img[x, y, 3] = Clamp(a, 0, 1);
+            }
+        Save(img, tga, png);
+    }
+
+    static double SegDist(double px, double py, double ax, double ay, double bx, double by)
+    {
+        double vx = bx - ax, vy = by - ay, wx = px - ax, wy = py - ay;
+        double t = Clamp((wx * vx + wy * vy) / Math.Max(1e-9, vx * vx + vy * vy), 0, 1);
+        double ex = wx - vx * t, ey = wy - vy * t;
+        return Math.Sqrt(ex * ex + ey * ey);
+    }
+
+    public static void ArcaneRing(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        int W = size, H = size;
+        double S = W * 0.5;
+        var rnd = new Random(seed);
+        int nRune = 30;
+        // each rune: 2-3 strokes in a unit cell (u along the ring, v outward), coords in -1..1
+        var runes = new double[nRune][];
+        for (int i = 0; i < nRune; i++)
+        {
+            int n = 2 + rnd.Next(2);
+            var segs = new double[n * 4];
+            for (int k = 0; k < n; k++)
+            {
+                int kind = rnd.Next(4);
+                double a = rnd.NextDouble() * 1.2 - 0.6;
+                if (kind == 0) { segs[k * 4] = a; segs[k * 4 + 1] = -0.9; segs[k * 4 + 2] = a; segs[k * 4 + 3] = 0.9; }          // stave
+                else if (kind == 1) { segs[k * 4] = -0.7; segs[k * 4 + 1] = a; segs[k * 4 + 2] = 0.7; segs[k * 4 + 3] = -a; }   // slant
+                else if (kind == 2) { segs[k * 4] = -0.6; segs[k * 4 + 1] = 0.9; segs[k * 4 + 2] = 0.1; segs[k * 4 + 3] = a; }   // branch
+                else { segs[k * 4] = -0.6; segs[k * 4 + 1] = a; segs[k * 4 + 2] = 0.6; segs[k * 4 + 3] = a; }                 // bar
+            }
+            runes[i] = segs;
+        }
+        var img = new double[W, H, 4];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double px = (x + 0.5 - S) / S, py = (y + 0.5 - S) / S;
+                double r = Math.Sqrt(px * px + py * py), th = Math.Atan2(py, px);
+                double d = 9;                                                       // distance to the nearest line, in pixels
+                d = Math.Min(d, Math.Abs(r - 0.95) * S);
+                d = Math.Min(d, Math.Abs(r - 0.82) * S);
+                d = Math.Min(d, Math.Abs(r - 0.60) * S);
+                // runes in the band between the outer circles
+                if (r > 0.83 && r < 0.94)
+                {
+                    double cellA = 2 * Math.PI / nRune;
+                    int ci = (int)Math.Floor((th + Math.PI) / cellA);
+                    double mid = -Math.PI + (ci + 0.5) * cellA;
+                    double u = (th - mid) / (cellA * 0.38), v = (r - 0.885) / 0.042;
+                    var segs = runes[((ci % nRune) + nRune) % nRune];
+                    double scale = cellA * 0.38 * 0.885 * S;                        // pixels per unit u (roughly v too)
+                    for (int k = 0; k < segs.Length; k += 4)
+                        d = Math.Min(d, SegDist(u, v, segs[k], segs[k + 1], segs[k + 2], segs[k + 3]) * Math.Min(scale, 0.042 * S));
+                }
+                // a triangle inside the inner circle with a small ring at each point, an inner circle holding
+                // a smaller upside-down triangle, and short spokes round the inner circle
+                for (int k = 0; k < 3; k++)
+                {
+                    double a0 = -Math.PI / 2 + k * 2 * Math.PI / 3, a1 = a0 + 2 * Math.PI / 3;
+                    double ax_ = Math.Cos(a0) * 0.60, ay_ = Math.Sin(a0) * 0.60, bx = Math.Cos(a1) * 0.60, by = Math.Sin(a1) * 0.60;
+                    d = Math.Min(d, SegDist(px, py, ax_, ay_, bx, by) * S);
+                    double rx = px - ax_, ry = py - ay_;
+                    d = Math.Min(d, Math.Abs(Math.Sqrt(rx * rx + ry * ry) - 0.05) * S);
+                    double b0 = Math.PI / 2 + k * 2 * Math.PI / 3, b1 = b0 + 2 * Math.PI / 3;
+                    d = Math.Min(d, SegDist(px, py, Math.Cos(b0) * 0.28, Math.Sin(b0) * 0.28, Math.Cos(b1) * 0.28, Math.Sin(b1) * 0.28) * S);
+                }
+                d = Math.Min(d, Math.Abs(r - 0.30) * S);
+                for (int k = 0; k < 12; k++)
+                {
+                    double sa = k * Math.PI / 6 + Math.PI / 12;
+                    d = Math.Min(d, SegDist(px, py, Math.Cos(sa) * 0.63, Math.Sin(sa) * 0.63, Math.Cos(sa) * 0.70, Math.Sin(sa) * 0.70) * S);
+                }
+                double core = Clamp(1.6 - d, 0, 1);                                 // ~1.5px line
+                double glow = Math.Exp(-d / 4.0) * 0.35;
+                double flick = 0.85 + 0.15 * Fbm(th * 4 + 10, r * 6, 2, 601);
+                double a = Clamp((core + glow) * flick, 0, 1);
+                if (r > 1.0) a = 0;
+                img[x, y, 0] = 1; img[x, y, 1] = 1; img[x, y, 2] = 1; img[x, y, 3] = a;
+            }
+        Save(img, tga, png);
+    }
+
+    // ---------------------------------------------------------------- chalk grain
+    // A small tiling overlay laid over the chalked writing: slate-coloured, with alpha where the chalk
+    // skipped over the stone's low spots (speckle plus streaks along the stroke). Over bare slate it
+    // is nearly invisible (same colour); over chalk it breaks the letters up like real chalk.
+    static double TileValue(double x, double y, int period, int s)
+    {
+        int xi = (int)Math.Floor(x), yi = (int)Math.Floor(y);
+        double xf = x - xi, yf = y - yi;
+        Func<int, int, double> h = (a, c) => Hash(((a % period) + period) % period, ((c % period) + period) % period, s);
+        double u = Smooth(xf), v = Smooth(yf);
+        return (h(xi, yi) * (1 - u) + h(xi + 1, yi) * u) * (1 - v) + (h(xi, yi + 1) * (1 - u) + h(xi + 1, yi + 1) * u) * v;
+    }
+    public static void ChalkGrain(string tga, string png, int size, int seed, double r, double g, double b)
+    {
+        Seed = seed;
+        var img = new double[size, size, 4];
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                // fine speckle (periods divide the tile, so it repeats seamlessly)
+                double sp = TileValue(x / 1.0, y / 1.0, size, 1) * 0.45 + TileValue(x / 2.0, y / 2.0, size / 2, 2) * 0.35
+                          + TileValue(x / 4.0, y / 4.0, size / 4, 3) * 0.20;
+                // streaks: low spots in the stone the chalk skipped, drawn out sideways
+                double st = TileValue(x / 8.0, y / 1.5, size / 8, 4) * 0.6 + TileValue(x / 16.0, y / 3.0, size / 16, 5) * 0.4;
+                double gap = Math.Max(Clamp((sp - 0.58) * 3.2, 0, 1), Clamp((st - 0.60) * 3.0, 0, 1) * 0.85);
+                img[x, y, 0] = r; img[x, y, 1] = g; img[x, y, 2] = b;
+                img[x, y, 3] = gap;
+            }
+        Save(img, tga, png);
+    }
+
+    // ---------------------------------------------------------------- measuring
+    // The largest rectangle that lies entirely on the material (alpha >= 0.94), as fractions of the
+    // image: "left, top, right, bottom" insets. The addon keeps the writing inside it (style.inset),
+    // so it follows the shape when the window is stretched. Also prints the bottom-right corner
+    // along the diagonal (style.imageCorner).
+    public static string SafeRect(string tgaPath)
+    {
+        byte[] b = File.ReadAllBytes(tgaPath);
+        int W = b[12] | (b[13] << 8), H = b[14] | (b[15] << 8);
+        int S = 4;                                    // search on a 4px grid
+        int gw = W / S, gh = H / S;
+        var sum = new int[gw + 1, gh + 1];           // prefix sum of "not material" cells
+        for (int y = 0; y < gh; y++)
+            for (int x = 0; x < gw; x++)
+            {
+                int bad = 0;
+                for (int dy = 0; dy < S && bad == 0; dy++)
+                    for (int dx = 0; dx < S; dx++)
+                        if (b[18 + ((y * S + dy) * W + x * S + dx) * 4 + 3] < 240) { bad = 1; break; }
+                sum[x + 1, y + 1] = bad + sum[x, y + 1] + sum[x + 1, y] - sum[x, y];
+            }
+        long best = 0; int bl = 0, bt = 0, br = 0, bb = 0;
+        for (int t = 0; t < gh / 2; t++)
+            for (int bo = gh; bo > gh / 2; bo--)
+                for (int l = 0; l < gw / 2; l++)
+                {
+                    // widest r for this l, t, b: walk right while still clean (monotone)
+                    int lo = l + 1, hi = gw, r = -1;
+                    while (lo <= hi)
+                    {
+                        int mid = (lo + hi) / 2;
+                        int bad = sum[mid, bo] - sum[l, bo] - sum[mid, t] + sum[l, t];
+                        if (bad == 0) { r = mid; lo = mid + 1; } else hi = mid - 1;
+                    }
+                    if (r < 0) continue;
+                    long area = (long)(r - l) * (bo - t);
+                    if (area > best) { best = area; bl = l; bt = t; br = r; bb = bo; }
+                }
+        int diag = 0;
+        while (diag < W && b[18 + ((H - 1 - diag) * W + (W - 1 - diag)) * 4 + 3] < 128) diag++;
+        return string.Format(System.Globalization.CultureInfo.InvariantCulture,
+            "inset = {{ {0:0.000}, {1:0.000}, {2:0.000}, {3:0.000} }}  imageCorner(diagonal) = {4:0.000}",
+            bl * S / (double)W, bt * S / (double)H, 1 - br * S / (double)W, 1 - bb * S / (double)H, diag / (double)W);
+    }
+
+    // ---------------------------------------------------------------- shared helpers
+    static void Light(out double lx, out double ly, out double lz)
+    {
+        lx = -0.55; ly = -0.62; lz = 0.56;
+        double ll = Math.Sqrt(lx * lx + ly * ly + lz * lz); lx /= ll; ly /= ll; lz /= ll;
+    }
+    static double Ridged(double x, double y, int oct, int s)
+    {
+        double sum = 0, amp = 0.5, f = 1, norm = 0;
+        for (int i = 0; i < oct; i++) { sum += amp * (1 - Math.Abs(Value(x * f, y * f, s + i * 13) * 2 - 1)); norm += amp; amp *= 0.5; f *= 2; }
+        return sum / norm;
+    }
+
+    // ---------------------------------------------------------------- flat stone
+    // An oblong river/field stone with a broad flat face to chalk on: grey, granite-speckled,
+    // a quartz vein, a hairline crack, lichen creeping in from the rim, rolled-off edges in shadow.
+    public static void Stone(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        int W = size, H = size;
+        var hgt = new double[W, H];
+        var qv = new double[W, H];
+        double cx0 = W * 0.5, cy0 = H * 0.5;
+        double ax = W * 0.465, ay = H * 0.445;
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double dx = (x - cx0) / ax, dy = (y - cy0) / ay;
+                // egg: the right end a little fuller, the bottom a little flatter
+                dy *= 1.0 - 0.06 * (dx);
+                double th = Math.Atan2(dy, dx);
+                double p = 3.0;
+                double q = Math.Pow(Math.Pow(Math.Abs(dx), p) + Math.Pow(Math.Abs(dy), p), 1.0 / p);
+                double ct = Math.Cos(th), st = Math.Sin(th);
+                double rim = 1.0
+                    + (Fbm(ct * 1.6 + 5, st * 1.6 + 5, 3, 61) - 0.5) * 0.16     // lumpy outline
+                    + (Fbm(ct * 6.0 + 9, st * 6.0 + 9, 2, 62) - 0.5) * 0.035;   // small chips
+                q /= rim;
+                qv[x, y] = q;
+                // flat-topped dome: the face is nearly level, the sides roll steeply away
+                double dome = q < 1 ? Math.Sqrt(Math.Max(0, 1 - Math.Pow(q, 5))) : 0;
+                double bumps = (Fbm(x / 110.0, y / 110.0, 3, 63) - 0.5) * 7.0           // water-worn: gentle swells only
+                    + (x - W * 0.5) / W * -3.0                                           // the face tilts a touch toward the light
+                    + (Fbm(x / 3.0, y / 3.0, 2, 67) - 0.5) * 0.35;                       // fine matte grain that catches the light
+                double pitMask = Clamp((Fbm(x / 80.0, y / 80.0, 2, 66) - 0.45) * 4, 0, 1);   // pits cluster in patches
+                double pits = -Math.Pow(Clamp(Fbm(x / 13.0, y / 13.0, 3, 64) - 0.74, 0, 1), 1.3) * 5.0 * pitMask;
+                double weather = (Ridged(x / 45.0, y / 45.0, 3, 65) - 0.5) * 0.5;
+                hgt[x, y] = dome * 70.0 + (bumps + pits + weather) * Clamp(dome * 3, 0, 1);
+            }
+
+        // a hairline crack: a random walk across part of the face
+        var crack = new double[W, H];
+        var rnd = new Random(seed);
+        {
+            double px = W * 0.62, py = H * 0.18, ang = Math.PI * 0.62;
+            for (int k = 0; k < 520; k++)
+            {
+                ang += (rnd.NextDouble() - 0.5) * 0.5;
+                px += Math.Cos(ang) * 0.9; py += Math.Sin(ang) * 0.9;
+                double wdt = 0.9 * (1 - k / 600.0);
+                for (int oy = -2; oy <= 2; oy++)
+                    for (int ox = -2; ox <= 2; ox++)
+                    {
+                        int ix = (int)(px + ox), iy = (int)(py + oy);
+                        if (ix < 0 || iy < 0 || ix >= W || iy >= H) continue;
+                        double d = Math.Sqrt((ix - px) * (ix - px) + (iy - py) * (iy - py));
+                        crack[ix, iy] = Math.Max(crack[ix, iy], Clamp(1 - d / (wdt + 0.6), 0, 1));
+                    }
+                if (k == 260) ang += 0.7;
+            }
+            // the crack is a real groove: its upper wall shades, the lower one catches the light
+            for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) hgt[x, y] -= crack[x, y] * 2.2;
+        }
+
+        double lx, ly, lz; Light(out lx, out ly, out lz);
+        var img = new double[W, H, 4];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                int x0 = Math.Max(0, x - 1), x1 = Math.Min(W - 1, x + 1), y0 = Math.Max(0, y - 1), y1 = Math.Min(H - 1, y + 1);
+                double gx = (hgt[x1, y] - hgt[x0, y]) * 0.5, gy = (hgt[x, y1] - hgt[x, y0]) * 0.5;
+                double nX = -gx, nY = -gy, nZ = 1.0;
+                double nl = Math.Sqrt(nX * nX + nY * nY + nZ * nZ); nX /= nl; nY /= nl; nZ /= nl;
+                double diff = Clamp(nX * lx + nY * ly + nZ * lz, 0, 1);
+                double spec = Math.Pow(Clamp(diff, 0, 1), 10) * 0.10;                     // river-polished sheen
+                double q = qv[x, y];
+
+                // albedo: dark blue-grey slate, a slow wander in tone, faint layering bands
+                double base_ = 0.215 + (Fbm(x / 70.0, y / 70.0, 4, 70) - 0.5) * 0.05;
+                double warm = (Fbm(x / 110.0, y / 110.0, 3, 71) - 0.5) * 0.03;
+                double r = base_ + warm - 0.010, g = base_ + warm * 0.4 + 0.005, b = base_ - warm * 0.3 + 0.030;
+                double lam = (y + x * 0.18) / 7.0 + (Fbm(x / 90.0, y / 90.0, 3, 72) - 0.5) * 6.0;
+                double band = (Math.Sin(lam) * 0.5 + 0.5) * (Fbm(x / 40.0, y / 40.0, 2, 69) * 0.8 + 0.2);
+                r += (band - 0.3) * 0.022; g += (band - 0.3) * 0.022; b += (band - 0.3) * 0.026;
+                double fine = (Hash(x, y, 73) - 0.5) * 0.018;
+                r += fine; g += fine; b += fine;
+                // rusty iron staining seeping along the layers, and darker damp patches
+                double iron = Clamp((Fbm(x / 55.0, y / 30.0, 4, 68) - 0.60) * 3.5, 0, 1) * 0.45;
+                r += (0.30 - r) * iron; g += (0.235 - g) * iron; b += (0.18 - b) * iron;
+                double damp = Clamp((Fbm(x / 45.0, y / 45.0, 3, 59) - 0.58) * 4, 0, 1) * 0.14;
+                r *= 1 - damp; g *= 1 - damp; b *= 1 - damp * 0.8;
+                // the odd pale mineral fleck
+                if (Value(x / 1.6, y / 1.6, 58) > 0.965) { r += 0.10; g += 0.10; b += 0.10; }
+
+                // a quartz vein wandering across the lower part
+                double vy = H * 0.74 + (x - W * 0.5) * 0.22 + (Fbm(x / 60.0, 0.5, 3, 74) - 0.5) * 34
+                    + (Fbm(x / 6.0, y / 6.0, 2, 79) - 0.5) * 3.0;                   // ragged edges
+                double vd = Math.Abs(y - vy);
+                double vw = 0.8 + Fbm(x / 25.0, 1.5, 2, 75) * 3.2;
+                double vFade = Clamp((Fbm(x / 70.0, 2.5, 2, 80) - 0.30) * 3, 0, 1);  // the vein comes and goes
+                if (vd < vw) { double k = Math.Pow(1 - vd / vw, 0.5) * 0.45 * vFade; r += (0.66 - r) * k; g += (0.67 - g) * k; b += (0.66 - b) * k; }
+
+                // lichen creeping in from the rim (pale sage, a few rusty orange spots)
+                double lich = Fbm(x / 26.0, y / 26.0, 4, 76) + Clamp((q - 0.72) * 1.6, 0, 0.5);
+                if (lich > 9 && q < 1)             // river stone: no lichen (kept for other stones: lower the threshold)
+                {
+                    double k = Clamp((lich - 0.86) * 9, 0, 1) * (0.7 + 0.3 * Value(x * 0.5, y * 0.5, 77));
+                    bool rust = Fbm(x / 60.0, y / 60.0, 2, 78) > 0.68;
+                    double lr = rust ? 0.72 : 0.66, lg = rust ? 0.52 : 0.68, lb = rust ? 0.30 : 0.52;
+                    r += (lr - r) * k; g += (lg - g) * k; b += (lb - b) * k;
+                }
+
+                double light = 0.32 + 0.85 * diff + spec;
+                // ambient occlusion: the underside of the roll-off sinks into shadow
+                double ao = 1 - Clamp((q - 0.80) * 2.2, 0, 0.55);
+                double tone = light * ao * (1 - crack[x, y] * 0.30);
+                img[x, y, 0] = r * tone; img[x, y, 1] = g * tone; img[x, y, 2] = b * tone;
+                img[x, y, 3] = Clamp((1 - q) * W * 0.5 / 1.2, 0, 1);
+            }
+        Save(img, tga, png);
+    }
+
+    // ---------------------------------------------------------------- bark slab
+    // A jagged slab of bark broken off a trunk (grain running left-right): rough plates split by
+    // furrows, lichen and moss in the cracks, and the broken edge showing the reddish layered
+    // inner bark along the bottom and right where the slab's thickness faces the viewer.
+    public static void Bark(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        int W = size, H = size;
+        var rnd = new Random(seed);
+        // outline: a polygon of broken edges, long splinters at the ends (bark splits along the grain)
+        int nv = 34;
+        var vx = new double[nv]; var vy = new double[nv];
+        for (int i = 0; i < nv; i++)
+        {
+            double t = 2 * Math.PI * i / nv + (rnd.NextDouble() - 0.5) * 0.10;
+            double ct = Math.Cos(t), st = Math.Sin(t);
+            double rx = W * 0.47, ry = H * 0.42;
+            double sq = 3.2;     // squarish slab
+            double k = Math.Pow(Math.Pow(Math.Abs(ct), sq) + Math.Pow(Math.Abs(st), sq), -1.0 / sq);
+            double jag = 1 - rnd.NextDouble() * 0.07;
+            // the ends split along the grain into splinters: alternate long points and deep notches
+            if (Math.Abs(ct) > 0.80) jag += (i % 2 == 0) ? 0.03 + rnd.NextDouble() * 0.04 : -0.06 - rnd.NextDouble() * 0.07;
+            // top and bottom break across the grain: a few bites out of them
+            else if (rnd.NextDouble() < 0.25) jag -= 0.05 + rnd.NextDouble() * 0.05;
+            vx[i] = W * 0.5 + ct * rx * k * jag;
+            vy[i] = H * 0.5 + st * ry * k * jag;
+        }
+        Func<double, double, double> sdPoly = (px, py) =>
+        {
+            double d = double.MaxValue; bool inside = false;
+            for (int i = 0, j = nv - 1; i < nv; j = i++)
+            {
+                double ex = vx[i] - vx[j], ey = vy[i] - vy[j];
+                double wx = px - vx[j], wy = py - vy[j];
+                double t = Clamp((wx * ex + wy * ey) / (ex * ex + ey * ey), 0, 1);
+                double ddx = wx - ex * t, ddy = wy - ey * t;
+                d = Math.Min(d, ddx * ddx + ddy * ddy);
+                if (((vy[i] > py) != (vy[j] > py)) && (px < (vx[j] - vx[i]) * (py - vy[i]) / (vy[j] - vy[i]) + vx[i])) inside = !inside;
+            }
+            return (inside ? 1 : -1) * Math.Sqrt(d);
+        };
+
+        // bark relief: plates split by furrows that run along the grain (left-right), wandering
+        // furrows are the contour lines of noise stretched along the grain, so they meander, merge
+        // and split like real bark fissures; plates between them carry fibres along the grain
+        Func<double, double, double> relief = (x, y) =>
+        {
+            double wy = y + (Fbm(x / 120.0, y / 120.0, 3, 81) - 0.5) * 50;
+            double l1 = Math.Abs(Fbm(x / 170.0, wy / 30.0, 3, 82) - 0.5);
+            double l2 = Math.Abs(Fbm(x / 110.0, wy / 22.0, 2, 83) - 0.5);
+            double f1 = Math.Pow(Clamp(1 - l1 / 0.075, 0, 1), 1.3);
+            double f2 = Math.Pow(Clamp(1 - l2 / 0.040, 0, 1), 1.3) * 0.7;
+            double furrow = Math.Max(f1, f2);
+            double fibre = (Fbm(x / 30.0, y / 1.6, 3, 84) - 0.5) * 0.45 + (Fbm(x / 9.0, y / 0.9, 2, 85) - 0.5) * 0.25;
+            double flake = (Fbm(x / 12.0, y / 7.0, 3, 86) - 0.5) * 1.8 + (Ridged(x / 20.0, y / 11.0, 2, 87) - 0.5) * 0.8;   // scaly plate tops
+            double crust = (Fbm(x / 2.5, y / 2.0, 2, 88) - 0.5) * 0.7;                                                    // crusty grit
+            // (no cracks across the grain: at tally size they read as stray carving marks)
+            return Math.Sqrt(1 - furrow) * 10.0 + (fibre + flake + crust) * 1.6 * (1 - furrow * 0.6);
+        };
+
+        double lx, ly, lz; Light(out lx, out ly, out lz);
+        var img = new double[W, H, 4];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double d = sdPoly(x, y);
+                // the broken edge is fibrous: roughen the distance
+                d += (Fbm(x / 7.0, y / 7.0, 3, 87) - 0.5) * 6.0 + (Value(x / 2.0, y / 2.0, 88) - 0.5) * 1.5;
+                double a = Clamp(d / 1.2, 0, 1);
+
+                double h0 = relief(x, y), hx = relief(x + 1, y), hy = relief(x, y + 1);
+                double nX = -(hx - h0) * 1.7, nY = -(hy - h0) * 1.7, nZ = 1;
+                double nl = Math.Sqrt(nX * nX + nY * nY + nZ * nZ); nX /= nl; nY /= nl; nZ /= nl;
+                double diff = Clamp(nX * lx + nY * ly + nZ * lz, 0, 1);
+                double depth = Clamp(1 - h0 / 9.0, 0, 1);                       // 0 on plates, 1 in furrows
+
+                // colour: grey-brown weathered plates, darker reddish furrows
+                double m = (Fbm(x / 50.0, y / 50.0, 4, 89) - 0.5) * 0.08;
+                double wyc = y + (Fbm(x / 120.0, y / 120.0, 3, 81) - 0.5) * 50;
+                m += (Fbm(x / 90.0, wyc / 22.0, 3, 94) - 0.5) * 0.10;                       // each plate a shade of its own
+                m += (Hash(x, y, 95) - 0.5) * 0.035;                                        // grit
+                double r = 0.265 + m * 0.8, g = 0.180 + m * 0.65, b = 0.130 + m * 0.5;     // chocolate brown
+                double grey = Clamp(Fbm(x / 80.0, y / 40.0, 3, 90) * 1.4 - 0.55, 0, 0.30);  // a little weathering
+                r += (0.33 - r) * grey; g += (0.27 - g) * grey; b += (0.23 - b) * grey;
+                r = r * (1 - depth * 0.52) + 0.24 * depth * 0.35; g = g * (1 - depth * 0.62) + 0.10 * depth * 0.35; b = b * (1 - depth * 0.68) + 0.06 * depth * 0.35;   // reddish deep in the fissures
+                // moss and lichen in the furrows
+                double moss = Fbm(x / 30.0, y / 30.0, 3, 91);
+                if (depth > 0.45 && moss > 0.60) { double k = Clamp((moss - 0.60) * 4, 0, 0.8); r += (0.30 - r) * k; g += (0.38 - g) * k; b += (0.16 - b) * k; }
+                double lich = Fbm(x / 18.0, y / 18.0, 3, 92);
+                if (depth < 0.3 && lich > 0.80) { double k = Clamp((lich - 0.80) * 5, 0, 0.4); r += (0.62 - r) * k; g += (0.64 - g) * k; b += (0.55 - b) * k; }
+
+                // small grey-green lichen spots on the plates
+                if (depth < 0.25 && Value(x / 4.0, y / 4.0, 96) > 0.90 && Fbm(x / 70.0, y / 70.0, 2, 97) > 0.5)
+                { r += (0.48 - r) * 0.5; g += (0.50 - g) * 0.5; b += (0.42 - b) * 0.5; }
+
+                double light = 0.38 + 0.85 * diff;
+                double tone = light * (1 - 0.35 * Math.Pow(depth, 1.5));                    // fissures sink into shadow
+
+                // the slab's broken edge: its thickness shows along the bottom and right as layered
+                // reddish inner bark, a pale cambium line at the very edge
+                if (d > 0 && d < 16)
+                {
+                    // which way the edge faces: sample the outline's gradient
+                    double gxd = sdPoly(x + 2, y) - sdPoly(x - 2, y), gyd = sdPoly(x, y + 2) - sdPoly(x, y - 2);
+                    double gl = Math.Sqrt(gxd * gxd + gyd * gyd) + 1e-6;
+                    double face = Clamp((-gxd * 0.45 - gyd * 0.89) / gl, 0, 1);    // outward normal points down/right
+                    double thick = 3 + 7 * face;
+                    if (d < thick)
+                    {
+                        double layer = Math.Sin(d * 1.7 + Fbm(x / 10.0, y / 10.0, 2, 93) * 6);
+                        double fresh = Clamp(1 - d / thick, 0, 1);
+                        double er = 0.55 + 0.06 * layer, eg = 0.31 + 0.04 * layer, eb = 0.22 + 0.03 * layer;   // reddish inner bark
+                        if (d < 2.0) { er = 0.82; eg = 0.55; eb = 0.40; }                   // pale cambium at the very edge
+                        double k = Clamp(face * 1.4 + 0.25, 0, 1);
+                        r += (er - r) * k; g += (eg - g) * k; b += (eb - b) * k;
+                        tone = tone * (1 - k) + (0.70 + 0.25 * face - 0.2 * fresh * (1 - face)) * k;
+                    }
+                    else if (d < thick + 3) tone *= 0.82;                                  // lip shadow
+                }
+                img[x, y, 0] = r * tone; img[x, y, 1] = g * tone; img[x, y, 2] = b * tone; img[x, y, 3] = a;
             }
         Save(img, tga, png);
     }

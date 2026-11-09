@@ -3,7 +3,7 @@ dofile(here .. "/wowmock.lua")
 local addonPath = arg[1] or (here .. "/../Handkerquest.lua")
 
 -- Expose the addon's locals to the test (test copy only)
-local src = assert(io.open(addonPath), "cannot open " .. addonPath):read("*a") .. "\n_G.__CFQ = CFQ\n_G.__LAYOUT = function() LayoutObjectiveTrackerWithStacks() end\n_G.__STATE = function() return { lvl = levelSortMode, dist = distSortMode, primary = primarySortKey, incomp = incompleteStackEnabled, turnin = turnInStackEnabled } end\n"
+local src = assert(io.open(addonPath), "cannot open " .. addonPath):read("*a") .. "\n_G.__CFQ = CFQ\n_G.__LAYOUT = function() LayoutObjectiveTrackerWithStacks() end\n_G.__QMAP = function() return questRewardMap end\n_G.__STATE = function() return { lvl = levelSortMode, dist = distSortMode, primary = primarySortKey, incomp = incompleteStackEnabled, turnin = turnInStackEnabled } end\n"
 local chunk = assert(loadstring(src, "Handkerquest.lua"))
 chunk()
 local CFQ, P = __CFQ, __CFQ.P
@@ -79,15 +79,15 @@ for _, fr in ipairs(allFrames) do
     if fr.__kind == "FontString" and type(fr.__text) == "string" and fr.__shown ~= false then
         if fr.__text:find("%d/%d+|r  |c%x+/%d") or fr.__text:find(" /6 ") or fr.__text:find(" /1 ") then foundBad = true end
         if fr.__text:find("1/7|r  |c%x%x%x%x%x%x%x%xSmall Spider Leg") then foundGood = true end
-        if fr.__text:find("Gnarlpine Ambusher slain") then foundKill = true end
-        if fr.__text:find("Cenarion Hold depths entrance") then foundEvent = true end
+        if fr.__text:find("0/6|r  |c%x+Gnarlpine Ambusher slain") then foundKill = true end
+        if fr.__text:find("^|c%x+Cenarion Hold depths entrance|r$") then foundEvent = true end   -- one-off step: no "0/1"
     end
 end
 check(not foundBad, "no redundant '/N' left in parchment rows")
 check(foundGood, "item row reads '1/7  Small Spider Leg'")
-check(not foundKill, "kill objective (monster) is not on the tally")
-check(not foundEvent, "exploration objective (event) is not on the tally")
-check(#CFQ.P.FlattenQuests({ { questID = 1, quantityObjectives = { {}, {} }, itemObjectives = { { itemName = "x" } } } }) == 1, "FlattenQuests uses item objectives only")
+check(foundKill, "kill objective of a multi-step quest is on the tally as '0/6  Gnarlpine Ambusher slain'")
+check(foundEvent, "one-off step of a multi-step quest is on the tally, without a count")
+check(#CFQ.P.FlattenQuests({ { questID = 1, quantityObjectives = { {}, {} }, itemObjectives = { { itemName = "x" } } } }) == 1, "FlattenQuests: quest-wide counts aren't lines")
 check(CFQ.IsCollectItemObjective("item", "Gnarlpine Fang"), "type=item is collectable")
 check(not CFQ.IsCollectItemObjective("monster", "Grell Earring"), "type=monster never collectable")
 check(not CFQ.IsCollectItemObjective("object", "Moonwell Water Tube"), "type=object (use/click) not collectable")
@@ -112,7 +112,8 @@ Fire("ZONE_CHANGED")   -- re-renders the parchment (same zone: no page turn)
 P.DrawStroke = realDraw
 local fangRow
 for _, fr in ipairs(allFrames) do
-    if fr.__kind == "FontString" and fr.__shown ~= false and fr.__text == "15/15  Gnarlpine Fang" then fangRow = fr end
+    if fr.__kind == "FontString" and fr.__shown ~= false and fr.__text == "15/15  Gnarlpine Fang"
+        and fr.__parent and fr.__parent.itemText == fr then fangRow = fr end
 end
 check(fangRow ~= nil, "finished row text is just '15/15  Gnarlpine Fang' (no turn-in inside it)")
 local strike
@@ -284,11 +285,15 @@ check(CFQ.IsCollectItemObjective(nil, "Founder's Token"), "'found' inside a word
 local function RowFor(itemName)
     for _, fr in ipairs(allFrames) do
         if fr.__kind == "FontString" and fr.__shown ~= false and type(fr.__text) == "string"
-            and fr.__text:find(itemName, 1, true) and fr.__parent and fr.__parent.box and fr.__parent.itemText == fr then
+            and fr.__text:find(itemName, 1, true) and fr.__parent and fr.__parent.box and fr.__parent.itemText == fr
+            and fr.__parent.__shown then
             return fr.__parent
         end
     end
 end
+-- the item tests below look for rows by name: loot only, so they all fit on the mock tally (the
+-- check-off tests further down switch slaying and other steps back on)
+CFQ.parchmentOpts.tallyTasks = false
 P.SelectArea(P.CURRENT_KEY, false)
 SUBZONE = "Dolanaar"; Fire("ZONE_CHANGED"); frames(40)
 local spiderRow = RowFor("Small Spider Leg")
@@ -577,21 +582,66 @@ check(f.pad == 8 and P.INK[1] == 0.20, "crumpled paper: pencil ink, writing inse
 P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
 check(CFQ.parchmentStyle == "RAG" and f.topSheet.body.__tex == "Interface\\AddOns\\Handkerquest\\textures\\torn_rag",
     "crumpled paper -> torn rag, with its texture")
-check(f.pad == 20 and f.visibleBackSheets == math.min(#P.areas - 1, 3), "torn rag: writing clear of the torn edges, rags piled underneath")
+check(f.padL == math.floor(f:GetWidth() * 0.102 + 0.5) and f.padB == math.floor(f:GetHeight() * 0.075 + 0.5)
+    and f.visibleBackSheets == math.min(#P.areas - 1, 3), "torn rag: writing clear of the torn edges, rags piled underneath")
 local _, _, _, cx, cy = f.corner:GetPoint(1)
 local fw, fh = f:GetWidth(), f:GetHeight()
 check(cx == -math.floor(fw * 0.068 + 0.5) and cy == math.floor(fh * 0.046 + 0.5),
     "the page-turn corner sits on the cloth's own corner (" .. tostring(cx) .. "," .. tostring(cy) .. ")")
 f:SetSize(400, 300); P.UpdateCorner(f)
+f:GetScript("OnSizeChanged")(f)
+check(f.padL == 41 and f.padT == 31 and f.padB == 23, "a stretched rag keeps the writing on the cloth: margins grow with the window ("
+    .. tostring(f.padL) .. "," .. tostring(f.padT) .. "," .. tostring(f.padB) .. ")")
+local _, _, _, tx, ty = f.titleFS:GetPoint(1)
+check(tx == 10 + 41 and ty == -6 - 31, "title follows the stretched margin")
+local _, _, _, gx, gy = f.resizeGrip:GetPoint(1)
+check(gx == 42 and gy == 24, "resize grip sits on the cloth's bottom-left, not on the background")
 _, _, _, cx, cy = f.corner:GetPoint(1)
 check(cx == -27 and cy == 14, "resizing the tally keeps the corner on the cloth's corner (" .. tostring(cx) .. "," .. tostring(cy) .. ")")
 f:SetSize(fw, fh); P.UpdateCorner(f)
-for _, name in ipairs({ "crumpled_paper", "torn_rag" }) do
+-- rigid looks: chalked stone and carved bark
+P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
+check(CFQ.parchmentStyle == "STONE" and f.topSheet.body.__tex == "Interface\\AddOns\\Handkerquest\\textures\\stone",
+    "torn rag -> chalked stone, with its texture")
+check(f.padL == math.floor(f:GetWidth() * 0.185 + 0.5) and f.padT == math.floor(f:GetHeight() * 0.155 + 0.5) and P.INK[1] > 0.9,
+    "chalked stone: pale chalk, writing kept on the flat face")
+check(f.titleFS.__shadow and f.titleFS.__shadow[1] > 0.9 and f.titleFS.__shadow[4] < 0.5 and f.titleFS.__shadowOff[1] == 1,
+    "chalk: a faint pale dust smear beside the letters, not a drop shadow")
+check(P.BLEED and P.BLEED[1] > 0.9, "chalked ticks and strikes leave chalk dust")
+check(f.inkGrain and f.inkGrain.__shown and f.inkGrain.tex.__tex == "Interface\\AddOns\\Handkerquest\\textures\\chalk_grain"
+    and math.abs(f.inkGrain.tex.__tc[2] - f:GetWidth() / 128) < 1e-6, "rough chalk: grain tiled over the writing, one texel per pixel")
+P.UpdateCorner(f); f.corner.drawnKey = nil; P.DrawCorner(f.corner)
+check(not anyShown(f.corner.under) and not anyShown(f.corner.flap) and f.corner.foldEdge.__shown
+    and f.corner.flapTop.__shown and f.corner.flapLeft.__shown and f.corner.foldEdge.__color[1] > 0.9,
+    "stone can't fold: the page corner is a chalked dog-ear mark")
+P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
+check(CFQ.parchmentStyle == "BARK" and f.topSheet.body.__tex == "Interface\\AddOns\\Handkerquest\\textures\\bark",
+    "chalked stone -> carved bark, with its texture")
+check(f.titleFS.__shadow and f.titleFS.__shadow[1] < 0.1 and f.titleFS.__shadow[4] > 0.9
+    and f.titleFS.__shadowOff[1] == -1 and f.titleFS.__shadowOff[2] == 1,
+    "carved letters: pale wood with a dark shadow inside the top-left of each cut")
+check(not anyShown(f.corner.flap) and f.corner.foldShadow.__shown, "bark: a carved dog-ear mark with its shadow")
+check(f.titleFS.inkKey:find("^SCRAWL:"), "bark: straight-cut letters (rough scrawl face)")
+check(not (f.inkGrain and f.inkGrain.__shown), "bark: no chalk grain")
+SlashCmdList["HANDKERQUEST"]("look stone")
+check(CFQ.parchmentStyle == "STONE", "/hanky look stone")
+SlashCmdList["HANDKERQUEST"]("look bark")
+check(CFQ.parchmentStyle == "BARK", "/hanky look bark")
+SlashCmdList["HANDKERQUEST"]("look rag")
+P.UpdateCorner(f); f.corner.drawnKey = nil; P.DrawCorner(f.corner)
+check(anyShown(f.corner.flap) and f.titleFS.__shadow[4] == 0, "back to the rag: a real fold again, no text shadow")
+QRF_SavedState.parchmentStyle = "BARK"
+Fire("ADDON_LOADED", "Handkerquest")
+check(CFQ.parchmentStyle == "BARK", "saved bark look loads")
+CFQ.parchmentStyle = "RAG"; P.ApplyStyle()
+for _, tx in ipairs({ { "crumpled_paper", 512 }, { "torn_rag", 512 }, { "stone", 512 }, { "bark", 512 }, { "pipeweed_leaf", 512 },
+                       { "etched_leather", 512 }, { "arcane_ring", 512 }, { "arcane_haze", 256 } }) do
+    local name, size = tx[1], tx[2]
     local fh = io.open(here .. "/textures/" .. name .. ".tga", "rb")
     local hdr = fh and fh:read(18)
     if fh then fh:close() end
-    check(hdr and hdr:byte(3) == 2 and hdr:byte(13) + 256 * hdr:byte(14) == 512 and hdr:byte(15) + 256 * hdr:byte(16) == 512
-        and hdr:byte(17) == 32, name .. ".tga ships as a 512x512 32-bit uncompressed TGA")
+    check(hdr and hdr:byte(3) == 2 and hdr:byte(13) + 256 * hdr:byte(14) == size and hdr:byte(15) + 256 * hdr:byte(16) == size
+        and hdr:byte(17) == 32, name .. ".tga ships as a " .. size .. "x" .. size .. " 32-bit uncompressed TGA")
 end
 SlashCmdList["HANDKERQUEST"]("look rag")
 check(CFQ.parchmentStyle == "RAG", "/hanky look rag")
@@ -600,8 +650,62 @@ check(CFQ.parchmentStyle == "CRUMPLED", "/hanky look crumpled")
 SlashCmdList["HANDKERQUEST"]("look handkerchief")
 check(f.topSheet.body.__tex == nil and f.topSheet.body.__vc[1] == 1 and f.topSheet.body.__tc[1] == 0 and anyShown(f.topSheet.clothParts.lace),
     "back to the handkerchief: drawn cloth again, no leftover tint or flip")
-CFQ.parchmentStyle = "RAG"; P.ApplyStyle()
+CFQ.parchmentStyle = "BARK"; P.ApplyStyle()
 P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
+check(CFQ.parchmentStyle == "LEAF" and f.topSheet.body.__tex == "Interface\\AddOns\\Handkerquest\\textures\\pipeweed_leaf",
+    "carved bark -> pipe-weed leaf, with its texture")
+P.UpdateCorner(f); f.corner.drawnKey = nil; P.DrawCorner(f.corner)
+check(anyShown(f.corner.flap) and f.titleFS.__shadow[4] == 0 and not (f.inkGrain and f.inkGrain.__shown) and P.INK[1] < 0.3,
+    "leaf: dark ink, and the corner is a real fold of the leaf")
+check(f.padR == math.floor(f:GetWidth() * 0.273 + 0.5), "leaf: writing kept clear of the tapering tip")
+SlashCmdList["HANDKERQUEST"]("look pipeweed")
+check(CFQ.parchmentStyle == "LEAF", "/hanky look pipeweed")
+do  -- the leaves underneath fan out from the stem instead of lying flipped
+    f.visibleBackSheets = 2; f.shuffle = nil
+    P.ApplyStackLayout(f)
+    local b1, b2 = f.backSheets[1], f.backSheets[2]
+    local a1 = math.floor(0.17 * 2000 + 0.5) / 2000
+    local w = f:GetWidth()
+    check(math.abs(b1.sinA - math.sin(a1)) < 1e-6 and b2.sinA > b1.sinA, "leaf pile: back leaves fan wider one after another")
+    check(math.abs(b1.__py - 0.47 * w * math.sin(a1)) < 0.3 and b1.__px < 0,
+        "leaf pile: each leaf turns about the shared stem (shifted up, not about its middle)")
+    check(b1.body.__tc[1] == 0 and b1.body.__tc[2] == 1 and b1.body.__tc[3] == 1
+        and b2.body.__tc[1] == 0 and b2.body.__tc[3] == 0, "leaf pile: stems stay on the left (no left-right mirror)")
+    CFQ.parchmentStyle = "RAG"; P.ApplyStyle(); P.ApplyStackLayout(f)
+    check(b1.body.__tc[1] == 1 and math.abs(b1.sinA - math.sin(0.026)) < 1e-6 and b1.__px == 2,
+        "rag pile still alternates (flipped pages, small tilts)")
+    CFQ.parchmentStyle = "LEAF"; P.ApplyStyle()
+end
+-- etched leather: dark pressed letters with a pale lip below-right; leather bends, so a real fold
+P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
+check(CFQ.parchmentStyle == "LEATHER" and f.topSheet.body.__tex == "Interface\\AddOns\\Handkerquest\\textures\\etched_leather",
+    "pipe-weed leaf -> etched leather, with its texture")
+P.UpdateCorner(f); f.corner.drawnKey = nil; P.DrawCorner(f.corner)
+check(anyShown(f.corner.flap) and f.titleFS.__shadow[1] > 0.8 and f.titleFS.__shadowOff[1] == 1 and f.titleFS.__shadowOff[2] == -1
+    and P.INK[1] < 0.3, "leather: dark letters with a pale pressed lip (shadow down-right), real fold")
+check(f.padL == math.floor(f:GetWidth() * 0.102 + 0.5), "leather: writing inside the tooled border")
+check(not (f.titleFS.halo and f.titleFS.halo[1].__shown), "leather: no wet-ink halo (pressed, not inked)")
+SlashCmdList["HANDKERQUEST"]("look tooled")
+check(CFQ.parchmentStyle == "LEATHER", "/hanky look tooled")
+
+-- arcane script: words of light in the air, a turning rune circle, drifting motes, no pile
+P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
+check(CFQ.parchmentStyle == "ARCANE" and f.arcaneOn and f.arcane.ring.__shown
+    and f.arcane.ring.__tex == "Interface\\AddOns\\Handkerquest\\textures\\arcane_ring", "etched leather -> arcane script: the rune circle is up")
+check(f.visibleBackSheets == 0 and not f.shadowSheet.__shown, "arcane script: no pile of pages, no shadow")
+local th = f.titleFS.halo
+check(th and th[1].__shown and th[1].__vc == nil and th[1].haloCol[3] == 1.0 and th[1].haloCol[1] < 0.7,
+    "arcane script: a violet glow round the heading")
+frames(30)
+local motesUp = 0
+for _, m in ipairs(f.arcane.motes) do if m.__shown then motesUp = motesUp + 1 end end
+check(motesUp >= 8, "arcane script: motes of light drifting up (" .. motesUp .. ")")
+P.UpdateCorner(f); f.corner.drawnKey = nil; P.DrawCorner(f.corner)
+check(not anyShown(f.corner.flap) and f.corner.foldEdge.__shown, "arcane script: a glowing corner mark, nothing to fold")
+SlashCmdList["HANDKERQUEST"]("look mage")
+check(CFQ.parchmentStyle == "ARCANE", "/hanky look mage")
+P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
+check(not f.arcaneOn and not f.arcane.ring.__shown and not (th and th[1].__shown), "leaving arcane script puts the circle and glow away")
 check(#P.areas > 1 and CFQ.parchmentStyle == "NATIVE" and f.visibleBackSheets == 0 and not f.shadowSheet.__shown, "transparent window: no pile, no shadow, even with several pages")
 check(f.titleFS.inkKey:find("^PLAIN:"), "transparent window uses the plain UI font")
 check(f.footerFS.__text:find("page %d+ of"), "page number still in the footer: " .. tostring(f.footerFS.__text) .. " sel=" .. tostring(P.selectedKey) .. " n=" .. #P.areas)
@@ -732,6 +836,17 @@ if lookBtn then
     lookBtn:GetScript("OnClick")(lookBtn)
     check(lookBtn.__text == "Look: Torn rag", "look button: torn rag")
     lookBtn:GetScript("OnClick")(lookBtn)
+    check(lookBtn.__text == "Look: Chalked slate", "look button: chalked stone")
+    lookBtn:GetScript("OnClick")(lookBtn)
+    check(lookBtn.__text == "Look: Carved bark" and fontBtn.__alpha < 1 and fontBtn.__text:find("set by the look"),
+        "look button: carved bark brings its own knife-cut lettering")
+    lookBtn:GetScript("OnClick")(lookBtn)
+    check(lookBtn.__text == "Look: Pipe-weed leaf" and fontBtn.__alpha == 1, "look button: pipe-weed leaf (handwriting selectable again)")
+    lookBtn:GetScript("OnClick")(lookBtn)
+    check(lookBtn.__text == "Look: Etched leather", "look button: etched leather")
+    lookBtn:GetScript("OnClick")(lookBtn)
+    check(lookBtn.__text == "Look: Arcane script" and fontBtn.__alpha == 1, "look button: arcane script")
+    lookBtn:GetScript("OnClick")(lookBtn)
     check(lookBtn.__text == "Look: Transparent window" and fontBtn.__alpha < 1, "window look greys out the handwriting button")
     lookBtn:GetScript("OnClick")(lookBtn)
     check(CFQ.parchmentStyle == "HANDKERCHIEF", "look button wraps back to the handkerchief")
@@ -786,6 +901,171 @@ if prr then
     CFQ.parchmentOpts.pagesFollowTracker = true
     prr.slider:GetScript("OnValueChanged")(prr.slider, 12)
     check(P.GetPageRadius() == 12 and __STATE().incomp == false, "linked panel slider moves the (•••) radius without switching stacking on")
+end
+
+-- Tally check-offs: tasks (kills / other steps) of multi-step quests, and the items / tasks / tasks-apart
+-- toggles beside the gear
+do
+    CFQ.parchmentOpts.tallyTasks = true
+    for _, w in ipairs(CFQ.optionWidgets) do     -- the tally was put away by the options tests above
+        if w.label and w.label.__text == "Show the parchment tally list" then w.__checked = true; w:GetScript("OnClick")(w) end
+    end
+    P.SelectArea(P.CURRENT_KEY, false)
+    local q102 = __QMAP()[102]
+    check(q102 and #q102.taskObjectives == 2 and q102.taskObjectives[1].kind == "slay" and q102.taskObjectives[2].kind == "task"
+        and q102.taskObjectives[2].single, "multi-step quest: a slay line and a one-off step")
+    check(CFQ.ObjectiveKind(nil, "Gnarlpine Ambusher slain") == "slay" and CFQ.ObjectiveKind(nil, "Speak with Denalan") == "task"
+        and CFQ.ObjectiveKind("monster", "x") == "slay" and CFQ.ObjectiveKind("event", "Kill zone") == "task", "objective kinds")
+    local real = C_QuestLog.GetQuestObjectives
+    local function With(objs) C_QuestLog.GetQuestObjectives = function() return objs end end
+    With({ { text = "0/1 Mor'Ladim slain", type = "monster", numFulfilled = 0, numRequired = 1 } })
+    local qty = { { index = 1, isItem = false, objType = "monster", itemName = "Mor'Ladim slain", numRequired = 1, numFulfilled = 0 } }
+    check(#CFQ.ExtractTaskObjectives(900, 0, false, qty) == 0, "one enemy to slay (and nothing else): stays off the tally")
+    qty[1].numRequired = 8
+    check(#CFQ.ExtractTaskObjectives(900, 0, false, qty) == 1, "eight to slay: on the tally")
+    With({ { text = "Speak with Denalan", type = "event" } })
+    check(#CFQ.ExtractTaskObjectives(901, 0, false, {}) == 0, "a quest that's just one step stays off the tally")
+    With({ { text = "Speak with Denalan", type = "event", finished = true }, { text = "Light the beacon", type = "object" } })
+    local two = CFQ.ExtractTaskObjectives(901, 0, false, {})
+    check(#two == 2 and two[1].finished and not two[2].finished and two[1].numRequired == 1, "two one-off steps: two boxes, the done one ticked")
+    With({ { text = "0/1 Darnassus Bank", type = "event" }, { text = "0/1 City Gate", type = "event" }, { text = "0/6 Wolf slain", type = "monster" } })
+    local three = CFQ.ExtractTaskObjectives(902, 0, false, {
+        { index = 1, isItem = false, objType = "event", itemName = "Darnassus Bank", numRequired = 1, numFulfilled = 0 },
+        { index = 3, isItem = false, objType = "monster", itemName = "Wolf slain", numRequired = 6, numFulfilled = 0 } })
+    check(#three == 3 and three[1].single and three[2].single and not three[3].single,
+        "counted steps of one ('0/1 Darnassus Bank') are a plain box, no '0/1'; 'slay 6' keeps its count")
+    C_QuestLog.GetQuestObjectives = real
+
+    Fire("ZONE_CHANGED")
+    local ib, tb, sb = f.itemsBtn, f.tasksBtn, f.sepBtn
+    check(ib and tb and sb and f.titleFS.__points[2][2] == ib and sb.__points[1][2] == f.optBtn,
+        "items, tasks and tasks-apart toggles sit left of the gear; the heading stops at them")
+    check(ib.on and tb.on and not sb.on and ib.strokes[1].main.__color[4] == 1 and sb.strokes[1].main.__color[4] < 0.5,
+        "on = full ink, off = faded (tasks apart starts off)")
+    check(ib.__w == P.QUICK_SIZE and P.QUICK_SIZE >= 16 and ib.__points[1][4] == -P.QUICK_GAP and tb.__points[1][4] == -P.QUICK_GAP
+        and sb.__points[1][4] == -P.QUICK_GEAR_GAP and P.QUICK_GAP >= 5, "toggles are 16px with room between them")
+    check(#ib.strokes == 13 and #tb.strokes == 4, "items = a basket, tasks = a sword")
+    local kinds = {}
+    for _, e in ipairs(P.areas[1].items) do kinds[e.kind] = true end
+    check(kinds.loot and kinds.slay and kinds.task, "Near me lists items and tasks (slaying and other steps)")
+
+    local click = function(b) b:GetScript("OnClick")(b, "LeftButton") end
+    click(tb)
+    local allLoot = true
+    for _, e in ipairs(P.areas[1].items) do if e.kind ~= "loot" then allLoot = false end end
+    check(not tb.on and tb.strokes[1].main.__color[4] < 0.5 and allLoot and f.footerFS.__text:find("gathered"),
+        "tasks off: faded button, just items, footer says gathered")
+    click(ib)
+    check(CFQ.parchmentOpts.tallyLoot and ib.on, "items can't be switched off while tasks are off (one always stays on)")
+    click(tb); click(ib)
+    local only = P.areas[1].items
+    local allTasks = #only > 0
+    for _, e in ipairs(only) do if P.LineGroup(e) ~= "tasks" then allTasks = false end end
+    check(not ib.on and tb.on and allTasks and f:IsShown() and f.footerFS.__text:find("done"), "items off: just tasks, footer counts what's done")
+    local slayLine
+    for _, e in ipairs(only) do if e.kind == "slay" then slayLine = e end end
+    local UE, UD = UnitExists, UnitIsDead
+    UnitExists = function() return true end; UnitIsDead = function() return false end
+    check(slayLine and CFQ.GetItemFXMode(slayLine, CFQ.BuildHuntContext()) == "fire", "a slay line burns while your target is one of them")
+    UnitIsDead = function() return true end
+    check(CFQ.GetItemFXMode(slayLine, CFQ.BuildHuntContext()) ~= "fire", "...but not once it's dead")
+    UnitExists, UnitIsDead = UE, UD
+    -- switching items or tasks off never puts the tally (and its buttons) away
+    CFQ.parchmentOpts.hideWhenNothingNearby = true
+    local emptyPage = { { items = {} } }
+    check(not P.ShouldHideUnfiltered(emptyPage), "items off and no tasks near: the tally stays up, even with 'hide when nothing is nearby'")
+    CFQ.parchmentOpts.tallyLoot = true
+    check(P.ShouldHideUnfiltered(emptyPage), "...but with both on and nothing near, that setting still hides it")
+    CFQ.parchmentOpts.hideWhenNothingNearby = false
+    P.OnTallyChoiceChanged()
+    check(ib.on and tb.on, "items back on")
+
+    local rows = P.SortTallyRows({ { kind = "task", itemName = "a" }, { kind = "loot", itemName = "b" },
+        { kind = "slay", itemName = "c" }, { kind = "loot", itemName = "d" } })
+    check(rows[1].itemName == "a" and rows[2].itemName == "b", "tasks apart off: the usual (tracker) order")
+    click(sb)
+    rows = P.SortTallyRows({ { kind = "task", itemName = "a" }, { kind = "loot", itemName = "b" },
+        { kind = "slay", itemName = "c" }, { kind = "loot", itemName = "d" } })
+    check(sb.on and rows[1].itemName == "b" and rows[2].itemName == "d" and rows[3].itemName == "a" and rows[4].itemName == "c",
+        "tasks apart: items first, then tasks (slaying and steps together), each in the usual order")
+    local h = f.kindHeads
+    check(h and h[1].fs.__shown and h[1].fs.__text == "Items" and h[2].fs.__shown and h[2].fs.__text == "Tasks",
+        "tasks apart: an Items heading and a Tasks heading")
+    local seenTask, mixed = false, false
+    for _, e in ipairs(P.areas[1].items) do
+        if P.LineGroup(e) == "tasks" then seenTask = true elseif seenTask then mixed = true end
+    end
+    check(not mixed, "...and no item comes after a task on the page")
+    click(sb)
+    check(not sb.on and not h[1].fs.__shown and not h[2].fs.__shown, "tasks apart off: no headings")
+
+    click(sb)
+    check(QRF_SavedState.parchmentOpts.tallySeparate == true and QRF_SavedState.tallySort == nil, "tasks apart is saved (the old order setting is dropped)")
+    QRF_SavedState.parchmentOpts = { tallyLoot = false, tallyTasks = false, tallySlay = true, tallySeparate = true }
+    Fire("ADDON_LOADED", "Handkerquest")
+    check(CFQ.parchmentOpts.tallyLoot and CFQ.parchmentOpts.tallySlay == nil and CFQ.parchmentOpts.tallySeparate,
+        "an all-off save still lists items; the old slay key is ignored")
+
+    local tasksCb, sepCb
+    for _, w in ipairs(CFQ.optionWidgets) do
+        if w.label and w.label.__text == "List tasks" then tasksCb = w end
+        if w.label and w.label.__text == "Tasks apart from items" then sepCb = w end
+    end
+    check(tasksCb and sepCb, "options panel: List tasks, Tasks apart from items")
+    if tasksCb and sepCb then
+        tasksCb:SetChecked(true); tasksCb:GetScript("OnClick")(tasksCb)
+        sepCb:SetChecked(false); sepCb:GetScript("OnClick")(sepCb)
+        check(CFQ.parchmentOpts.tallyTasks == true and CFQ.parchmentOpts.tallySeparate == false and not sb.on,
+            "options checkboxes switch tasks on and tasks apart off (and the toggles follow)")
+    end
+end
+
+-- Wet ink on cloth and leaf, and the "Blotted scrawl" handwriting's drops of ink
+do
+    local function ShownRows()
+        local out = {}
+        for _, fr in ipairs(allFrames) do
+            if fr.__kind == "Button" and fr.box and fr.itemText and fr.__shown and fr.__parent == f.content then table.insert(out, fr) end
+        end
+        return out
+    end
+    CFQ.parchmentStyle = "RAG"; P.ApplyStyle(); Fire("ZONE_CHANGED")
+    local rows = ShownRows()
+    local r1 = rows[1]
+    local hl = r1 and r1.itemText.halo
+    check(P.BLEED_W == 2.2 and hl and hl[1].__shown and (hl[1].haloCol == P.INK or hl[1].haloCol == P.GetStyle().faded)
+        and hl[1].__points[1][4] == 0.8
+        and not hl[1].__text:find("|c", 1, true), "rag: wet ink, a soft ink halo round the words (plain text, ink colour) and wide bleed")
+    CFQ.parchmentStyle = "HANDKERCHIEF"; P.ApplyStyle(); Fire("ZONE_CHANGED")
+    check(P.BLEED_W == 2.6 and r1.itemText.halo[1].__shown and r1.itemText.halo[1].__points[1][4] == 0.9, "handkerchief: the wettest ink")
+    CFQ.parchmentStyle = "CRUMPLED"; P.ApplyStyle(); Fire("ZONE_CHANGED")
+    check(P.BLEED_W == 1.0 and not r1.itemText.halo[1].__shown, "crumpled paper (pencil): dry, no halo")
+
+    CFQ.parchmentFont = "PLAIN"; P.CycleFontStyle()
+    check(CFQ.parchmentFont == "BLOTTED" and P.GetFontStyle().label == "Blotted scrawl", "handwriting cycles on to Blotted scrawl")
+    CFQ.parchmentStyle = "RAG"; P.ApplyStyle(); Fire("ZONE_CHANGED")
+    local function Drops()
+        local n, pos = 0, {}
+        for _, row in ipairs(ShownRows()) do
+            for _, d in ipairs(row.drops or {}) do
+                if d.__shown then n = n + 1; table.insert(pos, d.__px .. "," .. d.__py) end
+            end
+        end
+        return n, table.concat(pos, ";")
+    end
+    local n1, p1 = Drops()
+    Fire("ZONE_CHANGED")
+    local n2, p2 = Drops()
+    check(n1 > 0 and n1 == n2 and p1 == p2, "blotted scrawl: drops of ink here and there (" .. n1 .. "), in the same spots every redraw")
+    check(rows[1].itemText.inkKey:find("^BLOTTED:"), "blotted scrawl writes in the rough hand")
+    CFQ.parchmentStyle = "BARK"; P.ApplyStyle(); Fire("ZONE_CHANGED")
+    check(Drops() == 0, "carved bark keeps its knife-cut letters: no ink drops")
+    CFQ.parchmentFont = "QUILL"; P.CycleFontStyle(); P.CycleFontStyle(); P.CycleFontStyle()
+    check(CFQ.parchmentFont == "BLOTTED", "quill -> scrawl -> plain -> blotted")
+    P.CycleFontStyle()
+    check(CFQ.parchmentFont == "QUILL", "...and back round to the quill")
+    CFQ.parchmentStyle = "RAG"; P.ApplyStyle(); Fire("ZONE_CHANGED")
+    check(Drops() == 0, "no drops in the other hands")
 end
 
 -- ticker with distance sort

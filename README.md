@@ -1,12 +1,15 @@
 # Handkerquest test harness
 
 Runs the addon outside WoW against a mocked WoW API (`wowmock.lua`) and checks the main paths:
-parchment rows (items only, no redundant "/N", strike only through the item text, quill ticks),
-the "Near me" page and area pages (map areas / zones / distance, same names merged), the dog-eared
-page-turn corner, area-change page return, handwriting cycle, lvl/dist sort cycling, menu Reset,
+parchment rows (items, plus tasks of multi-step quests; no redundant "/N", strike only through the
+item text, quill ticks), the items / tasks / tasks-apart toggles, the "Near me" page and area pages
+(map areas / zones / distance, same names merged), the dog-eared page-turn corner, area-change page
+return, handwriting cycle (including Blotted scrawl's ink drops), lvl/dist sort cycling, menu Reset,
 stacking toggles never changing the watch list, options panel, slash commands, `/hanky debug`,
-looks (handkerchief / parchment / window), hunting-spot & dropper learning, glow / fire ink,
-item click super-tracking, loot-window dropper evidence, hover map preview placement, minimap pins, default position margins.
+every look (rag, crumpled paper, slate, bark, leaf, leather, arcane script, handkerchief, parchment,
+window: margins, folds, wet ink, the arcane circle and motes) and its texture file, hunting-spot &
+dropper learning, glow / fire ink, item click super-tracking, loot-window dropper evidence, hover map
+preview placement, minimap pins, default position margins.
 
 ## Run
 From the addon folder (needs Lua 5.1 — WoW's Lua version):
