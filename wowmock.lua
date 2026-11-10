@@ -59,6 +59,8 @@ function methods:GetText() return self.__text end
 function methods:GetStringWidth() return 6 * #tostring(self.__text or "") end
 function methods:GetUnboundedStringWidth() return 6 * #tostring(self.__text or "") end
 function methods:GetStringHeight() return 12 end
+function methods:SetMinMaxValues(a, b) self.__min, self.__max = a, b end
+function methods:GetMinMaxValues() return self.__min or 0, self.__max or 1 end
 function methods:SetFont(path, size, flags) self.__font = { path, size, flags }; return true end
 function methods:GetFont() local f = self.__font; if f then return f[1], f[2], f[3] end return "Fonts\\FRIZQT__.TTF", 12, "" end
 function methods:GetChecked() return self.__checked end
@@ -183,3 +185,8 @@ Settings = {
     RegisterAddOnCategory = function(cat) SETTINGS_CAT = cat end,
     OpenToCategory = function(id) OPENED_SETTINGS = id; SETTINGS_CAT.panel:Show() end,
 }
+
+-- WoW's colour picker (retail API): remembers the last request; tests set __rgb and call info.swatchFunc
+ColorPickerFrame = CreateFrame("Frame", "ColorPickerFrame")
+function ColorPickerFrame:SetupColorPickerAndShow(info) self.__info = info; self.__rgb = { info.r, info.g, info.b }; self:Show() end
+function ColorPickerFrame:GetColorRGB() local c = self.__rgb or { 1, 1, 1 }; return c[1], c[2], c[3] end

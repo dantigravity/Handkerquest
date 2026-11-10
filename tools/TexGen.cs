@@ -4,7 +4,8 @@ using System.Drawing;
 using System.Drawing.Imaging;
 
 // Procedural textures for the Handkerquest tally: crumpled paper, a torn rag, a flat stone, a bark slab,
-// a pipe-weed leaf, a piece of soft hide, the arcane haze and rune circle, chalk grain.
+// a pipe-weed leaf, a piece of soft hide, the arcane haze and rune circle, chalk grain, ink blots,
+// and the addon icon (a rag scrap and a quill).
 public static class TexGen
 {
     // ---------------------------------------------------------------- noise
@@ -1048,6 +1049,161 @@ public static class TexGen
                     else if (d < thick + 3) tone *= 0.82;                                  // lip shadow
                 }
                 img[x, y, 0] = r * tone; img[x, y, 1] = g * tone; img[x, y, 2] = b * tone; img[x, y, 3] = a;
+            }
+        Save(img, tga, png);
+    }
+
+    // ---------------------------------------------------------------- addon icon
+    // The AddOns-list icon (.toc IconTexture): a scrap of the cream rag, tilted, with three lines of
+    // soot writing, and a tawny quill whose nib is finishing the last line. Drawn at 4x and averaged
+    // down so it stays crisp at the 16-20px the list shows it. Transparent background.
+    public static void Icon(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        int S = size * 4;
+        double px = 1.0 / S;
+        var big = new double[S, S, 4];
+        double th = -0.14, ct = Math.Cos(th), st = Math.Sin(th);
+        double hw = 0.35, hh = 0.31;                         // rag half-width / half-height
+        Func<double, double, double[]> toLocal = (u, v) => new[] { (u - 0.47) * ct + (v - 0.52) * st, -(u - 0.47) * st + (v - 0.52) * ct };
+        Func<double, double, double[]> toIcon = (lu, lv) => new[] { 0.47 + lu * ct - lv * st, 0.52 + lu * st + lv * ct };
+        Func<double, int, double> tear = (t, s) => (Fbm(t * 9.0, s * 0.37, 3, s) - 0.5) * 0.045 + (Value(t * 40.0, s * 0.7, s + 3) - 0.5) * 0.012;
+        Func<double, double, double> ragDist = (u, v) =>
+        {
+            var l = toLocal(u, v);
+            double dT = l[1] + hh + tear(l[0], 31), dB = hh - l[1] + tear(l[0], 37) * 0.4;   // bottom = the hem: straighter
+            double dL = l[0] + hw + tear(l[1], 33), dR = hw - l[0] + tear(l[1], 35);
+            return Math.Min(Math.Min(dT, dB), Math.Min(dL, dR));           // > 0 inside
+        };
+        // quill: nib on the end of the last line, feather up to the top right
+        var nib = toIcon(0.06, 0.14);
+        double tx = 0.93, ty = 0.05;
+        double qdx = tx - nib[0], qdy = ty - nib[1], L = Math.Sqrt(qdx * qdx + qdy * qdy);
+        qdx /= L; qdy /= L;
+        double qnx = -qdy, qny = qdx;
+        Func<double, double> vaneW = t =>
+        {
+            if (t < 0.30 || t > 1.0) return 0;
+            double q = (t - 0.30) / 0.70;
+            return Math.Pow(q, 0.45) * Math.Pow(1 - q, 0.32) / 0.60;
+        };
+        // { signed distance (> 0 inside), t along the quill, side, part (-1 nib, 0 shaft, 1 vane), barb phase }
+        Func<double, double, double[]> quill = (u, v) =>
+        {
+            double ox = u - nib[0], oy = v - nib[1];
+            double t = (ox * qdx + oy * qdy) / L, s = ox * qnx + oy * qny;
+            double dNib = -1, dShaft = -1, dVane = -1;
+            if (t >= 0 && t <= 0.16) dNib = 0.020 * (t / 0.16) - Math.Abs(s);
+            if (t >= 0.13 && t <= 1.0) dShaft = 0.011 * (1 - 0.5 * t) - Math.Abs(s);
+            double w = vaneW(t) * (s > 0 ? 0.115 : 0.080);
+            if (w > 0) dVane = w - Math.Abs(s);
+            // two splits in the vane, slanting like the barbs
+            double barbT = t + Math.Abs(s) * 0.55 / L;
+            if (dVane > 0 && Math.Abs(s) > 0.02 && ((s > 0 && Math.Abs(barbT - 0.62) < 0.012) || (s < 0 && Math.Abs(barbT - 0.80) < 0.012)))
+                dVane = -0.001;
+            double d = Math.Max(dNib, Math.Max(dShaft, dVane));
+            double part = (dVane >= dShaft && dVane >= dNib) ? 1 : (dNib > dShaft ? -1 : 0);
+            return new[] { d, t, s, part, barbT };
+        };
+        Func<double, double, double> inkDist = (u, v) =>
+        {
+            var l = toLocal(u, v);
+            double best = 9;
+            double[] ys = { -0.17, -0.03, 0.11 }, ends = { 0.24, 0.17, 0.06 };
+            for (int k = 0; k < 3; k++)
+            {
+                double cx = Clamp(l[0], -0.25, ends[k]);
+                double wob = 0.014 * Math.Sin(l[0] * 46 + k * 2.1) + 0.006 * Math.Sin(l[0] * 113 + k);
+                double dy = l[1] - (ys[k] + wob), dx = l[0] - cx;
+                double thick = 0.019 * (0.85 + 0.3 * Value(l[0] * 12, k * 5, 61));
+                best = Math.Min(best, Math.Sqrt(dx * dx + dy * dy) - thick);
+            }
+            return best;                                     // < 0 = ink
+        };
+
+        for (int y = 0; y < S; y++)
+            for (int x = 0; x < S; x++)
+            {
+                double u = (x + 0.5) * px, v = (y + 0.5) * px;
+                double r = 0, g = 0, b = 0, a = 0;
+                Action<double, double, double, double> over = (cr, cg, cb, ca) =>
+                {
+                    if (ca <= 0) return;
+                    double na = ca + a * (1 - ca);
+                    r = (cr * ca + r * a * (1 - ca)) / na; g = (cg * ca + g * a * (1 - ca)) / na; b = (cb * ca + b * a * (1 - ca)) / na;
+                    a = na;
+                };
+                // shadow under the rag
+                double sd = ragDist(u - 0.030, v - 0.040);
+                over(0, 0, 0, Clamp((sd + 0.02) / 0.05, 0, 1) * 0.50);
+                // rag: a dark rim so it reads at the small size, then the cotton
+                double rd = ragDist(u, v);
+                over(0.20, 0.15, 0.10, Clamp((rd + 0.022) / (px * 2), 0, 1) * 0.95);
+                if (rd > 0)
+                {
+                    var l = toLocal(u, v);
+                    double tone = 0.97 + (Fbm(u * 9, v * 9, 3, 21) - 0.5) * 0.10 + (Value(u * 90, v * 90, 22) - 0.5) * 0.05;
+                    double weave = 0.97 + 0.03 * Math.Sin(l[0] * 260) * Math.Sin(l[1] * 260);
+                    double edge = Clamp(1 - rd / 0.05, 0, 1);
+                    tone *= weave * (1 - 0.16 * edge);
+                    if (l[1] > hh - 0.07) tone *= (l[1] > hh - 0.075 && l[1] < hh - 0.06) ? 0.86 : 0.96;   // the folded hem
+                    double cr = 0.935 * tone, cg = 0.890 * tone, cb = 0.780 * tone;
+                    double ink = inkDist(u, v);
+                    double ik = Clamp(-ink / (px * 2), 0, 1);
+                    double bleed = Clamp(1 - (ink + 0.01) / 0.02, 0, 1) * 0.25;   // wet soot soaks in a little
+                    cr = cr * (1 - bleed) + 0.30 * bleed; cg = cg * (1 - bleed) + 0.27 * bleed; cb = cb * (1 - bleed) + 0.24 * bleed;
+                    cr = cr * (1 - ik) + 0.09 * ik; cg = cg * (1 - ik) + 0.08 * ik; cb = cb * (1 - ik) + 0.07 * ik;
+                    over(cr, cg, cb, Clamp(rd / (px * 2), 0, 1));
+                }
+                // quill: a soft shadow on the rag, a dark outline, then the feather
+                var qs = quill(u - 0.018, v - 0.024);
+                over(0, 0, 0, Clamp((qs[0] + 0.012) / 0.03, 0, 1) * 0.35);
+                var q = quill(u, v);
+                over(0.14, 0.08, 0.04, Clamp((q[0] + 0.020) / (px * 2), 0, 1));
+                if (q[0] > 0)
+                {
+                    double t = q[1], s = q[2], part = q[3];
+                    double cr, cg, cb;
+                    if (part < 0)
+                    {
+                        cr = 0.12; cg = 0.11; cb = 0.13;                                    // inked nib
+                        if (Math.Abs(s) < 0.003 && t < 0.09) { cr = 0.30; cg = 0.30; cb = 0.34; }   // its slit
+                    }
+                    else if (part == 0) { cr = 0.93; cg = 0.88; cb = 0.76; }              // pale shaft
+                    else
+                    {
+                        double w = vaneW(t) * (s > 0 ? 0.115 : 0.080);
+                        double outer = Clamp(Math.Abs(s) / Math.Max(w, 1e-4), 0, 1);      // 0 at the shaft, 1 at the edge
+                        double stripe = 0.5 + 0.5 * Math.Sin(q[4] * L * 170);
+                        double k = 0.80 - 0.32 * outer - 0.10 * stripe;
+                        cr = 0.86 * k + 0.06; cg = 0.58 * k + 0.03; cb = 0.30 * k + 0.02;  // tawny goose-wing brown
+                        if (s < 0) { cr *= 0.88; cg *= 0.88; cb *= 0.88; }                   // the far side in shade
+                        if (t > 0.93) { cr *= 0.85; cg *= 0.85; cb *= 0.85; }
+                        if (t < 0.36)                                                          // downy base
+                        {
+                            double f = (0.36 - t) / 0.06 * 0.5;
+                            cr += (0.95 - cr) * f; cg += (0.90 - cg) * f; cb += (0.80 - cb) * f;
+                        }
+                    }
+                    over(cr, cg, cb, Clamp(q[0] / (px * 2), 0, 1));
+                }
+                big[x, y, 0] = r; big[x, y, 1] = g; big[x, y, 2] = b; big[x, y, 3] = a;
+            }
+        // average 4x4 blocks (weighted by alpha, so the edges don't pick up a dark fringe)
+        var img = new double[size, size, 4];
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                double sr = 0, sg = 0, sb = 0, sa = 0;
+                for (int j = 0; j < 4; j++)
+                    for (int i = 0; i < 4; i++)
+                    {
+                        double aa = big[x * 4 + i, y * 4 + j, 3];
+                        sr += big[x * 4 + i, y * 4 + j, 0] * aa; sg += big[x * 4 + i, y * 4 + j, 1] * aa;
+                        sb += big[x * 4 + i, y * 4 + j, 2] * aa; sa += aa;
+                    }
+                img[x, y, 3] = sa / 16;
+                if (sa > 0) { img[x, y, 0] = sr / sa; img[x, y, 1] = sg / sa; img[x, y, 2] = sb / sa; }
             }
         Save(img, tga, png);
     }

@@ -1,7 +1,8 @@
 # Handkerquest — notes for Claude
 
 WoW addon: Objective Tracker sorting/filters + (?)/(•••) quest stacks, and the "Field Tally" parchment
-(a pile of handwritten pages listing quest items to gather and tasks to do). Single file: `Handkerquest.lua`.
+(a pile of handwritten pages listing quest items to gather and tasks to do). Single file: `Handkerchief.lua` (renamed from `Handkerquest.lua` after v2.3.0; the folder, `.toc`, addon name and
+SavedVariables stay "Handkerquest" so players' installs and settings carry over).
 Version lives in `Handkerquest.toc` (`## Version`) and `CONFIG.VERSION`; release commits are titled `vX.Y.Z`.
 Formerly "Cache ForQuest" (renamed in v1.3.0: handkerchief + quest, after Bilbo setting off without his handkerchief).
 Internal names keep the old `CFQ` / `QRF_` prefixes on purpose — renaming `QRF_SavedState` would wipe
@@ -24,13 +25,15 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
     (white lines; tinted and added in game)
   - `::ChalkGrain(tga, png, 128, 21, 0.165, 0.175, 0.195)` → chalk_grain (128, tiles)
   - `::InkBlots(tga, png, 256, 11)` → ink_blots (256, 2x2 atlas of white blots; tinted with the ink in game)
+  - `::Icon(tga, png, 64, 3)` → icon (64, the AddOns-list icon, `.toc` `IconTexture`: a rag scrap with soot
+    writing and a brown quill; drawn at 4x and averaged down so it reads at 16-20px)
 
   Re-measure `inset` / `imageCorner` with `[TexGen]::SafeRect(tga)` after regenerating.
   `media/` (CurseForge GIFs) and `tools/` are excluded from the package in `.pkgmeta`.
 
 ## Testing
-- `"C:\Program Files (x86)\Lua\5.1\lua.exe" smoke.lua Handkerquest.lua` (Lua 5.1 = WoW's version).
-  Must end with `N passed, 0 failed`. Syntax only: `luac.exe -p Handkerquest.lua`.
+- `"C:\Program Files (x86)\Lua\5.1\lua.exe" smoke.lua Handkerchief.lua` (Lua 5.1 = WoW's version).
+  Must end with `N passed, 0 failed`. Syntax only: `luac.exe -p Handkerchief.lua`.
 - `wowmock.lua` is loose (unknown capitalized methods are no-ops): catches logic errors and crashes,
   not visuals. Add `check(...)` lines to `smoke.lua` for every feature/fix; stub missing APIs in the mock.
 - The user tests in game; say plainly what was and wasn't verified there.
@@ -41,9 +44,10 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
   so Blizzard re-shows its blocks. `/hanky debug` dumps the tracker for in-game diagnosis.
 - **Field Tally lines** (user decision, v2.2):
   - **Items** = item objectives (`obj.type == "item"`; wording fallback when untyped) → `qData.itemObjectives`.
-  - **Tasks** = enemies to slay and other steps, **only when there's more than one thing to do**: a count above 1,
-    or a quest with several objectives (`CFQ.ExtractTaskObjectives` → `qData.taskObjectives`; `kind` = `slay` /
-    `task`, both shown as "Tasks"). A task of one (`single = true`) is just a box: no "0/1".
+  - **Tasks** = enemies to slay and every other step, **one-step quests included** ("Sit by the fire";
+    `CFQ.ExtractTaskObjectives` → `qData.taskObjectives`; `kind` = `slay` / `task`, both shown as "Tasks").
+    A task of one (`single = true`) is just a box: no "0/1". (v2.2 left one-step quests off; reversed by the
+    user because a new character whose only quest was one step never got a tally.)
   - Droppers, loot scans, hunt spots and minimap pins stay items-only. A slay line burns while your target is
     one of them (`CFQ.TargetIsToSlay`).
 - **Keep the tally's controls simple** (user decision, v2.2): three inked 16px toggles left of the gear, nothing
@@ -114,7 +118,19 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
     turning slowly on the top sheet), rising motes, a pulsing violet glow round the words, glowing corner
     mark, no pile (`P.LayoutArcane` / `P.AnimateArcane`). The circle is our own triangle-and-random-runes
     design, not WoW art, and deliberately has no six-pointed star.
-  - `NATIVE`: see-through window, plain UI font, no pile.
+    **Rune colour** (user decision): swatches **beside the Look button, shown only while Arcane script is the
+    look** (`CFQ.runeColorRow`, `P.ARCANE_RUNE_COLORS`, saved `CFQ.arcaneRuneColor`). Runes drive the circle,
+    motes, glow round the words, bleed, wash, corner mark.
+- **Writing colour** (user decision: **every look, never conditional**): its own row under Handwriting
+  (`CFQ.inkColorRow`, `P.INK_COLORS`; first swatch = the current look's own ink). Saved per look:
+  `CFQ.inkColors[look key] = { r, g, b }` (missing = the look's own; the old `arcaneInkColor` loads into
+  `inkColors.ARCANE`). Ink, title, faded, footer, sub, close, gear, grip, name are shifted by the same step
+  as the ink (`P.ShiftColor`), so each look keeps its own shading. Wet ink bleeds in the ink colour anyway; only the
+  slate's chalk dust (`bleedFollowsInk`) follows it, bark's carved shadow and leather's lip stay the material's.
+  inkRed/inkGreen (counts, turn in) stay. Both rows have "Custom..." (WoW's `ColorPickerFrame`).
+  `P.ApplyTallyColors` (run by `P.ApplyStyle`) rewrites `P.STYLES` from the choices; authored colours are
+  kept in `P.STYLE_DEFAULTS` (`P.StyleDefaults`).
+  - `NATIVE`: see-through window, no pile. Uses the chosen handwriting (user decision: no lock to plain print).
 
   Texture looks set `style.image`: the sheet is one textured quad, the shadow is the same image tinted black
   and the pile is the image flipped per page (except the leaf's fan).
@@ -159,3 +175,7 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
   The SavedVariables file in `WTF\Account\<id>\SavedVariables\` is named after the folder too.
 - Folder must be `Interface\AddOns\Handkerquest` (matches `Handkerquest.toc` and `arg1 == "Handkerquest"`).
   Settings file: `WTF\Account\<id>\SavedVariables\Handkerquest.lua` (was `CacheForQuest.lua`).
+- The code file's name is free: only the `.toc` file list points at it (`Handkerchief.lua`). Renaming it
+  doesn't touch the folder, addon name or settings. Never rename the folder/`.toc`/`package-as` — that
+  shows up as a new addon to players and their settings file would be left behind.
+  `smoke.lua` checks every file the `.toc` lists exists.

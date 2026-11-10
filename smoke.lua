@@ -1,10 +1,10 @@
 local here = (arg[0]:match("^(.*)[/\\]") or ".")
 dofile(here .. "/wowmock.lua")
-local addonPath = arg[1] or (here .. "/../Handkerquest.lua")
+local addonPath = arg[1] or (here .. "/Handkerchief.lua")
 
 -- Expose the addon's locals to the test (test copy only)
 local src = assert(io.open(addonPath), "cannot open " .. addonPath):read("*a") .. "\n_G.__CFQ = CFQ\n_G.__LAYOUT = function() LayoutObjectiveTrackerWithStacks() end\n_G.__QMAP = function() return questRewardMap end\n_G.__STATE = function() return { lvl = levelSortMode, dist = distSortMode, primary = primarySortKey, incomp = incompleteStackEnabled, turnin = turnInStackEnabled } end\n"
-local chunk = assert(loadstring(src, "Handkerquest.lua"))
+local chunk = assert(loadstring(src, "Handkerchief.lua"))
 chunk()
 local CFQ, P = __CFQ, __CFQ.P
 
@@ -722,7 +722,7 @@ check(CFQ.parchmentStyle == "ARCANE", "/hanky look mage")
 P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
 check(not f.arcaneOn and not f.arcane.ring.__shown and not (th and th[1].__shown), "leaving arcane script puts the circle and glow away")
 check(#P.areas > 1 and CFQ.parchmentStyle == "NATIVE" and f.visibleBackSheets == 0 and not f.shadowSheet.__shown, "transparent window: no pile, no shadow, even with several pages")
-check(f.titleFS.inkKey:find("^PLAIN:"), "transparent window uses the plain UI font")
+check(P.GetStyle().font == nil and f.titleFS.inkKey:find("^" .. P.GetFontStyle().key .. ":"), "transparent window writes in the chosen handwriting (" .. P.GetFontStyle().key .. "), not locked to plain print")
 check(f.footerFS.__text:find("page %d+ of"), "page number still in the footer: " .. tostring(f.footerFS.__text) .. " sel=" .. tostring(P.selectedKey) .. " n=" .. #P.areas)
 frames(40)
 SlashCmdList["HANDKERQUEST"]("look handkerchief")
@@ -862,7 +862,8 @@ if lookBtn then
     lookBtn:GetScript("OnClick")(lookBtn)
     check(lookBtn.__text == "Look: Arcane script" and fontBtn.__alpha == 1, "look button: arcane script")
     lookBtn:GetScript("OnClick")(lookBtn)
-    check(lookBtn.__text == "Look: Transparent window" and fontBtn.__alpha < 1, "window look greys out the handwriting button")
+    check(lookBtn.__text == "Look: Transparent window" and fontBtn.__alpha == 1 and not fontBtn.__text:find("set by the look"),
+        "window look: the handwriting button stays live (no lock to plain print)")
     lookBtn:GetScript("OnClick")(lookBtn)
     check(CFQ.parchmentStyle == "HANDKERCHIEF", "look button wraps back to the handkerchief")
 end
@@ -920,7 +921,7 @@ if prr then
     check(P.GetPageRadius() == 12 and __STATE().incomp == false, "linked panel slider moves the (•••) radius without switching stacking on")
 end
 
--- Tally check-offs: tasks (kills / other steps) of multi-step quests, and the items / tasks / tasks-apart
+-- Tally check-offs: tasks (kills / other steps, one-step quests too), and the items / tasks / tasks-apart
 -- toggles beside the gear
 do
     CFQ.parchmentOpts.tallyTasks = true
@@ -937,11 +938,23 @@ do
     local function With(objs) C_QuestLog.GetQuestObjectives = function() return objs end end
     With({ { text = "0/1 Mor'Ladim slain", type = "monster", numFulfilled = 0, numRequired = 1 } })
     local qty = { { index = 1, isItem = false, objType = "monster", itemName = "Mor'Ladim slain", numRequired = 1, numFulfilled = 0 } }
-    check(#CFQ.ExtractTaskObjectives(900, 0, false, qty) == 0, "one enemy to slay (and nothing else): stays off the tally")
+    local one = CFQ.ExtractTaskObjectives(900, 0, false, qty)
+    check(#one == 1 and one[1].single and one[1].kind == "slay", "one enemy to slay (and nothing else): on the tally as a plain box")
     qty[1].numRequired = 8
-    check(#CFQ.ExtractTaskObjectives(900, 0, false, qty) == 1, "eight to slay: on the tally")
-    With({ { text = "Speak with Denalan", type = "event" } })
-    check(#CFQ.ExtractTaskObjectives(901, 0, false, {}) == 0, "a quest that's just one step stays off the tally")
+    one = CFQ.ExtractTaskObjectives(900, 0, false, qty)
+    check(#one == 1 and not one[1].single, "eight to slay: on the tally with its count")
+    With({ { text = "Sit by the fire", type = "event" } })
+    one = CFQ.ExtractTaskObjectives(901, 0, false, {})
+    check(#one == 1 and one[1].single and one[1].itemName == "Sit by the fire" and not one[1].finished,
+        "a quest that's just one step ('Sit by the fire') gets a box on the tally")
+    check(CFQ.ExtractTaskObjectives(901, 0, true, {})[1].finished, "...ticked once the quest is ready to turn in")
+    do  -- a new character whose only quest is that one step: the tally comes up instead of staying put away
+        local qFire = { questID = 901, title = "Rest by the Fire", isComplete = false, itemObjectives = {}, taskObjectives = one }
+        local a = { items = P.FlattenQuests({ qFire }) }
+        check(#a.items == 1 and not P.ShouldHideTally({ a }), "only quest is one step: the tally has a line and stays up")
+    end
+    With({ { text = "Collect 7 Small Spider Legs", type = "item" } })
+    check(#CFQ.ExtractTaskObjectives(903, 0, false, {}) == 0, "an item objective is never a task")
     With({ { text = "Speak with Denalan", type = "event", finished = true }, { text = "Light the beacon", type = "object" } })
     local two = CFQ.ExtractTaskObjectives(901, 0, false, {})
     check(#two == 2 and two[1].finished and not two[2].finished and two[1].numRequired == 1, "two one-off steps: two boxes, the done one ticked")
@@ -1245,6 +1258,115 @@ for _ = 1, 4 do TICKER() end
 
 check(SLASH_HANDKERQUEST1 == "/hanky" and SLASH_HANDKERQUEST2 == "/handkerquest" and SLASH_HANDKERQUEST3 == "/cfq", "slash commands: /hanky, /handkerquest, old /cfq")
 check(QRF_OptionsPanel and true, "options panel exists under the new name")
+do  -- every slider (tracker (•••) bar, options panel) got a real range
+    local bad, n = 0, 0
+    for _, fr in ipairs(allFrames) do
+        if fr.__kind == "Slider" then
+            n = n + 1
+            if type(fr.__min) ~= "number" or type(fr.__max) ~= "number" or fr.__max <= fr.__min then bad = bad + 1 end
+        end
+    end
+    check(n >= 3 and bad == 0, "every slider has a min/max range (" .. n .. " sliders, " .. bad .. " without)")
+end
+do  -- tally colours: Arcane script's runes (beside the Look button, only on that look) and the writing (every look)
+    local runeRow, inkRow = CFQ.runeColorRow, CFQ.inkColorRow
+    local function Look(key) local s for _, x in ipairs(P.STYLES) do if x.key == key then s = x end end return s end
+    local arc, rag, stone = Look("ARCANE"), Look("RAG"), Look("STONE")
+    local Same = P.SameColor
+    local function Click(b) b:GetScript("OnClick")(b) end
+    local ragInk = P.CopyTable(P.StyleDefaults(rag).ink)
+    CFQ.parchmentStyle = "RAG"; P.ApplyStyle(); CFQ.RefreshOptionsPanel()
+    check(runeRow and inkRow and not runeRow.__shown and inkRow.__shown, "rag look: no rune colours, the writing colour is there")
+    check(runeRow.__points[1][4] == 244 and inkRow.__points[1][4] == 24, "rune swatches sit beside the Look button, writing on its own row")
+    check(inkRow.swatches[1].selected and Same(inkRow.swatches[1].fill.__color, ragInk), "first writing swatch = the rag's own soot, picked")
+    -- writing on the rag: oxblood red
+    local red = P.INK_COLORS[6].c
+    Click(inkRow.swatches[6])
+    check(Same(CFQ.inkColors.RAG, red) and Same(rag.ink, red) and Same(P.INK, red) and inkRow.swatches[6].selected
+        and not inkRow.swatches[1].selected and Same(QRF_SavedState.inkColors.RAG, red), "rag: oxblood writing (saved for the rag)")
+    local d = P.StyleDefaults(rag)
+    check(Same(rag.title, P.ShiftColor(d.title, d.ink, red)) and (not d.bleed or Same(rag.bleed, P.ShiftColor(d.bleed, d.ink, red))),
+        "heading shifts with the writing; wet ink has no bleed of its own")
+    -- each look remembers its own
+    CFQ.parchmentStyle = "STONE"; P.ApplyStyle(); CFQ.RefreshOptionsPanel()
+    check(CFQ.inkColors.STONE == nil and Same(stone.ink, P.StyleDefaults(stone).ink) and inkRow.swatches[1].selected
+        and Same(inkRow.swatches[1].fill.__color, P.StyleDefaults(stone).ink), "slate keeps its own chalk; first swatch shows the chalk")
+    Click(inkRow.swatches[9])
+    check(Same(stone.ink, { 1, 1, 1 }) and Same(rag.ink, red), "white chalk on the slate, the rag stays red")
+    local sd = P.StyleDefaults(stone)
+    check(Same(stone.bleed, P.ShiftColor(sd.bleed, sd.ink, { 1, 1, 1 })), "the slate's chalk dust takes the writing colour")
+    do  -- bark's carved shadow is the wood's, not the writing's
+        local bark = Look("BARK")
+        CFQ.parchmentStyle = "BARK"; P.ApplyStyle(); CFQ.RefreshOptionsPanel()
+        Click(inkRow.swatches[7])
+        check(Same(bark.ink, P.INK_COLORS[7].c) and Same(bark.bleed, P.StyleDefaults(bark).bleed) and bark.bleed[4] == P.StyleDefaults(bark).bleed[4],
+            "gold letters on the bark: the carved shadow stays dark")
+        Click(inkRow.swatches[1])
+        CFQ.parchmentStyle = "STONE"; P.ApplyStyle(); CFQ.RefreshOptionsPanel()
+    end
+    -- arcane: runes show up beside the Look button
+    SlashCmdList["HANDKERQUEST"]("look mage"); CFQ.RefreshOptionsPanel()
+    check(runeRow.__shown and runeRow.swatches[1].selected, "arcane look: rune colours appear, the look's own violet picked")
+    local fel = P.ARCANE_RUNE_COLORS[3].c
+    Click(runeRow.swatches[3])
+    check(Same(CFQ.arcaneRuneColor, fel) and Same(arc.arcane.ringColor, fel) and Same(arc.halo.color, fel) and Same(arc.bleed, fel)
+        and Same(f.arcane.ring.__vc, fel) and runeRow.swatches[3].selected, "fel green runes: circle, glow round the words and ticks turn green")
+    check(Same(arc.ink, P.StyleDefaults(arc).ink), "...the arcane writing keeps its own colour")
+    Click(inkRow.swatches[7])
+    check(Same(arc.ink, P.INK_COLORS[7].c) and Same(arc.arcane.ringColor, fel) and Same(arc.bleed, fel), "gold writing, separately from the runes")
+    -- Custom...: WoW's colour picker
+    check(runeRow.customBtn and runeRow.customBtn.__text == "Custom...", "Custom... button beside the swatches")
+    Click(runeRow.customBtn)
+    local info = ColorPickerFrame.__info
+    check(info and Same({ info.r, info.g, info.b }, fel), "colour picker opens on the current rune colour")
+    ColorPickerFrame.__rgb = { 0.1, 0.2, 0.9 }; info.swatchFunc()
+    check(Same(CFQ.arcaneRuneColor, { 0.1, 0.2, 0.9 }) and runeRow.customBtn.__text == "Custom •", "picked colour applied, marked as custom")
+    info.cancelFunc()
+    check(Same(CFQ.arcaneRuneColor, fel), "cancelling the picker puts the colour back")
+    Click(inkRow.customBtn)
+    ColorPickerFrame.__rgb = { 0.5, 0.9, 0.5 }; ColorPickerFrame.__info.swatchFunc()
+    check(Same(CFQ.inkColors.ARCANE, { 0.5, 0.9, 0.5 }) and inkRow.customBtn.__text == "Custom •", "custom writing colour")
+    -- back to the rag: runes go away
+    CFQ.parchmentStyle = "RAG"; P.ApplyStyle(); CFQ.RefreshOptionsPanel()
+    check(not runeRow.__shown and inkRow.swatches[6].selected, "rag again: rune colours hidden, its red writing still picked")
+    -- saved and loaded; broken saved values ignored; the old arcane-only writing setting carries over
+    QRF_SavedState.arcaneRuneColor = { 0.30, 0.68, 1.00 }
+    QRF_SavedState.inkColors = { RAG = { "x", 1, 1 }, STONE = { 0.2, 0.3, 0.4 } }
+    QRF_SavedState.arcaneInkColor = { 1, 0.92, 0.62 }
+    Fire("ADDON_LOADED", "Handkerquest")
+    P.ApplyStyle()
+    check(Same(CFQ.arcaneRuneColor, { 0.30, 0.68, 1.00 }) and Same(arc.arcane.ringColor, { 0.30, 0.68, 1.00 })
+        and CFQ.inkColors.RAG == nil and Same(rag.ink, ragInk) and Same(stone.ink, { 0.2, 0.3, 0.4 })
+        and Same(CFQ.inkColors.ARCANE, { 1, 0.92, 0.62 }), "colours load; a broken one falls back to the look's own; old arcane writing kept")
+    P.SetTallyColor("rune", CFQ.arcaneRuneColor)       -- saves
+    check(QRF_SavedState.arcaneInkColor == nil and Same(QRF_SavedState.inkColors.ARCANE, { 1, 0.92, 0.62 }), "...and saved under the new key")
+    -- back to the first swatches: exactly the looks as drawn
+    CFQ.parchmentStyle = "ARCANE"; P.ApplyStyle(); CFQ.RefreshOptionsPanel()
+    Click(runeRow.swatches[1]); Click(inkRow.swatches[1])
+    check(CFQ.arcaneRuneColor == nil and CFQ.inkColors.ARCANE == nil and Same(arc.arcane.ringColor, { 0.62, 0.40, 1.00 })
+        and Same(arc.arcane.moteColors[1], { 0.55, 0.90, 1.00 }) and Same(arc.corner.tip, { 0.80, 0.70, 1.00 })
+        and Same(arc.footer, { 0.76, 0.68, 0.96 }) and Same(arc.ink, { 0.90, 0.86, 1.00 }), "first swatches = the look's own colours again")
+    for _ = 1, 3 do TICKER() end
+    CFQ.inkColors = {}; CFQ.parchmentStyle = "RAG"; P.ApplyStyle()
+    check(Same(rag.ink, ragInk) and Same(stone.ink, P.StyleDefaults(stone).ink), "all looks back to their own ink")
+end
+do  -- the .toc loads files that exist (code file renamed Handkerquest.lua -> Handkerchief.lua; folder/.toc kept)
+    local toc = io.open(here .. "/Handkerquest.toc")
+    local listed, missing = {}, {}
+    if toc then
+        for line in toc:lines() do
+            line = line:gsub("\r", ""):match("^%s*(.-)%s*$")
+            if line ~= "" and not line:match("^#") then
+                listed[#listed + 1] = line
+                local fh = io.open(here .. "/" .. line:gsub("\\", "/"))
+                if fh then fh:close() else missing[#missing + 1] = line end
+            end
+        end
+        toc:close()
+    end
+    check(toc and #listed > 0 and #missing == 0, "Handkerquest.toc lists only files that exist (" .. #listed .. " listed, missing: " .. table.concat(missing, ", ") .. ")")
+    check(listed[1] == "Handkerchief.lua", "Handkerquest.toc loads Handkerchief.lua")
+end
 check(#ERRORS == 0, "no Lua errors reported (" .. #ERRORS .. ")")
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

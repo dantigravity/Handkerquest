@@ -1,5 +1,5 @@
 -- ============================================================================
--- Handkerquest.lua - WoW Forever Edition
+-- Handkerchief.lua (the Handkerquest addon) - WoW Forever Edition
 -- "Don't go off on an adventure without your handkerchief." (the name: handkerchief + quest)
 -- Objective Tracker sorting, filters & (?)/(•••) quest stacks, plus the Field Tally:
 -- a handwritten list (on a torn rag, soft hide, slate, bark, a pipe-weed leaf, glowing arcane script and
@@ -14,7 +14,7 @@
 --   Default tally size / position ........................ shoppingListCfg
 --   Tally colours, borders and each look ................ P.STYLES
 --   Paper / rag / stone / bark / leaf / leather / arcane  textures\ (made by tools\TexGen.cs)
---   Items / tasks toggles beside the tally's gear ....... P.QUICK_GLYPHS, P.QUICK_SIZE
+--   Items / tasks / tasks-apart toggles by the gear ..... P.QUICK_GLYPHS, P.QUICK_SIZE
 --   Handwriting fonts and their sizes ................... P.FONT_STYLES (text size slider: P.TEXT_SCALE_MIN/MAX)
 --   Ink drops of "Blotted scrawl" ........................ P.SetInkDrops, textures\ink_blots
 --   Gap between the tally and the chat box .............. P.PILE_MARGIN_X / P.PILE_MARGIN_Y
@@ -54,25 +54,27 @@ local primarySortKey = "LVL"        -- "LVL" or "DIST": whichever sort was switc
 -- Add new settings to this table rather than as new "local" lines: Lua allows only 200 locals here.
 local CFQ = {
     parchmentOpts = {
-        showTabs = true,                -- a page for every other area with items to gather
-        pagesFollowTracker = true,      -- page radius follows the tracker's (•••) stacking slider
-        autoFrontOnAreaChange = true,   -- current-area sheet jumps to the top when you enter a new area
-        hideWhenNothingNearby = false,  -- hide the parchment entirely when the current area has nothing to gather
+        showTabs = true,                -- more pages for quests that aren't near you, one per place
+        pagesFollowTracker = true,      -- "Clusters" pages: cluster size follows the tracker's (•••) stacking slider
+        autoFrontOnAreaChange = true,   -- turn back to the "Near me" page when you enter a new area
+        hideWhenNothingNearby = false,  -- put the tally away when the "Near me" page has nothing to gather or do
         showTrackerOptionsButton = true,-- gear button above "All Objectives"
         inkEffects = true,              -- tally text glows in an item's hunting grounds / burns for a mob that drops it
         mapPreview = true,              -- hovering a tally item shows a little map of where it's gathered
         minimapPins = true,             -- looted-here spots of the super-tracked quest's items on the minimap
         tallyLoot = true,               -- the tally lists quest items to gather...
-        tallyTasks = true,              -- ...and tasks: enemies to slay / other steps (when there's more than one to do)
+        tallyTasks = true,              -- ...and tasks: enemies to slay / other quest steps
         tallySeparate = false,          -- tasks under their own heading, after the items
     },
-    parchmentFont = "QUILL",            -- handwriting on the parchment: "QUILL", "SCRAWL" or "PLAIN"
+    parchmentFont = "QUILL",            -- handwriting on the parchment: "QUILL", "SCRAWL", "PLAIN" or "BLOTTED" (P.FONT_STYLES)
     parchmentStyle = "RAG",             -- the tally's look: "RAG", "CRUMPLED", "STONE", "BARK", "LEAF", "LEATHER", "ARCANE", "HANDKERCHIEF", "PARCHMENT" or "NATIVE"
     huntSpots = {},                     -- [progKey] = { { m = mapID, x, y, a = subzone }, ... } where the item was looted
     learnedDroppers = {},               -- ["npc:ID"] = { label = name, loots = n, tries = {}, [progKey] = times the item dropped }
-    pageRadiusPercent = 16,             -- own page radius (% of the zone map) when not following the tracker
+    pageRadiusPercent = 16,             -- "Clusters" pages: own cluster size (% of the zone map) when not following the tracker
     nearRadiusPercent = 10,             -- "Near me" page: how close (% of the zone map) the items must be
     tallyTextScale = 100,               -- the tally's writing size, % of the usual (options slider, 80-150)
+    arcaneRuneColor = nil,              -- Arcane script: { r, g, b } of the rune circle & its glow (nil = the look's violet)
+    inkColors = {},                     -- [look key] = { r, g, b } writing colour chosen for that look (missing = its own)
     pageGrouping = "AREA",              -- other pages by "AREA" (map areas), "ZONE" or "RADIUS" (clusters)
     learnedQuestAreas = {},             -- [questID] = "Subzone name" where the quest's objectives were last worked
     stackHiddenRegistry = setmetatable({}, { __mode = "k" }), -- every native tracker frame we have hidden
@@ -87,7 +89,7 @@ local incompleteStackEnabled = false-- (•••) Incomplete quest stacking tog
 local incompleteRadiusPercent = 16  -- 1% to 50% of zone map
 
 local showShoppingList = true       -- the Field Tally is shown
-local shoppingListScope = "AREA"    -- no longer used; kept so older saved settings still load
+local shoppingListScope = "AREA"    -- no longer used (still written to the save, never read)
 -- EDIT: width / height are the tally's default size in pixels (also what "Reset Position & Size" uses)
 local shoppingListCfg = {
     width = 230,
@@ -122,7 +124,7 @@ local matchingQuestsList = {}
 
 local recentActiveQuests = {}       -- [questID] = timestamp when objective progressed or mob targeted
 local prevObjectiveProgress = {}    -- [questID .. "_" .. objIdx] = numFulfilled
-local flashObjectiveUntil = {}      -- [questID .. "_" .. objIdx] = GetTime() + 1.8
+local flashObjectiveUntil = {}      -- [questID .. "_" .. objIdx] = GetTime() + 2.0 (the row flashes until then)
 
 local dropdownRowPool = {}
 local customListRowPool = {}
@@ -372,6 +374,9 @@ local function SaveState()
     QRF_SavedState.pageRadiusPercent = CFQ.pageRadiusPercent
     QRF_SavedState.nearRadiusPercent = CFQ.nearRadiusPercent
     QRF_SavedState.tallyTextScale = CFQ.tallyTextScale
+    QRF_SavedState.arcaneRuneColor = CFQ.arcaneRuneColor
+    QRF_SavedState.inkColors = CFQ.inkColors
+    QRF_SavedState.arcaneInkColor = nil    -- an earlier test build: now inkColors.ARCANE
     QRF_SavedState.pageGrouping = CFQ.pageGrouping
     QRF_SavedState.tallySort = nil          -- line-order setting from a v2.2 preview build: no longer used
     QRF_SavedState.shoppingListCfg = shoppingListCfg
@@ -383,6 +388,17 @@ local function SaveState()
     QRF_SavedState.parchmentStyle = CFQ.parchmentStyle
     QRF_SavedState.huntSpots = CFQ.huntSpots
     QRF_SavedState.learnedDroppers = CFQ.learnedDroppers
+end
+
+-- A saved { r, g, b } (each 0-1), or nil if it's missing or broken
+function CFQ.ValidColor(c)
+    if type(c) ~= "table" then return nil end
+    local out = {}
+    for k = 1, 3 do
+        if type(c[k]) ~= "number" or c[k] ~= c[k] then return nil end
+        out[k] = math.max(0, math.min(1, c[k]))
+    end
+    return out
 end
 
 local function LoadState()
@@ -428,6 +444,14 @@ local function LoadState()
         if type(QRF_SavedState.tallyTextScale) == "number" then
             CFQ.tallyTextScale = math.max(80, math.min(150, math.floor(QRF_SavedState.tallyTextScale + 0.5)))   -- P.TEXT_SCALE_MIN/MAX
         end
+        CFQ.arcaneRuneColor = CFQ.ValidColor(QRF_SavedState.arcaneRuneColor)
+        CFQ.inkColors = {}
+        if type(QRF_SavedState.inkColors) == "table" then
+            for k, c in pairs(QRF_SavedState.inkColors) do
+                if type(k) == "string" then CFQ.inkColors[k] = CFQ.ValidColor(c) end
+            end
+        end
+        if not CFQ.inkColors.ARCANE then CFQ.inkColors.ARCANE = CFQ.ValidColor(QRF_SavedState.arcaneInkColor) end
         if type(QRF_SavedState.nearRadiusPercent) == "number" then
             CFQ.nearRadiusPercent = math.max(1, math.min(50, math.floor(QRF_SavedState.nearRadiusPercent + 0.5)))
         end
@@ -579,7 +603,7 @@ end
 -- The quest API tags every objective with a type: "item" means an item that has to be looted /
 -- gathered into your bags. Everything else is a goal, not loot: "monster" (kills), "object"
 -- (click / use something in the world), "event" (explore, escort, speak), "reputation",
--- "progressbar", "spell", "player", "log", ... Only "item" objectives belong on the tally.
+-- "progressbar", "spell", "player", "log", ... Only "item" objectives are tally items; the rest are tasks.
 -- Some clients return no type through GetQuestLogLeaderBoard; fall back to the objective's wording.
 CFQ.NON_ITEM_WORDS = {
     "slain", "killed", "defeated", "destroyed", "rescued", "freed", "saved", "escorted",
@@ -627,9 +651,10 @@ function CFQ.ObjectiveKind(objType, name)
     return "task"
 end
 
--- The quest's goals that aren't loot, for the tally's check-offs. Only when there's more than one thing
--- to do: a count above one ("0/6 Gnarlpine Ambusher slain"), or a quest with several objectives (each
--- part gets its own tick). qtyObjs = the counted objectives already parsed for this quest.
+-- The quest's goals that aren't loot, for the tally's check-offs: every step, one-step quests included
+-- ("Sit by the fire", user decision: a new character's only quest must still bring the tally up).
+-- A step of one is just a box to tick (no "0/1"); a count above one keeps it ("0/6 Gnarlpine Ambusher slain").
+-- qtyObjs = the counted objectives already parsed for this quest.
 function CFQ.ExtractTaskObjectives(questID, logIndex, isComplete, qtyObjs)
     local raw = {}
     if C_QuestLog and C_QuestLog.GetQuestObjectives then
@@ -647,17 +672,16 @@ function CFQ.ExtractTaskObjectives(questID, logIndex, isComplete, qtyObjs)
     end
     local counted = {}
     for _, o in ipairs(qtyObjs or {}) do counted[o.index] = o end
-    local several = #raw > 1
     local list = {}
     for idx, r in ipairs(raw) do
         local o = counted[idx]
         if o then
-            if not o.isItem and (several or (o.numRequired or 0) > 1) then
+            if not o.isItem then
                 o.kind = CFQ.ObjectiveKind(o.objType, o.itemName)
                 o.single = (o.numRequired or 1) <= 1 or nil     -- "0/1 City Gate" is just a box to tick
                 table.insert(list, o)
             end
-        elseif several and r.type ~= "item" and type(r.text) == "string" then
+        elseif r.type ~= "item" and type(r.text) == "string" then
             -- a one-off step ("Speak with Denalan"): no count, just a box to tick
             local name = CFQ.CleanObjectiveName(strtrim(string.gsub(r.text, "^%-+%s*", "")))
             if name ~= "" then
@@ -671,7 +695,7 @@ function CFQ.ExtractTaskObjectives(questID, logIndex, isComplete, qtyObjs)
     return list
 end
 
--- Extracts structured quantity/collection/kill objectives for the Shopping List
+-- Every counted objective of a quest (items, kills, objects, ...): the tally's items and tasks come from these
 local function ExtractQuestQuantityObjectives(questID, logIndex, isComplete)
     local results = {}
     local rawList = nil
@@ -721,7 +745,7 @@ local function ExtractQuestQuantityObjectives(questID, logIndex, isComplete)
             local isDone = (finished == true) or (isComplete == true) or (cur >= max)
             if isDone and cur < max then cur = max end
 
-            -- Track live tick-ups so the shopping list can flash newly progressed rows
+            -- Track live tick-ups so the tally can flash newly progressed rows
             local progKey = tostring(questID) .. "_" .. tostring(idx)
             local isItem = CFQ.IsCollectItemObjective(objType, itemName)
             local prevCur = prevObjectiveProgress[progKey]
@@ -1427,11 +1451,11 @@ ScanQuestLogRewards = function()
             local mapID, x, y = QueryQuestCoordinates(questID)
             local objText = GetFirstQuestObjectiveText(questID, logIndex, isComplete, header)
             local qtyObjs = (not isFromMap) and ExtractQuestQuantityObjectives(questID, logIndex, isComplete) or {}
-            local itemObjs = {}   -- the subset the parchment tally shows: things you actually collect
+            local itemObjs = {}   -- the tally's item lines: things you actually collect
             for _, o in ipairs(qtyObjs) do
                 if o.isItem then o.kind = "loot"; table.insert(itemObjs, o) end
             end
-            -- kill / other check-offs (shown on the tally per its filter buttons)
+            -- kill / other check-offs (shown when the tally's tasks toggle is on)
             local taskObjs = (not isFromMap) and CFQ.ExtractTaskObjectives(questID, logIndex, isComplete, qtyObjs) or {}
 
             local entry = {
@@ -1751,15 +1775,15 @@ ScanQuestLogRewards = function()
 end
 
 -- ============================================================================
--- FIELD TALLY: the handwritten list of quest items still to gather
--- A pile of pages, one per area with items to gather ("Near me" always on top). Gathered items
+-- FIELD TALLY: the handwritten list of quest items still to gather and tasks still to do
+-- A pile of pages, one per area with something on it ("Near me" always on top). Finished lines
 -- are ticked and struck through until the quest is turned in; the dog-eared corner turns pages.
 -- EDIT: P.MAX_AREAS = how many pages at most; INK colours are the defaults before a look applies
 --       (the real colours of each look are in P.STYLES further down).
 -- ============================================================================
 local P = {
     CURRENT_KEY = "__HERE__",
-    MAX_AREAS = 8,              -- current area + up to 7 other-area pages
+    MAX_AREAS = 8,              -- "Near me" + up to 7 other pages (the last one "Elsewhere" when there are more)
     MAX_BACK_SHEETS = 3,
     INK       = { 0.17, 0.10, 0.05 },   -- iron-gall ink
     INK_RED   = { 0.48, 0.15, 0.06 },   -- counts / fresh entries
@@ -1790,9 +1814,9 @@ end
 
 -- ----------------------------------------------------------------------------
 -- ROUGH-CUT SHEET GEOMETRY
--- Each sheet is a body quad plus torn "deckle" strips along all four edges.
--- Vertex offsets give every strip a jagged outer edge and rotate the whole
--- sheet a few degrees (back sheets) without any custom art files.
+-- Drawn looks: a body quad plus torn "deckle" strips along all four edges (texture looks are one
+-- image quad, the handkerchief has its own cloth shape). Vertex offsets give every strip a jagged
+-- outer edge and rotate the whole sheet a few degrees (back sheets).
 -- ----------------------------------------------------------------------------
 function P.PlaceQuad(sheet, tex, x0, y0, x1, y1, tlx, tly, blx, bly, trx, try, brx, bry)
     tex:ClearAllPoints()
@@ -2079,7 +2103,7 @@ function P.RestyleSheet(sheet, opts)
     sheet.layoutKey = nil
     local pc = opts.paper
     if opts.image then
-        -- texture looks (crumpled paper, torn rag): the image carries its own shape; paper = tint
+        -- texture looks (every look with style.image): the image carries its own shape; paper = tint
         sheet.body:SetTexture(opts.image)
         local f = opts.flip or 0
         local l, r = 0, 1
@@ -2285,7 +2309,7 @@ P.FONT_STYLES = {
       bold = 0.8, haloScale = 0.55 },
 }
 
--- The handwriting actually used: some looks bring their own lettering (style.font)
+-- The handwriting actually used: carved bark brings its own lettering (style.font)
 function P.EffectiveFont()
     local look = P.GetStyle()
     local st = P.GetFontStyle()
@@ -2630,7 +2654,7 @@ P.STYLES = {
         imageCorner = { 0.15, 0.15 },          -- where the corner mark sits on the stone's face
         shadowAlpha = 0.45, pile = true,
         inkShadow = { 0.92, 0.91, 0.87, 0.22, 1, 0 },   -- r, g, b, opacity, x, y offset: chalk dust
-        bleed = { 0.92, 0.91, 0.87, 0.30 },              -- the dust around chalked lines
+        bleed = { 0.92, 0.91, 0.87, 0.30 }, bleedFollowsInk = true,   -- the dust around chalked lines (chalk: takes the writing colour)
         ink = { 0.93, 0.92, 0.88 }, inkRed = { 0.95, 0.62, 0.50 }, inkGreen = { 0.62, 0.86, 0.58 },
         title = { 0.96, 0.95, 0.91 }, faded = { 0.62, 0.62, 0.60 }, footer = { 0.80, 0.80, 0.76 },
         sub = { 0.75, 0.75, 0.72 }, close = { 0.85, 0.85, 0.82 }, gear = { 0.85, 0.85, 0.82 },
@@ -2726,7 +2750,9 @@ P.STYLES = {
         imageCorner = { 0.06, 0.08 },
         shadowAlpha = 0, pile = false,
         arcane = { ring = "Interface\\AddOns\\Handkerquest\\textures\\arcane_ring", ringColor = { 0.62, 0.40, 1.00 },
-                   ringAlpha = 0.30, spin = 0.06, motes = 10 },
+                   ringAlpha = 0.30, spin = 0.06, motes = 10,
+                   moteColors = { { 0.55, 0.90, 1.00 }, { 0.75, 0.50, 1.00 } } },   -- 40% / 60% of the motes
+        -- rune & writing colours can be changed in the options (P.ApplyTallyColors rewrites this entry)
         halo = { color = { 0.60, 0.35, 1.00 }, alpha = 0.45, radius = 1.2, pulse = true },
         bleed = { 0.62, 0.38, 1.00, 0.55 }, bleedWidth = 2.6,
         ink = { 0.90, 0.86, 1.00 }, inkRed = { 0.55, 0.90, 1.00 }, inkGreen = { 0.60, 1.00, 0.78 },
@@ -2754,7 +2780,7 @@ P.STYLES = {
         wash = { 1, 1, 1, 0.05 }, washFlash = { 1.0, 0.82, 0.0, 0.40 },
         divider = { 1, 1, 1, 0.08 }, highlight = { 1, 1, 1, 0.07 },
         grip = { 0.80, 0.80, 0.80, 0.85 }, pad = 0,
-        textShadow = true, font = "PLAIN", name = { 0.95, 0.95, 0.95 },
+        textShadow = true, name = { 0.95, 0.95, 0.95 },
         corner = { u1 = { 0.08, 0.08, 0.10 }, u2 = { 0.22, 0.22, 0.25 }, tip = { 0.50, 0.50, 0.55 },
                    crease = { 0.25, 0.25, 0.28 }, edge = { 0.60, 0.60, 0.65, 0.80 }, cut = { 0.50, 0.50, 0.55, 0.80 },
                    shadow = { 0, 0, 0 } },
@@ -2766,6 +2792,158 @@ function P.GetStyle()
         if st.key == CFQ.parchmentStyle then return st end
     end
     return P.STYLES[1]
+end
+
+-- ----------------------------------------------------------------------------
+-- TALLY COLOURS (options panel)
+--  * Rune colour (Arcane script only, beside the Look button): the rune circle and its light (glow round
+--    the words, motes, ticks & strikes, corner mark) = CFQ.arcaneRuneColor.
+--  * Writing colour (every look): CFQ.inkColors[look key]; each look remembers its own. The heading,
+--    faded lines, footer and buttons keep the look's own shading relative to its ink. Wet ink (no
+--    style.bleed) bleeds in the writing colour anyway; the slate's chalk dust follows it (bleedFollowsInk);
+--    bark's carved shadow and leather's pressed lip are the material's and stay (arcane: the runes').
+-- nil = the look's own colours (the first swatch). Custom... = WoW's colour picker.
+-- ----------------------------------------------------------------------------
+P.ARCANE_RUNE_COLORS = {
+    { label = "Violet",     c = { 0.62, 0.40, 1.00 } },
+    { label = "Frost blue", c = { 0.30, 0.68, 1.00 } },
+    { label = "Fel green",  c = { 0.35, 1.00, 0.30 } },
+    { label = "Fire",       c = { 1.00, 0.48, 0.12 } },
+    { label = "Gold",       c = { 1.00, 0.80, 0.22 } },
+    { label = "Crimson",    c = { 1.00, 0.20, 0.25 } },
+    { label = "Rose",       c = { 1.00, 0.42, 0.80 } },
+    { label = "Silver",     c = { 0.82, 0.86, 0.95 } },
+}
+-- the first swatch is the current look's own ink (filled in by the options panel)
+P.INK_COLORS = {
+    { label = "The look's own", own = true },
+    { label = "Soot black",  c = { 0.08, 0.07, 0.06 } },
+    { label = "Sepia",       c = { 0.38, 0.22, 0.10 } },
+    { label = "Indigo",      c = { 0.14, 0.20, 0.50 } },
+    { label = "Forest green", c = { 0.10, 0.34, 0.16 } },
+    { label = "Oxblood red", c = { 0.55, 0.10, 0.08 } },
+    { label = "Gold",        c = { 0.96, 0.80, 0.34 } },
+    { label = "Ice",         c = { 0.78, 0.92, 1.00 } },
+    { label = "White",       c = { 1.00, 1.00, 1.00 } },
+}
+P.ARCANE_RUNE_FIELDS = { "bleed", "wash", "washFlash", "divider", "highlight", "corner" }
+P.INK_FIELDS = { "ink", "title", "faded", "footer", "sub", "close", "gear", "grip", "name" }
+
+function P.CopyTable(t)
+    if type(t) ~= "table" then return t end
+    local o = {}
+    for k, v in pairs(t) do o[k] = P.CopyTable(v) end
+    return o
+end
+
+function P.MixColor(c, to, t, a)
+    local out = {}
+    for k = 1, 3 do out[k] = c[k] + ((to and to[k] or 1) - c[k]) * t end
+    out[4] = a
+    return out
+end
+
+function P.ScaleColor(c, s, a)
+    return { c[1] * s, c[2] * s, c[3] * s, a }
+end
+
+function P.SameColor(a, b)
+    if not (a and b) then return a == b end
+    for k = 1, 3 do if math.abs((a[k] or 0) - (b[k] or 0)) > 0.01 then return false end end
+    return true
+end
+
+-- Each look's own colours, kept for "back to the first swatch" (taken once, before any change)
+function P.StyleDefaults(st)
+    P.STYLE_DEFAULTS = P.STYLE_DEFAULTS or {}
+    local d = P.STYLE_DEFAULTS[st.key]
+    if not d then
+        d = {}
+        for _, k in ipairs(P.INK_FIELDS) do d[k] = P.CopyTable(st[k]) end
+        for _, k in ipairs(P.ARCANE_RUNE_FIELDS) do d[k] = P.CopyTable(st[k]) end
+        if st.arcane then
+            d.ringColor, d.moteColors = P.CopyTable(st.arcane.ringColor), P.CopyTable(st.arcane.moteColors)
+            d.haloColor = P.CopyTable(st.halo and st.halo.color)
+        end
+        P.STYLE_DEFAULTS[st.key] = d
+    end
+    return d
+end
+
+-- A field moved by the same step the ink moved (keeps the look's own lighter/fainter shading), alpha kept
+function P.ShiftColor(c, from, to)
+    local out = {}
+    for k = 1, 3 do out[k] = math.max(0, math.min(1, c[k] + (to[k] - from[k]))) end
+    out[4] = c[4]
+    return out
+end
+
+-- Rewrites the looks in P.STYLES from the chosen colours (P.ApplyStyle runs this first)
+function P.ApplyTallyColors()
+    for _, st in ipairs(P.STYLES) do
+        local d = P.StyleDefaults(st)
+        -- runes (arcane only)
+        if st.arcane then
+            local c = CFQ.ValidColor(CFQ.arcaneRuneColor)
+            if c and P.SameColor(c, d.ringColor) then c = nil end
+            if not c then
+                st.arcane.ringColor, st.arcane.moteColors = P.CopyTable(d.ringColor), P.CopyTable(d.moteColors)
+                if st.halo then st.halo.color = P.CopyTable(d.haloColor) end
+                for _, k in ipairs(P.ARCANE_RUNE_FIELDS) do st[k] = P.CopyTable(d[k]) end
+            else
+                st.arcane.ringColor = c
+                st.arcane.moteColors = { P.MixColor(c, nil, 0.45), P.MixColor(c, nil, 0.15) }
+                if st.halo then st.halo.color = { c[1], c[2], c[3] } end
+                st.bleed = { c[1], c[2], c[3], 0.55 }
+                st.wash = { c[1], c[2], c[3], 0.10 }
+                st.washFlash = P.MixColor(c, nil, 0.40, 0.40)
+                st.divider = P.MixColor(c, nil, 0.20, 0.14)
+                st.highlight = { c[1], c[2], c[3], 0.12 }
+                st.corner = { u1 = P.ScaleColor(c, 0.32), u2 = P.ScaleColor(c, 0.65), tip = P.MixColor(c, nil, 0.50),
+                    crease = P.MixColor(c, nil, 0.25), edge = P.MixColor(c, nil, 0.35, 0.90), cut = P.MixColor(c, nil, 0.35, 0.90),
+                    shadow = { c[1], c[2], c[3] } }
+            end
+        end
+        -- writing (every look)
+        local w = CFQ.ValidColor(CFQ.inkColors and CFQ.inkColors[st.key])
+        if w and P.SameColor(w, d.ink) then w = nil end
+        for _, k in ipairs(P.INK_FIELDS) do
+            if d[k] then st[k] = w and P.ShiftColor(d[k], d.ink, w) or P.CopyTable(d[k]) end
+        end
+        if w then st.ink = { w[1], w[2], w[3] } end
+        if not st.arcane and d.bleed then
+            st.bleed = (w and st.bleedFollowsInk) and P.ShiftColor(d.bleed, d.ink, w) or P.CopyTable(d.bleed)
+        end
+    end
+end
+
+-- Options: the rune colour, or the current look's writing colour; nil = the look's own
+function P.SetTallyColor(which, c)
+    c = CFQ.ValidColor(c)
+    if which == "rune" then
+        CFQ.arcaneRuneColor = c
+    else
+        CFQ.inkColors = CFQ.inkColors or {}
+        CFQ.inkColors[P.GetStyle().key] = c
+    end
+    SaveState()
+    P.ApplyStyle()
+    if UpdateShoppingListUI then UpdateShoppingListUI() end
+end
+
+function P.GetTallyColor(which)
+    local st = P.GetStyle()
+    if which == "rune" then
+        local d = P.STYLE_DEFAULTS and P.STYLE_DEFAULTS.ARCANE
+        return CFQ.arcaneRuneColor or (d and d.ringColor) or P.ARCANE_RUNE_COLORS[1].c
+    end
+    return (CFQ.inkColors and CFQ.inkColors[st.key]) or P.StyleDefaults(st).ink
+end
+
+-- What's stored (nil = the look's own), to put back when the colour picker is cancelled
+function P.GetStoredTallyColor(which)
+    if which == "rune" then return CFQ.arcaneRuneColor end
+    return CFQ.inkColors and CFQ.inkColors[P.GetStyle().key]
 end
 
 function P.CycleStyle()
@@ -2805,6 +2983,7 @@ end
 
 -- Repaints the whole pile and its chrome for the current look
 function P.ApplyStyle(f)
+    P.ApplyTallyColors()
     f = f or shoppingListFrame
     if not f then return end
     local st = P.GetStyle()
@@ -2936,7 +3115,9 @@ function P.AnimateArcane(f, now)
             m:SetPoint("CENTER", f.chrome, "BOTTOMLEFT", x, h * (0.10 + 0.85 * p))
             m:SetSize(s, s)
             local a = math.sin(math.pi * p) * 0.85
-            if P.Hash01(k, cyc, 14) > 0.6 then m:SetVertexColor(0.55, 0.90, 1.00, a) else m:SetVertexColor(0.75, 0.50, 1.00, a) end
+            local mc = ac.moteColors or { { 0.55, 0.90, 1.00 }, { 0.75, 0.50, 1.00 } }
+            mc = (P.Hash01(k, cyc, 14) > 0.6) and mc[1] or mc[2]
+            m:SetVertexColor(mc[1], mc[2], mc[3], a)
             m:Show()
         end
     end
@@ -3023,7 +3204,7 @@ function P.DrawStroke(s, rel, x0, y0, x1, y1, thick, alpha, ink)
     s.bleed:SetStartPoint("TOPLEFT", rel, x0 + 0.4, y0 - 0.4)
     s.bleed:SetEndPoint("TOPLEFT", rel, x1 - 0.3, y1 - 0.3)
     s.bleed:SetThickness(thick + (P.BLEED_W or 1.0))      -- wet ink spreads further (style.bleedWidth)
-    local bl = P.BLEED                       -- chalk dust or a carved cut's shadow, else the ink soaking in
+    local bl = P.BLEED                       -- chalk dust, a carved cut's shadow, a pressed lip or arcane light; else the ink soaking in
     if bl then
         s.bleed:SetColorTexture(bl[1], bl[2], bl[3], alpha * bl[4])
     else
@@ -3088,7 +3269,8 @@ end
 
 -- ----------------------------------------------------------------------------
 -- DOG-EARED PAGE CORNER (hot corner that turns to the next area's page)
--- Built from 1px scanline strips so it needs no art files or vertex offsets:
+-- Built from 1px scanline strips (no vertex offsets). Drawn looks colour them; texture looks sample the
+-- material itself (P.DrawMaterialFold); rigid looks draw a mark instead (see P.DrawCorner):
 --   * the folded-over flap (upper-left triangle, paper underside, shaded toward the fold)
 --   * the gap the fold leaves (lower-right triangle), showing the page underneath
 -- Hovering lifts the corner further, like a thumb about to turn the page.
@@ -3207,8 +3389,8 @@ function P.DrawCorner(c)
     local u1, u2, tip, cr = cs.u1, cs.u2, cs.tip, cs.crease
     local tipK = 1 - 0.06 * lift
 
-    -- Rigid looks (stone, bark) can't fold: a dog-ear is chalked or carved onto the surface instead,
-    -- drawn bigger on hover. foldShadow becomes the dust / the cut's shadow beside the diagonal.
+    -- Rigid looks (stone, bark, arcane) can't fold: a dog-ear is chalked, carved or drawn in light instead,
+    -- drawn bigger on hover. foldShadow becomes the dust / the cut's shadow / the glow beside the diagonal.
     if st.rigid then
         for j = 1, #c.under do c.under[j]:Hide(); c.flap[j]:Hide() end
         for j = 1, #(c.crease or {}) do c.crease[j]:Hide() end
@@ -3331,7 +3513,7 @@ function P.CreateCorner(f, parent)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:AddLine("Turn the page", 1, 0.82, 0)
         if nxt then
-            GameTooltip:AddLine(string.format("Next: %s  (%d to gather)", nxt.title or "Elsewhere", nxt.remaining or 0), 0.9, 0.9, 0.9)
+            GameTooltip:AddLine(string.format("Next: %s  (%d left)", nxt.title or "Elsewhere", nxt.remaining or 0), 0.9, 0.9, 0.9)
         end
         if prev and prev ~= nxt then
             GameTooltip:AddLine(string.format("Back: %s", prev.title or "Elsewhere"), 0.75, 0.75, 0.75)
@@ -3577,7 +3759,7 @@ end
 
 -- ----------------------------------------------------------------------------
 -- INK EFFECTS: a warm glow when you're in an item's hunting grounds, flames when your
--- target is something that drops it, and a red ink circle round the item shown on the map
+-- target drops it (or is one to slay), and a red ink circle round the lines of the quest you're tracking
 -- ----------------------------------------------------------------------------
 function P.EnsureRowFX(row)
     if row.fx then return row.fx end
@@ -4097,7 +4279,7 @@ function P.CollectQuests()
             table.insert(eligible, qData)
             local near, learnHere = false, false
 
-            -- 1) Distance from you to where the items are gathered (on your map; a quest placed on a
+            -- 1) Distance from you to the quest's objective area (on your map; a quest placed on a
             --    parent or child map, e.g. Elwynn Forest vs Northshire, is translated onto yours)
             local qx, qy = qData.x, qData.y
             if playerMapID and qData.mapID and qx and qy and qData.mapID ~= playerMapID then
@@ -4301,7 +4483,7 @@ function P.QuickButtonTooltip(b)
         GameTooltip:AddLine("Quest items to loot or gather.", 0.9, 0.9, 0.9, true)
     elseif b.kind == "tasks" then
         GameTooltip:AddLine("Tasks: " .. (on and "shown" or "hidden"), 1, 0.82, 0)
-        GameTooltip:AddLine("Enemies to slay and other quest steps, when a quest has more than one thing to do.", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine("Enemies to slay and other quest steps.", 0.9, 0.9, 0.9, true)
     else
         GameTooltip:AddLine("Tasks apart: " .. (on and "on" or "off"), 1, 0.82, 0)
         GameTooltip:AddLine(on and "Items first, then the tasks under their own heading."
@@ -4361,7 +4543,8 @@ function P.HideKindHeadings(f, from)
     end
 end
 
--- Would the tally be put away with these pages? (no lines anywhere, or "hide when nothing is nearby")
+-- Would the tally be put away with these pages? (no lines anywhere, or nothing near you and either no
+-- other pages or "hide when nothing is nearby")
 function P.ShouldHideTally(areas)
     local current = areas[1]
     local anyItems = false
@@ -4468,7 +4651,7 @@ function P.NamePage(pg)
     return zone or "Elsewhere"
 end
 
--- "Near me" radius (% of the zone map): how close you must be to where a quest's items are gathered
+-- "Near me" radius (% of the zone map): how close you must be to a quest's objective area
 function P.GetNearRadius()
     return CFQ.nearRadiusPercent or 10
 end
@@ -4542,7 +4725,7 @@ end
 
 function P.BuildAreas()
     local nearSet, eligible, here = P.CollectQuests()
-    -- Page 1 is always "Near me": what you can gather from where you stand
+    -- Page 1 is always "Near me": what you can gather or do from where you stand
     local current = { key = P.CURRENT_KEY, title = "Near me", subtitle = here, isCurrent = true, quests = {} }
     local areas = { current }
 
@@ -4550,7 +4733,7 @@ function P.BuildAreas()
     for _, q in ipairs(eligible) do
         if nearSet[q.questID] then
             table.insert(current.quests, q)
-        elseif not q.isComplete then        -- area pages only carry what still needs gathering
+        elseif not q.isComplete then        -- area pages only carry quests not yet complete
             table.insert(rest, q)
         end
     end
@@ -4913,7 +5096,7 @@ UpdateShoppingListUI = function()
     end
 
     -- one page per area: the pile under the top page shows how many other pages there are
-    -- (the see-through window has no pile; its footer still reads "page n of m")
+    -- (the see-through window and arcane script have no pile; the footer still reads "page n of m")
     f.visibleBackSheets = P.GetStyle().pile and math.max(0, math.min(#areas - 1, P.MAX_BACK_SHEETS)) or 0
     f:Show()
     P.Render(f)
@@ -5025,9 +5208,9 @@ end
 -- WHO DROPS WHAT: evidence first, guesses last
 -- The game has no drop-table API, but the loot window is authoritative: every slot says which
 -- corpse it came from (GetLootSourceInfo) and what the item is. So each time you loot a mob we
--- record, per npc id: how many of its corpses you looted while you still needed items ("loots"),
--- and how many times each tally item was in the loot ([progKey] = hits). Hits make a mob a sure
--- dropper; many loots and no hit rule a mob out even if its name looks right.
+-- record, per npc id: how many of its corpses you looted ("loots") and, per item you still needed,
+-- how many tries that was ("tries"), plus how many times each tally item was in the loot ([progKey] = hits).
+-- Hits make a mob a sure dropper; P.RULE_OUT_LOOTS tries at an item with no hit rule it out, whatever its name.
 -- ----------------------------------------------------------------------------
 CFQ.countedCorpses = {}
 
@@ -5495,7 +5678,7 @@ function P.PlaceHuntCircle(c, canvas, x, y, radiusPx, kind)
     c:ClearAllPoints()
     c:SetSize(radiusPx * 2, radiusPx * 2)
     c:SetPoint("CENTER", canvas, "TOPLEFT", x * W, -y * H)
-    -- spots you looted in: amber. The quest's objective area: the tally's red ink.
+    -- spots you looted in: amber. The quest's objective area: red.
     local r, g, b = 1.0, 0.62, 0.10
     if kind == "poi" then r, g, b = 0.90, 0.18, 0.08 end
     local n = #c.dashes
@@ -5958,7 +6141,7 @@ function CFQ.UpdateMinimapPins()
     for i = shown + 1, #(P.mmPins or {}) do P.mmPins[i]:Hide() end
 end
 
--- moves with you: refreshed a few times a second while a tracked quest has known spots
+-- moves with you: re-placed ten times a second (pins only show for the tracked quest's looted spots)
 function CFQ.EnsureMinimapDriver()
     if CFQ.mmDriver or not Minimap then return end
     local drv = CreateFrame("Frame", nil, Minimap)
@@ -6528,7 +6711,7 @@ local function EnsureTrackerControlBar(trackerModule)
             slider:SetOrientation("HORIZONTAL")
             slider:SetSize(62, 14)
             slider:SetPoint("LEFT", toggleBtn, "RIGHT", 5, 0)
-            slider:SetMinMaxValues(lo, hi)
+            slider:SetMinMaxValues(1, 50)
             slider:SetValueStep(1)
             if slider.SetObeyStepOnDrag then slider:SetObeyStepOnDrag(true) end
 
@@ -6750,9 +6933,9 @@ function CFQ.DebugDumpTracker()
     out(n .. " children")
 end
 
--- /hanky items: every counted objective, its type, and whether it is on the tally (for "why is X listed?")
+-- /hanky items: every counted objective, its type, and whether it's an item (+) or a task (-) (for "why is X listed?")
 function CFQ.DebugDumpItems()
-    print("|cFFFFD100Handkerquest items:|r objectives with counts (+ = on the Field Tally)")
+    print("|cFFFFD100Handkerquest items:|r objectives with counts (+ = item, - = task)")
     local ids = {}
     for qID in pairs(questRewardMap) do table.insert(ids, qID) end
     table.sort(ids)
@@ -7396,7 +7579,7 @@ local function UpdateWorldMapPins()
 end
 
 -- ============================================================================
--- BUTTON LABELS & QUEST LOG CURRENCY LINE ALIGNMENT BELOW OBJECTIVES
+-- BUTTON LABELS, FILTERED QUEST LIST & QUEST LOG REWARD LINE BELOW OBJECTIVES
 -- ============================================================================
 -- Level-only arrow (for level-specific labels)
 local function GetShortSortSuffix()
@@ -8475,7 +8658,7 @@ local function CreateObjectiveTrackerButton()
     local headerAnchor = parentFrame.Header or parentFrame.HeaderMenu or parentFrame
     optBtn:SetPoint("BOTTOMLEFT", headerAnchor, "TOPLEFT", 0, 2)
     optBtn:SetFrameLevel(parentFrame:GetFrameLevel() + 10)
-    if not CFQ.ApplyGearIcon(optBtn, 0.85, 0.70, 0.30, "CfQ", 10) then
+    if not CFQ.ApplyGearIcon(optBtn, 0.85, 0.70, 0.30, "opt", 10) then
         optBtn:SetSize(30, 16)
     end
     optBtn.label = optBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -8757,7 +8940,7 @@ function CFQ.BuildOptionsPanel()
     -- Field Tally parchment ---------------------------------------------------
     Section("Field Tally Parchment")
     Check("Show the parchment tally list",
-        "The checklist of quest items you still need to gather around you.",
+        "The handwritten checklist of quest items to gather and tasks to do around you.",
         function() return showShoppingList end,
         function(v) if v then P.TurnTallyOn() else showShoppingList = false; RefreshParchment() end end)
     -- right under it (it decides whether the tally is up at all), greyed out while the tally is off
@@ -8773,7 +8956,7 @@ function CFQ.BuildOptionsPanel()
         hideRefresh(self)
         self:SetAlpha(showShoppingList and 1 or 0.45)
     end
-    -- Radius slider row: label, 1-50% slider, value, hint. get() returns the value; set(v) applies it.
+    -- Slider row: label, slider (1-50% unless lo/hi are given), value, hint. get() returns the value; set(v) applies it.
     local function RadiusSlider(labelText, tipTitle, tipBody, get, set, hintFn, enabledFn, lo, hi)
         lo, hi = lo or 1, hi or 50
         local row = CreateFrame("Frame", nil, p)
@@ -8846,9 +9029,9 @@ function CFQ.BuildOptionsPanel()
         return row
     end
 
-    -- "Near me" (page 1): how close you must be to where the items are gathered
+    -- "Near me" (page 1): how close you must be to a quest's objective area
     CFQ.nearRadiusRow = RadiusSlider("Near me distance", "Near me distance",
-        "Page 1 lists quest items gathered within this distance of where you're standing (as % of the zone map), plus anything you've progressed in the last few minutes.",
+        "Page 1 lists quest items and tasks within this distance of where you're standing (as % of the zone map), plus anything you've progressed in the last few minutes.",
         function() return P.GetNearRadius() end,
         function(v) CFQ.nearRadiusPercent = v; SaveState(); RefreshParchment() end)
 
@@ -8858,7 +9041,7 @@ function CFQ.BuildOptionsPanel()
         function() return CFQ.parchmentOpts.tallyLoot end,
         function(v) P.SetTallyShows("items", v); P.OnTallyChoiceChanged() end)
     Check("List tasks",
-        "Enemies to slay and other quest steps, when a quest has more than one thing to do. Each gets its own box to tick; a line to slay catches fire while your target is one of them.",
+        "Enemies to slay and other quest steps. Each gets its own box to tick; a line to slay catches fire while your target is one of them.",
         function() return CFQ.parchmentOpts.tallyTasks end,
         function(v) P.SetTallyShows("tasks", v); P.OnTallyChoiceChanged() end)
     Check("Tasks apart from items",
@@ -8946,6 +9129,106 @@ function CFQ.BuildOptionsPanel()
         function(v) CFQ.tallyTextScale = v; SaveState(); RefreshParchment() end,
         nil, nil, P.TEXT_SCALE_MIN, P.TEXT_SCALE_MAX)
 
+    -- Colour swatches (+ Custom... = WoW's colour picker). which = "rune" (Arcane script's rune circle,
+    -- beside the Look button, only while that look is chosen) or "ink" (the writing, every look; each
+    -- look remembers its own). The first swatch is always the look's own colour.
+    local function IsArcane() return P.GetStyle().key == "ARCANE" end
+    local function OpenColorPicker(which)
+        if not ColorPickerFrame then return end
+        local before = CFQ.ValidColor(P.GetStoredTallyColor(which))
+        local cur = P.GetTallyColor(which)
+        local function Picked()
+            local r, g, b = ColorPickerFrame:GetColorRGB()
+            P.SetTallyColor(which, { r, g, b })
+            CFQ.RefreshOptionsPanel()
+        end
+        local function Cancelled()
+            P.SetTallyColor(which, before)
+            CFQ.RefreshOptionsPanel()
+        end
+        pcall(function()
+            if ColorPickerFrame.SetupColorPickerAndShow then
+                ColorPickerFrame:SetupColorPickerAndShow({ r = cur[1], g = cur[2], b = cur[3], hasOpacity = false,
+                    swatchFunc = Picked, cancelFunc = Cancelled })
+            else
+                ColorPickerFrame.hasOpacity = false
+                ColorPickerFrame.func, ColorPickerFrame.cancelFunc = Picked, Cancelled
+                ColorPickerFrame.previousValues = { r = cur[1], g = cur[2], b = cur[3] }
+                ColorPickerFrame:SetColorRGB(cur[1], cur[2], cur[3])
+                ColorPickerFrame:Hide()
+                ColorPickerFrame:Show()
+            end
+        end)
+    end
+    local function ColorRow(x, rowY, labelText, labelW, which, presets, tipBody, shownFn)
+        local row = CreateFrame("Frame", nil, p)
+        row:SetSize(labelW + #presets * 22 + 82, 22)
+        row:SetPoint("TOPLEFT", p, "TOPLEFT", x, rowY - 1)
+        local label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        label:SetPoint("LEFT", row, "LEFT", 0, 0)
+        label:SetText(labelText)
+        local function Tip(owner, name)
+            GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
+            GameTooltip:AddLine(labelText .. (name and (": " .. name) or ""), 1, 0.82, 0)
+            GameTooltip:AddLine(tipBody, 0.9, 0.9, 0.9, true)
+            GameTooltip:Show()
+        end
+        local function OwnColor()
+            if which == "rune" then return presets[1].c end
+            return P.StyleDefaults(P.GetStyle()).ink
+        end
+        row.swatches = {}
+        for k, pr in ipairs(presets) do
+            local b = CreateFrame("Button", nil, row)
+            b:SetSize(18, 18)
+            b:SetPoint("LEFT", row, "LEFT", labelW + (k - 1) * 22, 0)
+            b.ring = b:CreateTexture(nil, "BACKGROUND")
+            b.ring:SetAllPoints()
+            b.fill = b:CreateTexture(nil, "ARTWORK")
+            b.fill:SetPoint("TOPLEFT", b, "TOPLEFT", 2, -2)
+            b.fill:SetPoint("BOTTOMRIGHT", b, "BOTTOMRIGHT", -2, 2)
+            b.preset = pr
+            b:SetScript("OnClick", function()
+                local c = pr.c
+                if k == 1 then c = nil end                             -- the first swatch = the look's own
+                P.SetTallyColor(which, c)
+                CFQ.RefreshOptionsPanel()
+            end)
+            b:SetScript("OnEnter", function(self) Tip(self, pr.label) end)
+            b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+            row.swatches[k] = b
+        end
+        if ColorPickerFrame then
+            local cb = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+            cb:SetSize(70, 20)
+            cb:SetPoint("LEFT", row, "LEFT", labelW + #presets * 22 + 6, 0)
+            cb:SetText("Custom...")
+            cb:SetScript("OnClick", function() OpenColorPicker(which) end)
+            cb:SetScript("OnEnter", function(self) Tip(self, "any colour") end)
+            cb:SetScript("OnLeave", function() GameTooltip:Hide() end)
+            row.customBtn = cb
+        end
+        row.Refresh = function(self)
+            local stored = CFQ.ValidColor(P.GetStoredTallyColor(which))
+            local own = OwnColor()
+            if stored and P.SameColor(stored, own) then stored = nil end
+            local any = false
+            for k, b in ipairs(self.swatches) do
+                local c = (k == 1) and own or b.preset.c
+                b.fill:SetColorTexture(c[1], c[2], c[3], 1)
+                local on
+                if k == 1 then on = (stored == nil) else on = stored ~= nil and P.SameColor(stored, c) end
+                any = any or on
+                b.selected = on
+                if on then b.ring:SetColorTexture(1, 0.82, 0, 1) else b.ring:SetColorTexture(0, 0, 0, 0.9) end
+            end
+            if self.customBtn then self.customBtn:SetText(any and "Custom..." or "Custom •") end
+            self:SetShown(not shownFn or shownFn())
+        end
+        table.insert(CFQ.optionWidgets, row)
+        return row
+    end
+
     y = y - 4
     local lookBtn = Button("Look: Torn rag", 210, 24, function()
         P.CycleStyle()
@@ -8967,17 +9250,21 @@ function CFQ.BuildOptionsPanel()
         GameTooltip:AddLine("Pipe-weed leaf: a cured leaf of Longbottom's finest, written in ink.", 0.9, 0.9, 0.9, true)
         GameTooltip:AddLine("Etched leather: a rough-cut piece of soft tan hide, the list pressed into it.", 0.9, 0.9, 0.9, true)
         GameTooltip:AddLine("Arcane script: a mage's words of light hanging in the air, a rune circle turning behind them.", 0.9, 0.9, 0.9, true)
-        GameTooltip:AddLine("Transparent window: a see-through WoW-style panel in the standard font.", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine("Transparent window: a see-through WoW-style panel, in the handwriting you pick.", 0.9, 0.9, 0.9, true)
         GameTooltip:Show()
     end)
     lookBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    -- beside the Look button, only while Arcane script is the look
+    CFQ.runeColorRow = ColorRow(244, y, "Runes", 42, "rune", P.ARCANE_RUNE_COLORS,
+        "Arcane script: the colour of the rune circle and its light (the glow round the words, the motes, ticks and strikes, the corner mark).",
+        IsArcane)
     y = y - 28
     Button("Handwriting: Quill script", 190, 24, function()
         P.CycleFontStyle()
         SaveState()
         RefreshParchment()
     end, function(self)
-        -- some looks bring their own lettering (the window: UI font; carved bark: knife-cut letters)
+        -- some looks bring their own lettering (carved bark: knife-cut letters)
         local forced = P.GetStyle().font
         local label = P.GetFontStyle().label
         if forced then
@@ -8990,6 +9277,11 @@ function CFQ.BuildOptionsPanel()
         ResetShoppingListPosition()
         P.TurnTallyOn()
     end)
+    y = y - 30
+
+    -- every look; each look remembers its own
+    CFQ.inkColorRow = ColorRow(24, y, "Writing colour", 128, "ink", P.INK_COLORS,
+        "The colour of the tally's writing: the lines, heading and footer. Each look remembers its own; the first swatch is the look's own ink.")
     y = y - 34
 
     -- Tracker & map -----------------------------------------------------------
@@ -9007,7 +9299,7 @@ function CFQ.BuildOptionsPanel()
         function() return filterMapPins end,
         function(v) filterMapPins = v; UpdateWorldMapPins() end)
     Check("Show level & reward icons under map pins",
-        "Off: the level and rewards appear in the pin's tooltip instead.",
+        "Off: they only show in the pin's tooltip.",
         function() return showMapBadges end,
         function(v) showMapBadges = v; UpdateWorldMapPins() end)
     y = y + 2
@@ -9252,7 +9544,7 @@ loader:SetScript("OnEvent", function(self, event, arg1)
             end
         end
 
-        -- Lightweight 1.2s proximity ticker so the Shopping List updates as you walk into/out of quest hubs
+        -- Lightweight 1.2s proximity ticker so the tally updates as you walk into/out of quest hubs
         if C_Timer and C_Timer.NewTicker and not self.proximityTicker then
             self.proximityTicker = C_Timer.NewTicker(1.2, function()
                 if InCombatLockdown() then return end
@@ -9300,7 +9592,7 @@ loader:SetScript("OnEvent", function(self, event, arg1)
                 end
             end
         end
-        -- a mob that may drop a tally item sets its line alight (cleared when you change target)
+        -- a mob that may drop a tally item, or one you're to slay, sets its line alight (cleared when you change target)
         local hadFire = CFQ.P.fire ~= nil
         local ok, err = pcall(CFQ.OnTargetChanged)
         if not ok then CFQ.P.fire = nil; CFQ.ReportError(err) end
