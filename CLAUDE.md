@@ -25,6 +25,9 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
     (white lines; tinted and added in game)
   - `::ChalkGrain(tga, png, 128, 21, 0.165, 0.175, 0.195)` → chalk_grain (128, tiles)
   - `::InkBlots(tga, png, 256, 11)` → ink_blots (256, 2x2 atlas of white blots; tinted with the ink in game)
+  - `::Marble(tga, png, 512, 5)` → sanctified_marble, `::GoldPlate(tga, png, 512, 6)` → gilded_plate,
+    `::Vellum(tga, png, 512, 7)` → illuminated_vellum (insets set by hand inside the groove / rim / red rule,
+    not the raw SafeRect: the writing must stay off the borders)
   - `::Icon(tga, png, 64, 3)` → icon (64, the AddOns-list icon, `.toc` `IconTexture`: a rag scrap with soot
     writing and a brown quill; drawn at 4x and averaged down so it reads at 16-20px)
 
@@ -42,6 +45,10 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
 - **Stacking is visual only.** A deck holds only quests that already have a native tracker block;
   toggling stacks never adds/removes quest watches. Toggles call `CFQ.RequestNativeTrackerUpdate()`
   so Blizzard re-shows its blocks. `/hanky debug` dumps the tracker for in-game diagnosis.
+  **A quest with a usable quest item never goes into a deck** (bug fix: the eye / phial buttons vanished): its
+  button lives on its own tracker block, which a deck hides, and protected buttons can't be shown or moved in
+  combat. `CFQ.QuestHasItemButton` (`GetQuestLogSpecialItemInfo`; a finished quest only if
+  `showItemWhenComplete`) → `qData.hasQuestItem`, skipped in `BuildQuestClusters`.
 - **Field Tally lines** (user decision, v2.2):
   - **Items** = item objectives (`obj.type == "item"`; wording fallback when untyped) → `qData.itemObjectives`.
   - **Tasks** = enemies to slay and every other step, **one-step quests included** ("Sit by the fire";
@@ -99,8 +106,16 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
   when out of range; world coords: X = north, Y = west.
 - Parchment look has no shaded header band (removed: it grew with the window). Grain is cropped from
   plain parchment below the quest-frame header art.
-- Looks (`CFQ.parchmentStyle`, `P.STYLES`, in Look-button order). All tally colours come from the style
-  table: don't hard-code ink colours.
+- Looks (`CFQ.parchmentStyle`, `P.STYLES`, in Look-list order). All tally colours come from the style
+  table: don't hard-code ink colours. Picked from a **drop-down list** in the options (user decision: not a
+  cycling button): `lookBtn.list` / `CFQ.lookDropDown`, one row per look with a swatch (the material's middle
+  for texture looks, the paper colour for drawn ones), the current one ticked, a blurb on hover
+  (`LOOK_BLURBS` in `CFQ.BuildOptionsPanel`: add one for every new look). A click outside closes it
+  (a full-screen catcher on `DIALOG`). **The list's strata is re-set to `FULLSCREEN_DIALOG` every time it
+  opens** (bug fix): Settings re-parents our panel when it shows it, which drops the list to the window's
+  strata, under the catcher, and clicks on a look only closed the list. The catcher also picks the look
+  under the mouse if a click still reaches it.
+  `/hanky look <name>` and `P.CycleStyle` still step through the same order.
   - `HANDKERCHIEF`, `PARCHMENT` (drawn in code).
   - `CRUMPLED`: crumpled-and-flattened paper, pencil.
   - `RAG` (**default**, user decision): a strip torn off a dwarf's shirt: cream cotton weave, irregular torn
@@ -114,6 +129,17 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
   - `LEATHER` ("Etched leather"): a rough-cut piece of supple tan garment leather, hide-shaped (leg lobes,
     knife-cut edges, a nick or two), soft drape folds, fine grain; no tooling or stitching (user decision).
     Letters pressed in (dark ink, pale lip below-right via `inkShadow`); real fold.
+  - Paladin looks (user request: "something like the stone tablets"):
+    - `MARBLE` ("Sanctified marble"): white marble tablet with an arched top and a gold-inlaid groove; letters
+      cut and gilded (gold ink, dark `inkShadow` up-left), a soft gold holy light that breathes (`halo.color` +
+      `pulse`, `P.PulseHalo`, no arcane circle). Rigid. Pages underneath only mirrored (`style.flips = { 1, 0, 1 }`)
+      so the arches stay on top.
+    - `GILDED` ("Gilded plate"): beaten gold, hammer dents, rolled rim, corner rivets; engraved dark letters with
+      a bright lower wall (`inkShadow`). A band of light sweeps across now and then (`style.sheen`,
+      `P.LayoutSheen` / `P.AnimateSheen`), kept inside `style.inset` so it never spills over the rim. Rigid.
+    - `VELLUM` ("Illuminated vellum"): a holy book's page, gold-leaf border between a blue and a red rule, gold
+      bosses with red quatrefoils in the corners; black iron-gall ink, red heading (rubric) whose **first letter
+      is gilded** (`style.initial`), "(turn in)" in the border's blue. Bends: real fold.
   - `ARCANE`: a mage's writing hanging in the air: violet haze, a rune circle (`style.arcane`, added light,
     turning slowly on the top sheet), rising motes, a pulsing violet glow round the words, glowing corner
     mark, no pile (`P.LayoutArcane` / `P.AnimateArcane`). The circle is our own triangle-and-random-runes
@@ -121,6 +147,10 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
     **Rune colour** (user decision): swatches **beside the Look button, shown only while Arcane script is the
     look** (`CFQ.runeColorRow`, `P.ARCANE_RUNE_COLORS`, saved `CFQ.arcaneRuneColor`). Runes drive the circle,
     motes, glow round the words, bleed, wash, corner mark.
+  - `NATIVE`: see-through window, no pile. Uses the chosen handwriting (user decision: no lock to plain print).
+
+  Texture looks set `style.image`: the sheet is one textured quad, the shadow is the same image tinted black
+  and the pile is the image flipped per page (except the leaf's fan; `style.flips` overrides the flips).
 - **Writing colour** (user decision: **every look, never conditional**): its own row under Handwriting
   (`CFQ.inkColorRow`, `P.INK_COLORS`; first swatch = the current look's own ink). Saved per look:
   `CFQ.inkColors[look key] = { r, g, b }` (missing = the look's own; the old `arcaneInkColor` loads into
@@ -130,19 +160,16 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
   inkRed/inkGreen (counts, turn in) stay. Both rows have "Custom..." (WoW's `ColorPickerFrame`).
   `P.ApplyTallyColors` (run by `P.ApplyStyle`) rewrites `P.STYLES` from the choices; authored colours are
   kept in `P.STYLE_DEFAULTS` (`P.StyleDefaults`).
-  - `NATIVE`: see-through window, no pile. Uses the chosen handwriting (user decision: no lock to plain print).
-
-  Texture looks set `style.image`: the sheet is one textured quad, the shadow is the same image tinted black
-  and the pile is the image flipped per page (except the leaf's fan).
-- **Rigid looks** (`style.rigid`: stone, bark, arcane) can't fold: the page corner is a chalked/carved/glowing
-  dog-ear mark in the ink colour. `style.inkShadow = { r, g, b, a, x, y }` = text shadow (chalk dust smear; carved = dark shadow
+- **Rigid looks** (`style.rigid`: stone, bark, marble, gilded plate, arcane) can't fold: the page corner is a
+  chalked/carved/gilded/engraved/glowing dog-ear mark in the ink colour. `style.inkShadow = { r, g, b, a, x, y }` = text shadow (chalk dust smear; carved = dark shadow
   up-left), `style.bleed` = colour around ticks/strikes. Writing is pale on a dark surface.
   Slate: `style.inkGrain` (`textures/chalk_grain.tga`, slate-coloured speckle tiled 1 texel/px over the chrome)
   makes the chalk rough. Bark forces `font = "SCRAWL"` (straight knife-cut letters; the handwriting button greys out).
 - **Wet ink** on looks that drink it (rag, handkerchief, leaf): `style.halo = { alpha, radius }` = 4 copies of the
   words nudged ±radius px under the ink in its own colour (`P.SetHalo`, colour codes stripped); `style.bleedWidth /
   bleedAlpha` widen the bleed round ticks and strikes (`P.BLEED_W/A` in `P.DrawStroke`). A `halo.color` makes it a
-  glow instead (arcane; `pulse` = breathes). Dry looks (pencil, chalk, carved, pressed) have no halo.
+  glow instead (arcane, marble; `pulse` = breathes, `pulseSpeed`). Vellum has a faint wet-ink halo.
+  Dry looks (pencil, chalk, carved, pressed, engraved) have no halo.
 - **"Blotted scrawl"** handwriting (`P.FONT_STYLES`, `drops = true`; Skurri): drops of ink flicked off the quill
   (`P.SetInkDrops`), placed by a hash of the line so they never move between redraws. Mostly **tiny spatters**
   round the stroke (2-5 per line, ~1-2px: the nib scraping the grain); a bigger blot where the quill rested on

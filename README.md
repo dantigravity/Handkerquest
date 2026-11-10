@@ -1,13 +1,13 @@
 # Handkerquest test harness
 
 Runs the addon outside WoW against a mocked WoW API (`wowmock.lua`) and checks the main paths:
-parchment rows (items, plus tasks of multi-step quests; no redundant "/N", strike only through the
+parchment rows (items, plus tasks, one-step quests included; no redundant "/N", strike only through the
 item text, quill ticks), the items / tasks / tasks-apart toggles, the "Near me" page and area pages
 (map areas / zones / distance, same names merged), the dog-eared page-turn corner, area-change page
 return, handwriting cycle (including Blotted scrawl's soaked-in blots and bolder letters), text size, lvl/dist sort cycling, menu Reset,
-stacking toggles never changing the watch list, options panel, slash commands, `/hanky debug`,
-every look (rag, crumpled paper, slate, bark, leaf, leather, arcane script, handkerchief, parchment,
-window: margins, folds, wet ink, the arcane circle and motes) and its texture file, hunting-spot &
+stacking toggles never changing the watch list, options panel (Look drop-down, colours), slash commands, `/hanky debug`,
+every look (rag, crumpled paper, slate, bark, leaf, leather, marble, gilded plate, vellum, arcane script,
+handkerchief, parchment, window: margins, folds, wet ink, the arcane circle and motes) and its texture file, hunting-spot &
 dropper learning, glow / fire ink, item click super-tracking, loot-window dropper evidence, hover map
 preview placement, minimap pins, default position margins.
 

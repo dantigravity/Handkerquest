@@ -703,10 +703,57 @@ check(CFQ.parchmentStyle == "LEATHER", "/hanky look tooled")
 CFQ.parchmentStyle = "RAG"; SlashCmdList["HANDKERQUEST"]("look hide")
 check(CFQ.parchmentStyle == "LEATHER", "/hanky look hide")
 
+-- paladin looks: sanctified marble, gilded plate, illuminated vellum (after etched leather)
+do
+    local TEX = "Interface\\AddOns\\Handkerquest\\textures\\"
+    local function Tc(t) return t.__tc and table.concat(t.__tc, ",") or "0,1,0,1" end
+    P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
+    check(CFQ.parchmentStyle == "MARBLE" and f.topSheet.body.__tex == TEX .. "sanctified_marble", "etched leather -> sanctified marble: the tablet texture")
+    check(f.visibleBackSheets > 0 and Tc(f.backSheets[1].body) == "1,0,0,1" and Tc(f.backSheets[2].body) == "0,1,0,1",
+        "marble: tablets underneath only mirrored, the arch stays on top")
+    local th = f.titleFS.halo
+    check(th and th[1].__shown and th[1].haloCol[1] == 1.00 and th[1].haloCol[2] > 0.8 and th[1].haloCol[3] < 0.5,
+        "marble: a gold holy light round the heading")
+    local pulses, real = 0, P.PulseHalo
+    P.PulseHalo = function(...) pulses = pulses + 1; return real(...) end
+    frames(5)
+    P.PulseHalo = real
+    check(pulses >= 5 and not f.arcaneOn, "marble: the holy light breathes (without the arcane circle)")
+    P.UpdateCorner(f); f.corner.drawnKey = nil; P.DrawCorner(f.corner)
+    check(not anyShown(f.corner.flap) and f.corner.foldEdge.__shown, "marble: a gilded dog-ear mark, stone doesn't fold")
+    -- gilded plate
+    P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
+    check(CFQ.parchmentStyle == "GILDED" and f.topSheet.body.__tex == TEX .. "gilded_plate" and f.sheenOn, "marble -> gilded plate, with its sheen")
+    P.AnimateSheen(f, 0.8)
+    local a = f.sheen.a
+    local w = f:GetWidth()
+    check(a.__shown and f.sheen.b.__shown and a.__points[1][4] >= w * 0.13 - 0.5, "gilded plate: the light sweeps across inside the rim")
+    P.AnimateSheen(f, 3.0)
+    check(not a.__shown and not f.sheen.b.__shown, "...then the plate rests until the next glint")
+    P.UpdateCorner(f); f.corner.drawnKey = nil; P.DrawCorner(f.corner)
+    check(not anyShown(f.corner.flap) and f.corner.foldEdge.__shown, "gilded plate: an engraved dog-ear mark")
+    -- illuminated vellum
+    P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
+    check(CFQ.parchmentStyle == "VELLUM" and f.topSheet.body.__tex == TEX .. "illuminated_vellum" and not f.sheenOn
+        and not (f.sheen.a.__shown or f.sheen.b.__shown), "gilded plate -> illuminated vellum: no sheen on the page")
+    check(f.titleFS.__text:find("^|cFFCC941F") ~= nil, "vellum: the heading's first letter is gilded (" .. tostring(f.titleFS.__text) .. ")")
+    P.UpdateCorner(f); f.corner.drawnKey = nil; P.DrawCorner(f.corner)
+    check(anyShown(f.corner.flap), "vellum bends: a real page fold")
+    for _, name in ipairs({ "marble", "gold", "vellum", "libram" }) do
+        CFQ.parchmentStyle = "RAG"; SlashCmdList["HANDKERQUEST"]("look " .. name)
+    end
+    check(CFQ.parchmentStyle == "VELLUM", "/hanky look marble / gold / vellum / libram")
+    for _, key in ipairs({ "MARBLE", "GILDED", "VELLUM" }) do
+        local fh = io.open(here .. "/textures/" .. ({ MARBLE = "sanctified_marble", GILDED = "gilded_plate", VELLUM = "illuminated_vellum" })[key] .. ".tga", "rb")
+        check(fh and fh:read(1) and true, key .. ": its texture file is in textures/")
+        if fh then fh:close() end
+    end
+end
+
 -- arcane script: words of light in the air, a turning rune circle, drifting motes, no pile
 P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
 check(CFQ.parchmentStyle == "ARCANE" and f.arcaneOn and f.arcane.ring.__shown
-    and f.arcane.ring.__tex == "Interface\\AddOns\\Handkerquest\\textures\\arcane_ring", "etched leather -> arcane script: the rune circle is up")
+    and f.arcane.ring.__tex == "Interface\\AddOns\\Handkerquest\\textures\\arcane_ring", "illuminated vellum -> arcane script: the rune circle is up")
 check(f.visibleBackSheets == 0 and not f.shadowSheet.__shown, "arcane script: no pile of pages, no shadow")
 local th = f.titleFS.halo
 check(th and th[1].__shown and th[1].__vc == nil and th[1].haloCol[3] == 1.0 and th[1].haloCol[1] < 0.7,
@@ -791,6 +838,20 @@ __LAYOUT()
 local deck = IncompDeck()
 check(deck ~= nil and #deck.clusterData.quests == 2, "incomplete deck of 101+102 shown")
 check(blocks[101].__alpha == 0 and blocks[102].__alpha == 0, "native blocks hidden behind the deck")
+do  -- a quest with an item to click (Eyes of the Sentinels' eye, the phial...) never goes into a deck
+    local real = GetQuestLogSpecialItemInfo
+    local itemLog = __QMAP()[102].logIndex
+    GetQuestLogSpecialItemInfo = function(i) if i == itemLog then return "item:5185", "Interface\Icons\INV_Drink_06", 1, false end end
+    __LAYOUT()
+    check(__QMAP()[102].hasQuestItem and IncompDeck() == nil and blocks[102].__alpha ~= 0 and blocks[101].__alpha ~= 0,
+        "102 has a quest item: it keeps its own tracker line (and its button), so no deck with 101")
+    check(CFQ.QuestHasItemButton(itemLog, true) == false, "...a finished quest's item only counts if the game still shows it")
+    GetQuestLogSpecialItemInfo = function(i) if i == itemLog then return "item:5185", "Interface\Icons\INV_Drink_06", 1, true end end
+    check(CFQ.QuestHasItemButton(itemLog, true) == true, "...which it says with showItemWhenComplete")
+    GetQuestLogSpecialItemInfo = real
+    __LAYOUT()
+    check(not __QMAP()[102].hasQuestItem and IncompDeck() ~= nil, "item used up: 101 and 102 stack again")
+end
 local before = WatchedSnapshot()
 bar.incompToggle:GetScript("OnClick")(bar.incompToggle)   -- OFF
 for _, t in ipairs(TIMERS or {}) do t() end; TIMERS = {}
@@ -837,35 +898,64 @@ if fontBtn then
     check(fontBtn.__text == "Handwriting: Rough scrawl", "handwriting button cycles to Rough scrawl")
     fontBtn:GetScript("OnClick")(fontBtn); fontBtn:GetScript("OnClick")(fontBtn)
 end
--- look button in the panel cycles handkerchief -> parchment -> window -> handkerchief
+-- Look drop-down in the panel: every look listed, the current one ticked; picking one switches and closes it
 local lookBtn
 for _, w in ipairs(CFQ.optionWidgets) do
     if type(w.__text) == "string" and w.__text:find("^Look: ") then lookBtn = w end
 end
 check(lookBtn ~= nil and lookBtn.__text == "Look: Handkerchief notes", "options show Look: Handkerchief notes")
 if lookBtn then
+    local list = lookBtn.list
+    check(list and not list.__shown and #list.rows == #P.STYLES and #P.STYLES == 13, "look drop-down: one row per look (13), closed")
     lookBtn:GetScript("OnClick")(lookBtn)
-    check(lookBtn.__text == "Look: Parchment" and f.styleKey == "PARCHMENT", "look button switches to parchment")
-    lookBtn:GetScript("OnClick")(lookBtn)
-    check(lookBtn.__text == "Look: Crumpled paper", "look button: crumpled paper")
-    lookBtn:GetScript("OnClick")(lookBtn)
-    check(lookBtn.__text == "Look: Torn rag", "look button: torn rag")
-    lookBtn:GetScript("OnClick")(lookBtn)
-    check(lookBtn.__text == "Look: Chalked slate", "look button: chalked stone")
-    lookBtn:GetScript("OnClick")(lookBtn)
+    check(list.__shown and list.rows[1].tick.__shown and not list.rows[2].tick.__shown, "clicking the button opens the list, the handkerchief ticked")
+    check(list.rows[4].swatch.__tex == "Interface\\AddOns\\Handkerquest\\textures\\torn_rag" and list.rows[1].swatch.__color ~= nil,
+        "each row has a swatch: the material for texture looks, the cloth colour for drawn ones")
+    local function Pick(key)
+        if not list.__shown then lookBtn:GetScript("OnClick")(lookBtn) end
+        for _, row in ipairs(list.rows) do if row.key == key then row:GetScript("OnClick")(row) end end
+    end
+    Pick("PARCHMENT")
+    check(lookBtn.__text == "Look: Parchment" and f.styleKey == "PARCHMENT" and not list.__shown, "picking Parchment switches the look and closes the list")
+    lookBtn:GetScript("OnClick")(lookBtn); lookBtn:GetScript("OnClick")(lookBtn)
+    check(not list.__shown, "clicking the button again closes the list")
+    do  -- in game, Settings re-parents our panel, which drops the list to the window's layer (HIGH), under the catcher
+        local ORDER = { BACKGROUND = 1, LOW = 2, MEDIUM = 3, HIGH = 4, DIALOG = 5, FULLSCREEN = 6, FULLSCREEN_DIALOG = 7, TOOLTIP = 8 }
+        local catcher = list.catcher
+        list:SetFrameStrata("HIGH")
+        lookBtn:GetScript("OnClick")(lookBtn)
+        check(list.__shown and catcher.__shown and ORDER[list:GetFrameStrata()] > ORDER[catcher:GetFrameStrata()]
+            and ORDER[catcher:GetFrameStrata()] > ORDER.HIGH,
+            "opening the list puts it back above the click-catcher (" .. list:GetFrameStrata() .. " over " .. catcher:GetFrameStrata() .. "), the catcher above Settings")
+        -- safety net: a click that still reaches the catcher over a look picks that look
+        local row = list.rows[3]
+        row.IsMouseOver = function() return true end
+        catcher:GetScript("OnClick")(catcher)
+        row.IsMouseOver = nil
+        check(CFQ.parchmentStyle == "CRUMPLED" and f.styleKey == "CRUMPLED" and not list.__shown and not catcher.__shown,
+            "a click caught over a look still picks it (crumpled paper)")
+        lookBtn:GetScript("OnClick")(lookBtn)
+        catcher:GetScript("OnClick")(catcher)
+        check(CFQ.parchmentStyle == "CRUMPLED" and not list.__shown, "a click anywhere else just closes the list")
+    end
+    Pick("BARK")
     check(lookBtn.__text == "Look: Carved bark" and fontBtn.__alpha < 1 and fontBtn.__text:find("set by the look"),
-        "look button: carved bark brings its own knife-cut lettering")
-    lookBtn:GetScript("OnClick")(lookBtn)
-    check(lookBtn.__text == "Look: Pipe-weed leaf" and fontBtn.__alpha == 1, "look button: pipe-weed leaf (handwriting selectable again)")
-    lookBtn:GetScript("OnClick")(lookBtn)
-    check(lookBtn.__text == "Look: Etched leather", "look button: etched leather")
-    lookBtn:GetScript("OnClick")(lookBtn)
-    check(lookBtn.__text == "Look: Arcane script" and fontBtn.__alpha == 1, "look button: arcane script")
-    lookBtn:GetScript("OnClick")(lookBtn)
+        "look list: carved bark brings its own knife-cut lettering")
+    Pick("LEAF")
+    check(lookBtn.__text == "Look: Pipe-weed leaf" and fontBtn.__alpha == 1, "look list: pipe-weed leaf (handwriting selectable again)")
+    Pick("GILDED")
+    check(lookBtn.__text == "Look: Gilded plate" and f.styleKey == "GILDED", "look list: gilded plate")
+    Pick("ARCANE")
+    check(lookBtn.__text == "Look: Arcane script" and fontBtn.__alpha == 1, "look list: arcane script")
+    Pick("NATIVE")
     check(lookBtn.__text == "Look: Transparent window" and fontBtn.__alpha == 1 and not fontBtn.__text:find("set by the look"),
         "window look: the handwriting button stays live (no lock to plain print)")
     lookBtn:GetScript("OnClick")(lookBtn)
-    check(CFQ.parchmentStyle == "HANDKERCHIEF", "look button wraps back to the handkerchief")
+    check(list.__shown, "list open again")
+    CFQ.optionsPanel:Show(); CFQ.optionsPanel:Hide()
+    check(not list.__shown, "closing the options closes the list")
+    Pick("HANDKERCHIEF")
+    check(CFQ.parchmentStyle == "HANDKERCHIEF" and QRF_SavedState.parchmentStyle == "HANDKERCHIEF", "back to the handkerchief (saved)")
 end
 local hasMapOpt, hasFxOpt = false, false
 for _, w in ipairs(CFQ.optionWidgets) do

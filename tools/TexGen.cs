@@ -1207,4 +1207,216 @@ public static class TexGen
             }
         Save(img, tga, png);
     }
+
+    // ---------------------------------------------------------------- shared: height field -> lit normal
+    static void Normal(double[,] hgt, int x, int y, double scale, out double nX, out double nY, out double nZ)
+    {
+        int W = hgt.GetLength(0), H = hgt.GetLength(1);
+        int x0 = Math.Max(0, x - 1), x1 = Math.Min(W - 1, x + 1), y0 = Math.Max(0, y - 1), y1 = Math.Min(H - 1, y + 1);
+        double gx = (hgt[x1, y] - hgt[x0, y]) * 0.5 * scale, gy = (hgt[x, y1] - hgt[x, y0]) * 0.5 * scale;
+        nX = -gx; nY = -gy; nZ = 1.0;
+        double nl = Math.Sqrt(nX * nX + nY * nY + nZ * nZ); nX /= nl; nY /= nl; nZ /= nl;
+    }
+
+    // ---------------------------------------------------------------- sanctified marble tablet
+    // A white marble tablet with an arched top, like a temple dedication stone: grey veins, a polished
+    // face, a chamfered edge catching the light, a few chips, and a gold-inlaid groove running round
+    // inside the edge. The letters are gilded in game (ink colour); the stone stays plain inside the groove.
+    public static void Marble(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        int W = size, H = size;
+        double L = W * 0.065, R = W * 0.935, B = H * 0.955, top = H * 0.045, yb = H * 0.30;
+        // a segmental arch: part of a big circle through both shoulders (L, yb), (R, yb) and the apex
+        double cx = (L + R) / 2, rx = (R - L) / 2, sag = yb - top;
+        double rc = (rx * rx + sag * sag) / (2 * sag), cy = top + rc;
+        var dist = new double[W, H];
+        var hgt = new double[W, H];
+        double bevel = W * 0.035;
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double arch = y < yb ? rc - Math.Sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) : 1e9;   // only above the shoulders
+                double d = Math.Min(Math.Min(Math.Min(x - L, R - x), B - y), arch);
+                // chipped and slightly worn edge
+                d += (Fbm(x / 9.0, y / 9.0, 3, 81) - 0.5) * 3.0 - Math.Pow(Clamp(Fbm(x / 28.0, y / 28.0, 3, 82) - 0.70, 0, 1), 1.2) * 22;
+                dist[x, y] = d;
+                double t = Clamp(d / bevel, 0, 1);
+                double chamfer = Math.Sin(t * Math.PI / 2);
+                double groove = 0;
+                double gd = Math.Abs(d - W * 0.055);
+                if (gd < 4.5) groove = -Math.Cos(gd / 4.5 * Math.PI / 2) * 2.2;          // the inlay groove
+                hgt[x, y] = chamfer * 14 + groove + (Fbm(x / 140.0, y / 140.0, 3, 83) - 0.5) * 1.5;
+            }
+        double lx, ly, lz; Light(out lx, out ly, out lz);
+        var img = new double[W, H, 4];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double d = dist[x, y];
+                double nX, nY, nZ; Normal(hgt, x, y, 1.0, out nX, out nY, out nZ);
+                double diff = Clamp(nX * lx + nY * ly + nZ * lz, 0, 1);
+                // veins: warped turbulence, a couple of bold ones and many faint
+                double warp = Fbm(x / 120.0, y / 120.0, 5, 84) * 4.5;
+                double v1 = Math.Pow(1 - Math.Abs(Math.Sin((x * 0.6 + y) / 70.0 + warp)), 18);
+                double v2 = Math.Pow(1 - Math.Abs(Math.Sin((x - y * 0.4) / 33.0 + warp * 1.7)), 30) * 0.6;
+                double cloud = (Fbm(x / 60.0, y / 60.0, 5, 85) - 0.5) * 0.08;
+                double vein = Clamp(v1 * 0.55 + v2 * 0.35, 0, 1) * (0.5 + Fbm(x / 90.0, y / 90.0, 2, 86));
+                double r = 0.93 + cloud - vein * 0.30, g = 0.92 + cloud - vein * 0.29, b = 0.90 + cloud * 0.9 - vein * 0.26;
+                r += 0.015; b -= 0.01;                                                        // a warm white
+                double spec = Math.Pow(diff, 22) * 0.18;
+                double light = 0.62 + 0.42 * diff + spec;
+                // gold in the groove
+                double gd = Math.Abs(d - W * 0.055);
+                if (gd < 3.2)
+                {
+                    double k = Clamp((3.2 - gd) / 1.2, 0, 1);
+                    double gl = 0.75 + 0.5 * Math.Pow(diff, 3) + (Value(x * 0.7, y * 0.7, 87) - 0.5) * 0.12;
+                    r += (0.88 * gl - r) * k; g += (0.68 * gl - g) * k; b += (0.28 * gl - b) * k;
+                    light = light * (1 - k) + k;
+                }
+                // chips show rougher, slightly greyer stone
+                double chip = Clamp(1 - d / (bevel * 0.6), 0, 1) * Clamp((Fbm(x / 20.0, y / 20.0, 2, 88) - 0.55) * 4, 0, 1);
+                r -= chip * 0.06; g -= chip * 0.06; b -= chip * 0.05;
+                img[x, y, 0] = r * light; img[x, y, 1] = g * light; img[x, y, 2] = b * light;
+                img[x, y, 3] = Clamp(d / 1.2, 0, 1);
+            }
+        Save(img, tga, png);
+    }
+
+    // ---------------------------------------------------------------- gilded plate
+    // A plate of beaten gold: hammer dimples all over (each facet catching the light differently),
+    // a raised rolled rim, a rivet in each corner, a few fine scratches. Writing is engraved in game.
+    public static void GoldPlate(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        int W = size, H = size;
+        double m = W * 0.06, rad = W * 0.07;
+        var dist = new double[W, H];
+        var hgt = new double[W, H];
+        double rimW = W * 0.045;
+        double[] rivX = { m + rimW * 1.1, W - m - rimW * 1.1 }, rivY = { m + rimW * 1.1, H - m - rimW * 1.1 };
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                // rounded rectangle, the outline a touch uneven (hand-cut)
+                double qx = Math.Max(Math.Abs(x - W / 2.0) - (W / 2.0 - m - rad), 0);
+                double qy = Math.Max(Math.Abs(y - H / 2.0) - (H / 2.0 - m - rad), 0);
+                double d = rad - Math.Sqrt(qx * qx + qy * qy);
+                d = Math.Min(d, Math.Min(Math.Min(x - m, W - m - x), Math.Min(y - m, H - m - y)));
+                d += (Fbm(x / 40.0, y / 40.0, 2, 91) - 0.5) * 4.0;
+                dist[x, y] = d;
+                // hammer dimples: shallow bowls in a cell pattern
+                // overlapping round hammer dents: each a shallow bowl, ridges where neighbours meet
+                double f1, f2; Cell(x / 22.0, y / 22.0, 92, out f1, out f2);
+                double dimple = f1 * f1 * 3.2 + (Fbm(x / 6.0, y / 6.0, 2, 96) - 0.5) * 0.25;
+                // raised rolled rim
+                double rimT = Clamp(d / rimW, 0, 1);
+                double rim = Math.Sin(rimT * Math.PI) * 9 * (rimT < 1 ? 1 : 0) + (d > rimW ? 0 : 0);
+                double face = d > rimW ? dimple : dimple * 0.3;
+                double h = rim + face + Clamp(d / 3.0, 0, 1) * 4;
+                // rivets
+                for (int i = 0; i < 2; i++)
+                    for (int j = 0; j < 2; j++)
+                    {
+                        double rd = Math.Sqrt((x - rivX[i]) * (x - rivX[i]) + (y - rivY[j]) * (y - rivY[j]));
+                        if (rd < W * 0.018) h += Math.Sqrt(1 - Math.Pow(rd / (W * 0.018), 2)) * 9;
+                    }
+                hgt[x, y] = h;
+            }
+        double lx, ly, lz; Light(out lx, out ly, out lz);
+        var img = new double[W, H, 4];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double d = dist[x, y];
+                double nX, nY, nZ; Normal(hgt, x, y, 1.0, out nX, out nY, out nZ);
+                double diff = Clamp(nX * lx + nY * ly + nZ * lz, 0, 1);
+                double spec = Math.Pow(diff, 14) * 0.55;
+                // tarnish in patches, brighter where rubbed
+                double tarn = Clamp((Fbm(x / 70.0, y / 70.0, 4, 93) - 0.55) * 2.5, 0, 1) * 0.30;
+                double tone = 0.58 + 0.55 * diff;
+                double r = 0.90 * tone + spec, g = 0.70 * tone + spec * 0.85, b = 0.30 * tone + spec * 0.45;
+                r *= 1 - tarn * 0.45; g *= 1 - tarn * 0.50; b *= 1 - tarn * 0.40;
+                // fine scratches
+                double sc = Math.Pow(1 - Math.Abs(Math.Sin((x * 0.31 + y * 0.95) / 2.1 + Fbm(x / 50.0, y / 50.0, 2, 94) * 30)), 60)
+                    * Clamp((Fbm(x / 35.0, y / 35.0, 2, 95) - 0.62) * 5, 0, 1);
+                r += sc * 0.12; g += sc * 0.10; b += sc * 0.06;
+                // the outer edge darkens where the rim rolls under
+                double under = Clamp(1 - d / 5.0, 0, 1);
+                r *= 1 - under * 0.45; g *= 1 - under * 0.45; b *= 1 - under * 0.45;
+                img[x, y, 0] = r; img[x, y, 1] = g; img[x, y, 2] = b;
+                img[x, y, 3] = Clamp(d / 1.2, 0, 1);
+            }
+        Save(img, tga, png);
+    }
+
+    // ---------------------------------------------------------------- illuminated vellum
+    // A leaf of a holy book: cream calfskin vellum, knife-trimmed edges with a slight wave, cockling,
+    // follicle specks, and an illuminated border: a band of raised gold leaf between a thin red and a
+    // thin blue rule, with a gold boss and red quatrefoil in each corner. The heading's first letter is
+    // gilded in game (style.initial).
+    public static void Vellum(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        int W = size, H = size;
+        double m = W * 0.05;
+        double lx, ly, lz; Light(out lx, out ly, out lz);
+        var img = new double[W, H, 4];
+        double bIn = W * 0.075, bandW = W * 0.016;           // gold band: distance from the page edge, width
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double dL = x - m - (Fbm(y / 90.0, 1.5, 2, 101) - 0.5) * 6, dR = W - m - x + (Fbm(y / 90.0, 2.5, 2, 102) - 0.5) * 6;
+                double dT = y - m - (Fbm(x / 90.0, 3.5, 2, 103) - 0.5) * 6, dB = H - m - y + (Fbm(x / 90.0, 4.5, 2, 104) - 0.5) * 6;
+                double d = Math.Min(Math.Min(dL, dR), Math.Min(dT, dB));
+                // cockled skin: soft lumps
+                double ck = Fbm(x / 80.0, y / 80.0, 3, 105), ck2 = Fbm((x + 1) / 80.0, y / 80.0, 3, 105), ck3 = Fbm(x / 80.0, (y + 1) / 80.0, 3, 105);
+                double nX = -(ck2 - ck) * 30, nY = -(ck3 - ck) * 30, nZ = 1;
+                double nl = Math.Sqrt(nX * nX + nY * nY + nZ * nZ);
+                double diff = Clamp((nX * lx + nY * ly + nZ * lz) / nl, 0, 1);
+                double mott = (Fbm(x / 45.0, y / 45.0, 4, 106) - 0.5) * 0.06;
+                double r = 0.95 + mott, g = 0.91 + mott, b = 0.80 + mott * 1.2;
+                if (Value(x / 2.2, y / 2.2, 107) > 0.975) { r -= 0.10; g -= 0.11; b -= 0.12; }           // follicle specks
+                double edgeTone = Clamp(1 - d / 18.0, 0, 1) * 0.10;                                     // handled edges
+                r -= edgeTone; g -= edgeTone * 1.1; b -= edgeTone * 1.4;
+                double light = 0.86 + 0.20 * diff;
+
+                // the illuminated border (straight: drawn with a ruler on the trimmed page)
+                double ex = Math.Min(x, W - 1 - x), ey = Math.Min(y, H - 1 - y);
+                double e = Math.Min(ex, ey);                                                               // to the page box
+                double inBand = e - bIn;
+                double cr = r, cg = g, cb = b, k = 0;
+                if (inBand > -5 && inBand < -3) { cr = 0.20; cg = 0.28; cb = 0.62; k = 0.9; }             // blue rule outside
+                if (inBand > bandW + 3 && inBand < bandW + 5) { cr = 0.66; cg = 0.12; cb = 0.08; k = 0.9; }  // red rule inside
+                bool gold = inBand >= 0 && inBand <= bandW;
+                // corner bosses
+                double cxx = Math.Min(x, W - 1 - x) - (bIn + bandW / 2), cyy = Math.Min(y, H - 1 - y) - (bIn + bandW / 2);
+                double bd = Math.Sqrt(cxx * cxx + cyy * cyy);
+                double boss = W * 0.032;
+                bool inBoss = bd < boss;
+                if (gold || inBoss)
+                {
+                    // raised gesso gold: a bevelled band / dome, crackled leaf
+                    double hgtT = inBoss ? Math.Sqrt(Math.Max(0, 1 - Math.Pow(bd / boss, 2))) : Math.Sin(Clamp(inBand / bandW, 0, 1) * Math.PI);
+                    double slope = inBoss ? (cxx * lx + cyy * ly) / Math.Max(bd, 1) * -0.8 : 0;
+                    double gl = 0.70 + 0.35 * hgtT + slope * 0.4 + (Value(x * 0.8, y * 0.8, 108) - 0.5) * 0.12;
+                    double crackle = Math.Pow(1 - Math.Abs(Math.Sin(x * 0.9 + Fbm(x / 6.0, y / 6.0, 2, 109) * 12)), 40) * 0.25;
+                    cr = (0.92 - crackle) * gl; cg = (0.74 - crackle) * gl; cb = (0.30 - crackle * 0.5) * gl; k = 1;
+                    // red quatrefoil on the boss
+                    if (inBoss)
+                    {
+                        double ang = Math.Atan2(cyy, cxx);
+                        double petal = boss * 0.62 * (0.55 + 0.45 * Math.Abs(Math.Cos(2 * ang)));
+                        if (bd < petal) { cr = 0.62; cg = 0.10; cb = 0.07; }
+                        if (bd < boss * 0.16) { cr = 0.95; cg = 0.82; cb = 0.40; }
+                    }
+                    light = 1;
+                }
+                r = r * (1 - k) + cr * k; g = g * (1 - k) + cg * k; b = b * (1 - k) + cb * k;
+                img[x, y, 0] = r * light; img[x, y, 1] = g * light; img[x, y, 2] = b * light;
+                img[x, y, 3] = Clamp(d / 1.2, 0, 1);
+            }
+        Save(img, tga, png);
+    }
 }

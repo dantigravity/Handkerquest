@@ -1316,6 +1316,16 @@ local function CompareQuestsForQuestLog(a, b)
     end
 end
 
+-- Does the tracker show a usable item button for this quest? Its button sits on the quest's own tracker
+-- block, and a deck hides that block (and can't move or show protected buttons in combat), so such
+-- quests are never stacked. A finished quest only keeps its button if the game says so.
+function CFQ.QuestHasItemButton(logIndex, isComplete)
+    if not (GetQuestLogSpecialItemInfo and logIndex and logIndex > 0) then return false end
+    local ok, link, tex, _, showWhenComplete = pcall(GetQuestLogSpecialItemInfo, logIndex)
+    if not ok or not (link or tex) then return false end
+    return (not isComplete) or (showWhenComplete and true) or false
+end
+
 -- ============================================================================
 -- DUAL SPATIAL CLUSTERING ENGINE (OBJECTIVE TRACKER ONLY)
 -- ============================================================================
@@ -1331,7 +1341,9 @@ local function BuildQuestClusters()
             qData.clusterSize = 0
             qData.clusterOrder = nil
 
-            if qData.isComplete then
+            if qData.hasQuestItem then
+                -- a quest item to click (the eye, the phial...) keeps its own tracker line: never in a deck
+            elseif qData.isComplete then
                 table.insert(readyQuests, qData)
             else
                 table.insert(incompleteQuests, qData)
@@ -1475,6 +1487,7 @@ ScanQuestLogRewards = function()
                 quantityObjectives = qtyObjs,
                 itemObjectives = itemObjs,
                 taskObjectives = taskObjs,
+                hasQuestItem = (not isFromMap) and CFQ.QuestHasItemButton(logIndex, isComplete) or false,
                 mapID = mapID,
                 x = x,
                 y = y,
@@ -2740,6 +2753,79 @@ P.STYLES = {
                    shadow = { 0.10, 0.06, 0.02 } },
     },
     {
+        -- a paladin's tablet: white marble with an arched top, a gold-inlaid groove inside the edge; the
+        -- letters are cut and gilded (a dark shadow in the top-left wall of each cut) and a soft holy light
+        -- breathes round them. Stone doesn't bend: a gilded dog-ear mark (rigid). The tablets underneath
+        -- are only mirrored, so their arches stay on top.
+        key = "MARBLE", label = "Sanctified marble",
+        image = "Interface\\AddOns\\Handkerquest\\textures\\sanctified_marble",
+        paper = { 1, 1, 1, 1 }, depth = 1, rigid = true,
+        back = { { 0.90, 0.89, 0.87, 1 }, { 0.80, 0.79, 0.77, 1 }, { 0.70, 0.69, 0.67, 1 } },
+        flips = { 1, 0, 1 },
+        imageCorner = { 0.17, 0.15 },          -- inside the gold groove
+        shadowAlpha = 0.40, pile = true,
+        inkShadow = { 0.30, 0.24, 0.14, 0.55, -1, 1 },
+        bleed = { 0.36, 0.28, 0.16, 0.30 },
+        ink = { 0.66, 0.48, 0.12 }, inkRed = { 0.64, 0.16, 0.10 }, inkGreen = { 0.22, 0.44, 0.20 },
+        title = { 0.58, 0.40, 0.08 }, faded = { 0.60, 0.56, 0.48 }, footer = { 0.52, 0.42, 0.22 },
+        sub = { 0.55, 0.45, 0.28 }, close = { 0.50, 0.40, 0.20 }, gear = { 0.50, 0.40, 0.20 },
+        wash = { 0.85, 0.70, 0.30, 0.06 }, washFlash = { 1.00, 0.85, 0.40, 0.45 },
+        divider = { 0.60, 0.48, 0.25, 0.18 }, highlight = { 1.00, 0.85, 0.40, 0.10 },
+        grip = { 0.55, 0.45, 0.25, 0.85 }, pad = 8,
+        inset = { 0.16, 0.24, 0.16, 0.13 },    -- inside the groove, below the arch's narrow top
+        halo = { color = { 1.00, 0.86, 0.45 }, alpha = 0.40, radius = 1.4, pulse = true, pulseSpeed = 1.2 },   -- holy light
+        corner = { u1 = { 0.70, 0.69, 0.66 }, u2 = { 0.85, 0.84, 0.81 }, tip = { 0.70, 0.52, 0.14 },
+                   crease = { 0.70, 0.52, 0.14 }, edge = { 0.70, 0.52, 0.14, 0.95 }, cut = { 0.70, 0.52, 0.14, 0.95 },
+                   shadow = { 0.30, 0.24, 0.14 } },
+    },
+    {
+        -- a plate of beaten gold: hammer dents, a raised rolled rim, a rivet in each corner. The list is
+        -- engraved (dark lines, a bright lower wall: inkShadow) and a band of light sweeps across the
+        -- metal now and then (style.sheen). Rigid: an engraved dog-ear mark.
+        key = "GILDED", label = "Gilded plate",
+        image = "Interface\\AddOns\\Handkerquest\\textures\\gilded_plate",
+        paper = { 1, 1, 1, 1 }, depth = 1, rigid = true,
+        back = { { 0.88, 0.86, 0.82, 1 }, { 0.78, 0.76, 0.72, 1 }, { 0.68, 0.66, 0.62, 1 } },
+        imageCorner = { 0.16, 0.16 },          -- on the face, inside the rivet
+        shadowAlpha = 0.45, pile = true,
+        inkShadow = { 1.00, 0.93, 0.62, 0.50, 1, -1 },
+        bleed = { 0.30, 0.18, 0.04, 0.40 },
+        ink = { 0.24, 0.14, 0.03 }, inkRed = { 0.50, 0.08, 0.04 }, inkGreen = { 0.12, 0.28, 0.08 },
+        title = { 0.20, 0.11, 0.02 }, faded = { 0.50, 0.36, 0.12 }, footer = { 0.30, 0.18, 0.05 },
+        sub = { 0.36, 0.23, 0.07 }, close = { 0.30, 0.18, 0.05 }, gear = { 0.30, 0.18, 0.05 },
+        wash = { 0.40, 0.25, 0.05, 0.08 }, washFlash = { 1.00, 0.95, 0.70, 0.45 },
+        divider = { 0.35, 0.22, 0.05, 0.18 }, highlight = { 1.00, 0.95, 0.70, 0.12 },
+        grip = { 0.30, 0.18, 0.05, 0.85 }, pad = 8,
+        inset = { 0.13, 0.12, 0.13, 0.12 },    -- inside the rim
+        sheen = { color = { 1.00, 0.96, 0.80 }, alpha = 0.35, width = 0.22, sweep = 1.6, every = 7 },
+        corner = { u1 = { 0.55, 0.40, 0.12 }, u2 = { 0.80, 0.62, 0.25 }, tip = { 0.24, 0.14, 0.03 },
+                   crease = { 0.24, 0.14, 0.03 }, edge = { 0.24, 0.14, 0.03, 0.95 }, cut = { 0.24, 0.14, 0.03, 0.95 },
+                   shadow = { 1.00, 0.93, 0.62 } },
+    },
+    {
+        -- a leaf of a holy book: cream vellum, a gold-leaf border between a blue and a red rule, gold bosses
+        -- in the corners. Black iron-gall writing; the heading in red (a rubric) with its first letter gilded
+        -- (style.initial); "(turn in)" in the border's blue. It bends: a real fold.
+        key = "VELLUM", label = "Illuminated vellum",
+        image = "Interface\\AddOns\\Handkerquest\\textures\\illuminated_vellum",
+        paper = { 1, 1, 1, 1 }, depth = 1,
+        back = { { 0.95, 0.93, 0.88, 1 }, { 0.89, 0.86, 0.80, 1 }, { 0.83, 0.80, 0.73, 1 } },
+        imageCorner = { 0.052, 0.052 },        -- the page's own corner
+        shadowAlpha = 0.32, pile = true,
+        ink = { 0.10, 0.08, 0.07 }, inkRed = { 0.66, 0.10, 0.06 }, inkGreen = { 0.18, 0.26, 0.60 },
+        title = { 0.62, 0.10, 0.06 }, initial = { 0.80, 0.58, 0.12 },
+        faded = { 0.50, 0.45, 0.38 }, footer = { 0.40, 0.33, 0.25 },
+        sub = { 0.48, 0.40, 0.30 }, close = { 0.35, 0.28, 0.20 }, gear = { 0.35, 0.28, 0.20 },
+        wash = { 0.45, 0.38, 0.25, 0.05 }, washFlash = { 0.95, 0.75, 0.25, 0.45 },
+        divider = { 0.62, 0.10, 0.06, 0.18 }, highlight = { 0.45, 0.35, 0.15, 0.07 },
+        grip = { 0.50, 0.40, 0.28, 0.85 }, pad = 8,
+        inset = { 0.12, 0.11, 0.12, 0.11 },    -- inside the red rule
+        halo = { alpha = 0.10, radius = 0.6 }, bleedWidth = 1.4, bleedAlpha = 0.22,   -- iron-gall barely bites into skin
+        corner = { u1 = { 0.70, 0.66, 0.56 }, u2 = { 0.90, 0.87, 0.78 }, tip = { 0.97, 0.94, 0.86 },
+                   crease = { 0.80, 0.76, 0.66 }, edge = { 0.55, 0.48, 0.36, 0.70 }, cut = { 0.65, 0.58, 0.45, 0.60 },
+                   shadow = { 0.10, 0.08, 0.05 } },
+    },
+    {
         -- a mage's writing hanging in the air: words of violet-white light over a faint haze, a rune circle
         -- turning slowly behind them (arcane.ring, added light) and motes drifting up. Nothing to fold, so the
         -- page corner is a glowing mark (rigid), and there's no pile: the footer says which page.
@@ -3002,7 +3088,7 @@ function P.ApplyStyle(f)
             cloth = cl and { radius = cl.radius, scallop = cl.scallop, step = cl.step, ripple = cl.ripple,
                 lace = { math.min(1, bp[1] * 1.03), math.min(1, bp[2] * 1.03), math.min(1, bp[3] * 1.03), bp[4] },
                 thread = st.backThread } or nil,
-            image = st.image, flip = st.fan and st.fan.flips[k] or k })   -- each page underneath turned a different way
+            image = st.image, flip = st.fan and st.fan.flips[k] or (st.flips and st.flips[k]) or k })   -- each page underneath turned a different way
     end
     P.RestyleSheet(f.topSheet, {
         paper = st.paper, rim = st.rim, depth = st.depth, minDepth = st.minDepth, segW = st.segW,
@@ -3023,6 +3109,7 @@ function P.ApplyStyle(f)
     P.LayoutPads(f)
     P.LayoutInkGrain(f)
     P.LayoutArcane(f)
+    P.LayoutSheen(f)
     if f.corner then f.corner.drawnKey = nil; P.DrawCorner(f.corner) end
     P.ApplyStackLayout(f)
 end
@@ -3121,21 +3208,77 @@ function P.AnimateArcane(f, now)
             m:Show()
         end
     end
-    -- the words breathe
+    P.PulseHalo(f, now)
+end
+
+-- A glow that breathes (style.halo.pulse: arcane light, the marble's holy light): its copies of the words
+-- fade in and out together
+function P.PulseHalo(f, now)
     local hl = P.GetStyle().halo
-    if hl and hl.pulse then
-        local k = 0.75 + 0.25 * math.sin(now * 2.1)
-        local function Pulse(fs)
-            if not fs or not fs.halo then return end
-            for _, cp in ipairs(fs.halo) do
-                if cp:IsShown() and cp.haloCol then cp:SetTextColor(cp.haloCol[1], cp.haloCol[2], cp.haloCol[3], (hl.alpha or 0.4) * k) end
-            end
-        end
-        Pulse(f.titleFS)
-        for _, row in ipairs(shoppingListRowPool) do
-            if row:IsShown() then Pulse(row.itemText) end
+    if not (hl and hl.pulse) then return end
+    local k = 0.75 + 0.25 * math.sin(now * (hl.pulseSpeed or 2.1))
+    local function Pulse(fs)
+        if not fs or not fs.halo then return end
+        for _, cp in ipairs(fs.halo) do
+            if cp:IsShown() and cp.haloCol then cp:SetTextColor(cp.haloCol[1], cp.haloCol[2], cp.haloCol[3], (hl.alpha or 0.4) * k) end
         end
     end
+    Pulse(f.titleFS)
+    for _, row in ipairs(shoppingListRowPool) do
+        if row:IsShown() then Pulse(row.itemText) end
+    end
+end
+
+-- Gilded plate (style.sheen): a band of light sweeps across the metal now and then. Two gradient halves
+-- (rising, falling), added light on the top page behind the words, kept inside the plate's face
+-- (style.inset) so it never spills past the rim.
+function P.LayoutSheen(f)
+    if not f or not f.topSheet then return end
+    local sh = P.GetStyle().sheen
+    if not sh then
+        if f.sheen then f.sheen.a:Hide(); f.sheen.b:Hide() end
+        f.sheenOn = false
+        return
+    end
+    if not f.sheen then
+        local S = {}
+        for _, k in ipairs({ "a", "b" }) do
+            S[k] = f.topSheet:CreateTexture(nil, "BACKGROUND", nil, 7)
+            if S[k].SetBlendMode then S[k]:SetBlendMode("ADD") end
+            S[k]:Hide()
+        end
+        f.sheen = S
+    end
+    local c = sh.color
+    ApplyHorizontalGradient(f.sheen.a, c[1], c[2], c[3], 0, 1)
+    ApplyHorizontalGradient(f.sheen.b, c[1], c[2], c[3], 1, 0)
+    f.sheenOn = true
+end
+
+function P.AnimateSheen(f, now)
+    local st = P.GetStyle()
+    local sh, S = st.sheen, f.sheen
+    if not (sh and S) then return end
+    local w, h = f:GetWidth() or 230, f:GetHeight() or 175
+    local ins = st.inset or { 0, 0, 0, 0 }
+    local left, right = w * ins[1], w * (1 - ins[3])
+    local top, bottom = h * ins[2], h * (1 - ins[4])
+    local p = (now % (sh.every or 7)) / (sh.sweep or 1.6)            -- 0..1 while the light passes
+    if p >= 1 or right - left < 10 then S.a:Hide(); S.b:Hide(); return end
+    local bw = w * (sh.width or 0.22)
+    local xc = left - bw / 2 + p * (right - left + bw)
+    local alpha = (sh.alpha or 0.3) * math.sin(math.pi * p)
+    local function Half(tex, x0, x1)
+        x0, x1 = math.max(x0, left), math.min(x1, right)
+        if x1 - x0 < 1 then tex:Hide(); return end
+        tex:ClearAllPoints()
+        tex:SetPoint("TOPLEFT", f.topSheet, "TOPLEFT", x0, -top)
+        tex:SetSize(x1 - x0, bottom - top)
+        tex:SetAlpha(alpha)
+        tex:Show()
+    end
+    Half(S.a, xc - bw / 2, xc)
+    Half(S.b, xc, xc + bw / 2)
 end
 
 -- Space between the window's edge and the writing on each side (left, top, right, bottom).
@@ -3623,7 +3766,12 @@ function P.OnUpdate(f, elapsed)
     end
 
     if next(P.fxRows) then P.AnimateRowFX(GetTime()) end
-    if f.arcaneOn then P.AnimateArcane(f, GetTime()) end
+    if f.arcaneOn then
+        P.AnimateArcane(f, GetTime())
+    elseif P.HALO and P.HALO.pulse then
+        P.PulseHalo(f, GetTime())
+    end
+    if f.sheenOn then P.AnimateSheen(f, GetTime()) end
 
     local c = f.corner
     if c and c:IsShown() then
@@ -4837,6 +4985,10 @@ function P.Render(f)
     P.SetInkFont(f.titleFS, "title")
     P.SetInkFont(f.footerFS, "small")
     local title = area.title or (area.isCurrent and "Field Tally" or "Elsewhere")
+    if st.initial then                       -- illuminated: the heading's first letter in gold (style.initial)
+        local first, rest = string.match(title, "^([%z\1-\127\194-\244][\128-\191]*)(.*)$")   -- one UTF-8 letter
+        if first then title = "|c" .. P.Hex(st.initial) .. first .. "|r" .. rest end
+    end
     if area.isCurrent and now < (P.currentGlowUntil or 0) then
         f.titleFS:SetTextColor(P.INK_RED[1], P.INK_RED[2], P.INK_RED[3], 1)
     else
@@ -9230,30 +9382,143 @@ function CFQ.BuildOptionsPanel()
     end
 
     y = y - 4
-    local lookBtn = Button("Look: Torn rag", 210, 24, function()
-        P.CycleStyle()
-        SaveState()
-        P.ApplyStyle()
-        RefreshParchment()
+    -- Look: a drop-down list of every look (a little swatch of each, the current one ticked; hover one
+    -- to read about it). Clicking outside the list, or the button again, closes it.
+    local LOOK_BLURBS = {
+        HANDKERCHIEF = "Scribbled on a hemmed, folded handkerchief.",
+        PARCHMENT = "A pile of torn parchment pages.",
+        CRUMPLED = "A sheet crumpled into a ball and flattened out again, in pencil.",
+        RAG = "A strip torn off a dwarf's shirt, hem and all, written in soot.",
+        STONE = "A smooth dark river stone, written on in chalk.",
+        BARK = "A jagged slab of dark bark, the list carved into the red underbark.",
+        LEAF = "A cured leaf of Longbottom's finest, written in ink.",
+        LEATHER = "A rough-cut piece of soft tan hide, the list pressed into it.",
+        MARBLE = "A white marble tablet, the list cut in and gilded, glowing with holy light.",
+        GILDED = "A plate of beaten gold, the list engraved; light glints across it now and then.",
+        VELLUM = "A page of a holy book with a gold-leaf border, the heading in red.",
+        ARCANE = "A mage's words of light hanging in the air, a rune circle turning behind them.",
+        NATIVE = "A see-through WoW-style panel, in the handwriting you pick.",
+    }
+    local lookBtn = Button("Look: Torn rag", 210, 24, function(self)
+        if self.list:IsShown() then self.list:Hide() else self.list:Show() end
     end, function(self)
         self:SetText("Look: " .. P.GetStyle().label)
+        if self.list and self.list:IsShown() then self.list:Refresh() end
     end)
+    lookBtn.arrow = lookBtn:CreateTexture(nil, "OVERLAY")
+    lookBtn.arrow:SetSize(16, 16)
+    lookBtn.arrow:SetPoint("RIGHT", lookBtn, "RIGHT", -4, 0)
+    lookBtn.arrow:SetTexture("Interface\\ChatFrame\\UI-ChatIcon-ScrollDown-Up")
     lookBtn:SetScript("OnEnter", function(self)
+        if self.list:IsShown() then return end
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:AddLine("Look of the Field Tally", 1, 0.82, 0)
-        GameTooltip:AddLine("Handkerchief notes: scribbled on a hemmed, folded handkerchief.", 0.9, 0.9, 0.9, true)
-        GameTooltip:AddLine("Parchment: a pile of torn parchment pages.", 0.9, 0.9, 0.9, true)
-        GameTooltip:AddLine("Crumpled paper: a sheet crumpled into a ball and flattened out again, in pencil.", 0.9, 0.9, 0.9, true)
-        GameTooltip:AddLine("Torn rag: a strip torn off a dwarf's shirt, hem and all, written in soot.", 0.9, 0.9, 0.9, true)
-        GameTooltip:AddLine("Chalked slate: a smooth dark river stone, written on in chalk.", 0.9, 0.9, 0.9, true)
-        GameTooltip:AddLine("Carved bark: a jagged slab of dark bark, the list carved into the red underbark.", 0.9, 0.9, 0.9, true)
-        GameTooltip:AddLine("Pipe-weed leaf: a cured leaf of Longbottom's finest, written in ink.", 0.9, 0.9, 0.9, true)
-        GameTooltip:AddLine("Etched leather: a rough-cut piece of soft tan hide, the list pressed into it.", 0.9, 0.9, 0.9, true)
-        GameTooltip:AddLine("Arcane script: a mage's words of light hanging in the air, a rune circle turning behind them.", 0.9, 0.9, 0.9, true)
-        GameTooltip:AddLine("Transparent window: a see-through WoW-style panel, in the handwriting you pick.", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine("Click to pick one from the list.", 0.9, 0.9, 0.9, true)
         GameTooltip:Show()
     end)
     lookBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    local ROW_H = 20
+    -- Layers: the list sits above everything (FULLSCREEN_DIALOG), the click-catcher just under it (DIALOG,
+    -- still above the Settings window). Set again every time the list opens: when Settings shows our panel
+    -- it re-parents it, which pulls the list back down to the window's layer, under the catcher, and every
+    -- click on a look then only closed the list.
+    local list = CreateFrame("Frame", nil, lookBtn)
+    list:SetFrameStrata("FULLSCREEN_DIALOG")
+    list:SetToplevel(true)
+    list:EnableMouse(true)
+    list:SetPoint("TOPLEFT", lookBtn, "BOTTOMLEFT", 0, -2)
+    list:SetSize(230, #P.STYLES * ROW_H + 10)
+    list.bg = list:CreateTexture(nil, "BACKGROUND")
+    list.bg:SetAllPoints()
+    list.bg:SetColorTexture(0.06, 0.05, 0.04, 0.96)
+    for _, edge in ipairs({ { "TOPLEFT", "TOPRIGHT", 0, 1 }, { "BOTTOMLEFT", "BOTTOMRIGHT", 0, 1 },
+                            { "TOPLEFT", "BOTTOMLEFT", 1, 0 }, { "TOPRIGHT", "BOTTOMRIGHT", 1, 0 } }) do
+        local t = list:CreateTexture(nil, "BORDER")
+        t:SetColorTexture(0.6, 0.5, 0.2, 0.8)
+        t:SetPoint(edge[1], list, edge[1], 0, 0)
+        t:SetPoint(edge[2], list, edge[2], 0, 0)
+        if edge[3] == 1 then t:SetWidth(1) else t:SetHeight(1) end
+    end
+    list:Hide()
+    -- a click anywhere else closes the list
+    local catcher = CreateFrame("Button", nil, UIParent)
+    catcher:SetAllPoints(UIParent)
+    catcher:SetFrameStrata("DIALOG")
+    catcher:SetFrameLevel(1)
+    catcher:RegisterForClicks("AnyUp")
+    catcher:SetScript("OnClick", function()
+        -- if a click still lands here over a look (layers changed under us), pick that look
+        for _, row in ipairs(list.rows or {}) do
+            if row:IsShown() and row:IsMouseOver() then row:GetScript("OnClick")(row); return end
+        end
+        list:Hide()
+    end)
+    catcher:Hide()
+    list:SetFrameLevel(catcher:GetFrameLevel() + 5)
+    list.rows = {}
+    for k, st in ipairs(P.STYLES) do
+        local row = CreateFrame("Button", nil, list)
+        row:SetSize(222, ROW_H)
+        row:SetPoint("TOPLEFT", list, "TOPLEFT", 4, -5 - (k - 1) * ROW_H)
+        row.hl = row:CreateTexture(nil, "HIGHLIGHT")
+        row.hl:SetAllPoints()
+        row.hl:SetColorTexture(1, 0.82, 0, 0.15)
+        row.tick = row:CreateTexture(nil, "ARTWORK")
+        row.tick:SetSize(14, 14)
+        row.tick:SetPoint("LEFT", row, "LEFT", 2, 0)
+        row.tick:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+        row.swatch = row:CreateTexture(nil, "ARTWORK")
+        row.swatch:SetSize(16, 16)
+        row.swatch:SetPoint("LEFT", row, "LEFT", 20, 0)
+        if st.image then
+            row.swatch:SetTexture(st.image)
+            row.swatch:SetTexCoord(0.25, 0.75, 0.25, 0.75)          -- the middle of the material
+        else
+            local c = st.paper
+            row.swatch:SetColorTexture(c[1], c[2], c[3], math.max(c[4] or 1, 0.6))
+        end
+        row.label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        row.label:SetPoint("LEFT", row.swatch, "RIGHT", 6, 0)
+        row.label:SetText(st.label)
+        row.key = st.key
+        row:SetScript("OnClick", function(self)
+            CFQ.parchmentStyle = self.key
+            list:Hide()
+            SaveState()
+            P.ApplyStyle()
+            RefreshParchment()
+            CFQ.RefreshOptionsPanel()
+        end)
+        row:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(list, "ANCHOR_RIGHT")
+            GameTooltip:AddLine(st.label, 1, 0.82, 0)
+            if LOOK_BLURBS[st.key] then GameTooltip:AddLine(LOOK_BLURBS[st.key], 0.9, 0.9, 0.9, true) end
+            GameTooltip:Show()
+        end)
+        row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        list.rows[k] = row
+    end
+    list.Refresh = function(self)
+        local cur = P.GetStyle().key
+        for _, row in ipairs(self.rows) do
+            row.tick:SetShown(row.key == cur)
+            row.label:SetTextColor(1, row.key == cur and 0.82 or 1, row.key == cur and 0 or 1)
+        end
+    end
+    list:SetScript("OnShow", function(self)
+        catcher:SetFrameStrata("DIALOG")
+        catcher:Show()
+        self:SetFrameStrata("FULLSCREEN_DIALOG")
+        self:Raise()
+        self:Refresh()
+        GameTooltip:Hide()
+    end)
+    list:SetScript("OnHide", function() catcher:Hide() end)
+    lookBtn.list = list
+    list.catcher = catcher
+    CFQ.lookDropDown = list
+    outer:HookScript("OnHide", function() list:Hide() end)
     -- beside the Look button, only while Arcane script is the look
     CFQ.runeColorRow = ColorRow(244, y, "Runes", 42, "rune", P.ARCANE_RUNE_COLORS,
         "Arcane script: the colour of the rune circle and its light (the glow round the words, the motes, ticks and strikes, the corner mark).",
@@ -9450,6 +9715,9 @@ SlashCmdList["HANDKERQUEST"] = function(msg)
             stone = "STONE", rock = "STONE", chalk = "STONE", slate = "STONE", bark = "BARK", carved = "BARK", wood = "BARK",
             leaf = "LEAF", pipeweed = "LEAF", tobacco = "LEAF", longbottom = "LEAF",
             leather = "LEATHER", etched = "LEATHER", tooled = "LEATHER", hide = "LEATHER", suede = "LEATHER",
+            marble = "MARBLE", tablet = "MARBLE", sanctified = "MARBLE", holy = "MARBLE",
+            gold = "GILDED", gilded = "GILDED", plate = "GILDED", golden = "GILDED",
+            vellum = "VELLUM", illuminated = "VELLUM", manuscript = "VELLUM", libram = "VELLUM", book = "VELLUM",
             arcane = "ARCANE", mage = "ARCANE", magic = "ARCANE", rune = "ARCANE", runes = "ARCANE",
             window = "NATIVE", transparent = "NATIVE", native = "NATIVE" }
         if want and alias[want] then CFQ.parchmentStyle = alias[want] else P.CycleStyle() end

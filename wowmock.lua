@@ -51,6 +51,8 @@ function methods:GetScale() return 1 end
 function methods:SetAlpha(a) self.__alpha = a end
 function methods:GetAlpha() return self.__alpha end
 function methods:SetFrameLevel(l) self.__level = l end
+function methods:SetFrameStrata(s) self.__strata = s end
+function methods:GetFrameStrata() return self.__strata or "MEDIUM" end
 function methods:GetFrameLevel() return self.__level end
 function methods:SetParent(p) self.__parent = p end
 function methods:GetParent() return self.__parent end
