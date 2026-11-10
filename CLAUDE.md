@@ -45,10 +45,15 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
 - **Stacking is visual only.** A deck holds only quests that already have a native tracker block;
   toggling stacks never adds/removes quest watches. Toggles call `CFQ.RequestNativeTrackerUpdate()`
   so Blizzard re-shows its blocks. `/hanky debug` dumps the tracker for in-game diagnosis.
-  **A quest with a usable quest item never goes into a deck** (bug fix: the eye / phial buttons vanished): its
-  button lives on its own tracker block, which a deck hides, and protected buttons can't be shown or moved in
-  combat. `CFQ.QuestHasItemButton` (`GetQuestLogSpecialItemInfo`; a finished quest only if
-  `showItemWhenComplete`) → `qData.hasQuestItem`, skipped in `BuildQuestClusters`.
+  **Quest items on decks** (user decision; the eye / phial buttons used to vanish with the hidden block): a
+  quest with a usable item still stacks, and its item gets **our own secure button left of the deck**
+  (`CFQ.PlaceDeckItemButtons`, pool `CFQ.itemButtons`, `SecureActionButtonTemplate` type "item"): a row beside
+  the collapsed deck, gliding next to its own card as the deck fans out. Parented to UIParent and placed by
+  screen position, **never anchored to a deck** (that would make the deck protected and break its hover
+  animation). Secure frames only move out of combat: in combat they stay put (`itemButtonsDirty`) and catch
+  up on `PLAYER_REGEN_ENABLED`. `CFQ.QuestItemInfo` (`GetQuestLogSpecialItemInfo`; a finished quest only if
+  `showItemWhenComplete`) → `qData.questItem` / `hasQuestItem`. If the client can't make secure buttons
+  (`CFQ.ItemButtonsSupported`), such quests stay out of decks instead. Cache ReQuest (retail) does the same.
 - **Field Tally lines** (user decision, v2.2):
   - **Items** = item objectives (`obj.type == "item"`; wording fallback when untyped) → `qData.itemObjectives`.
   - **Tasks** = enemies to slay and every other step, **one-step quests included** ("Sit by the fire";

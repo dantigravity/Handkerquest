@@ -52,6 +52,8 @@ function methods:SetAlpha(a) self.__alpha = a end
 function methods:GetAlpha() return self.__alpha end
 function methods:SetFrameLevel(l) self.__level = l end
 function methods:SetFrameStrata(s) self.__strata = s end
+function methods:SetAttribute(k, v) self.__attr = self.__attr or {}; self.__attr[k] = v end
+function methods:GetAttribute(k) return self.__attr and self.__attr[k] end
 function methods:GetFrameStrata() return self.__strata or "MEDIUM" end
 function methods:GetFrameLevel() return self.__level end
 function methods:SetParent(p) self.__parent = p end

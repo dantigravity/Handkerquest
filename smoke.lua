@@ -838,19 +838,52 @@ __LAYOUT()
 local deck = IncompDeck()
 check(deck ~= nil and #deck.clusterData.quests == 2, "incomplete deck of 101+102 shown")
 check(blocks[101].__alpha == 0 and blocks[102].__alpha == 0, "native blocks hidden behind the deck")
-do  -- a quest with an item to click (Eyes of the Sentinels' eye, the phial...) never goes into a deck
+do  -- a quest with an item to click (Eyes of the Sentinels' eye, the phial...) still stacks; its item gets
+    -- our own secure button to the left of the deck, gliding beside its own card when the deck fans out
     local real = GetQuestLogSpecialItemInfo
     local itemLog = __QMAP()[102].logIndex
-    GetQuestLogSpecialItemInfo = function(i) if i == itemLog then return "item:5185", "Interface\Icons\INV_Drink_06", 1, false end end
+    local ICON = "Interface\\Icons\\INV_Drink_06"
+    GetQuestLogSpecialItemInfo = function(i) if i == itemLog then return "item:5185", ICON, 1, false end end
     __LAYOUT()
-    check(__QMAP()[102].hasQuestItem and IncompDeck() == nil and blocks[102].__alpha ~= 0 and blocks[101].__alpha ~= 0,
-        "102 has a quest item: it keeps its own tracker line (and its button), so no deck with 101")
-    check(CFQ.QuestHasItemButton(itemLog, true) == false, "...a finished quest's item only counts if the game still shows it")
-    GetQuestLogSpecialItemInfo = function(i) if i == itemLog then return "item:5185", "Interface\Icons\INV_Drink_06", 1, true end end
+    local d = IncompDeck()
+    local b = CFQ.itemButtons[1]
+    check(__QMAP()[102].hasQuestItem and d and #d.clusterData.quests == 2, "102 has a quest item and still stacks with 101")
+    check(b and b.__shown and b:GetAttribute("type") == "item" and b:GetAttribute("item") == "item:5185" and b.icon.__tex == ICON
+        and b.questID == 102, "its item gets a secure item button (type item, the quest's item)")
+    local pt = b.__points[1]
+    check(pt[1] == "TOPRIGHT" and pt[2] == UIParent and pt[4] < d:GetLeft() and pt[5] == d:GetTop() - 4,
+        "collapsed: the button sits left of the deck, level with its top (placed on screen, not anchored to the deck)")
+    check(not (CFQ.itemButtons[2] and CFQ.itemButtons[2].__shown), "only quests with items get a button")
+    -- fanned out: the button slides next to 102's own card
+    local idx
+    for i, q in ipairs(d.displayQuests) do if q.questID == 102 then idx = i end end
+    local card = d.cards[idx]
+    card:Show(); card.__py = -44
+    d.expandProgress = 1
+    CFQ.PlaceDeckItemButtons()
+    pt = b.__points[1]
+    check(pt[5] == card:GetTop() - 4 and pt[4] == card:GetLeft() - 4, "fanned out: the button sits beside 102's own card")
+    -- in combat secure buttons can't move: they stay put and catch up afterwards
+    local realCombat = InCombatLockdown
+    InCombatLockdown = function() return true end
+    d.expandProgress = 0
+    CFQ.PlaceDeckItemButtons()
+    check(b.__points[1][5] == card:GetTop() - 4 and CFQ.itemButtonsDirty, "in combat the button stays where it was")
+    InCombatLockdown = realCombat
+    Fire("PLAYER_REGEN_ENABLED")
+    check(b.__points[1][5] == d:GetTop() - 4 and not CFQ.itemButtonsDirty, "after combat it catches up with the deck")
+    card.__py = nil; card:Hide()
+    -- a client without secure buttons: the quest keeps its own tracker line (and Blizzard's button) instead
+    CFQ.secureItemsOK = false
+    __LAYOUT()
+    check(IncompDeck() == nil and blocks[102].__alpha ~= 0 and not b.__shown, "no secure buttons: a quest with an item stays out of decks")
+    CFQ.secureItemsOK = true
+    check(CFQ.QuestHasItemButton(itemLog, true) == false, "a finished quest's item only counts if the game still shows it")
+    GetQuestLogSpecialItemInfo = function(i) if i == itemLog then return "item:5185", ICON, 1, true end end
     check(CFQ.QuestHasItemButton(itemLog, true) == true, "...which it says with showItemWhenComplete")
     GetQuestLogSpecialItemInfo = real
     __LAYOUT()
-    check(not __QMAP()[102].hasQuestItem and IncompDeck() ~= nil, "item used up: 101 and 102 stack again")
+    check(not __QMAP()[102].hasQuestItem and IncompDeck() ~= nil and not b.__shown, "item used up: the deck stays, the button goes")
 end
 local before = WatchedSnapshot()
 bar.incompToggle:GetScript("OnClick")(bar.incompToggle)   -- OFF

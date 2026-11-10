@@ -1316,14 +1316,18 @@ local function CompareQuestsForQuestLog(a, b)
     end
 end
 
--- Does the tracker show a usable item button for this quest? Its button sits on the quest's own tracker
--- block, and a deck hides that block (and can't move or show protected buttons in combat), so such
--- quests are never stacked. A finished quest only keeps its button if the game says so.
+-- The usable item the tracker shows for this quest (an eye, a phial...), or nil. A finished quest only
+-- keeps its item if the game says so (showItemWhenComplete).
+function CFQ.QuestItemInfo(logIndex, isComplete)
+    if not (GetQuestLogSpecialItemInfo and logIndex and logIndex > 0) then return nil end
+    local ok, link, tex, charges, showWhenComplete = pcall(GetQuestLogSpecialItemInfo, logIndex)
+    if not ok or not (link or tex) then return nil end
+    if isComplete and not showWhenComplete then return nil end
+    return { link = link, tex = tex, charges = charges, logIndex = logIndex }
+end
+
 function CFQ.QuestHasItemButton(logIndex, isComplete)
-    if not (GetQuestLogSpecialItemInfo and logIndex and logIndex > 0) then return false end
-    local ok, link, tex, _, showWhenComplete = pcall(GetQuestLogSpecialItemInfo, logIndex)
-    if not ok or not (link or tex) then return false end
-    return (not isComplete) or (showWhenComplete and true) or false
+    return CFQ.QuestItemInfo(logIndex, isComplete) ~= nil
 end
 
 -- ============================================================================
@@ -1341,8 +1345,8 @@ local function BuildQuestClusters()
             qData.clusterSize = 0
             qData.clusterOrder = nil
 
-            if qData.hasQuestItem then
-                -- a quest item to click (the eye, the phial...) keeps its own tracker line: never in a deck
+            if qData.hasQuestItem and not CFQ.ItemButtonsSupported() then
+                -- no secure buttons on this client: a quest item to click keeps its own tracker line
             elseif qData.isComplete then
                 table.insert(readyQuests, qData)
             else
@@ -1487,7 +1491,7 @@ ScanQuestLogRewards = function()
                 quantityObjectives = qtyObjs,
                 itemObjectives = itemObjs,
                 taskObjectives = taskObjs,
-                hasQuestItem = (not isFromMap) and CFQ.QuestHasItemButton(logIndex, isComplete) or false,
+                questItem = (not isFromMap) and CFQ.QuestItemInfo(logIndex, isComplete) or nil,
                 mapID = mapID,
                 x = x,
                 y = y,
@@ -1504,6 +1508,7 @@ ScanQuestLogRewards = function()
             }
 
             questRewardMap[questID] = entry
+            entry.hasQuestItem = entry.questItem ~= nil
             if cleanTitle ~= "" then
                 questTitleLookup[string.lower(cleanTitle)] = entry
             end
@@ -7116,6 +7121,129 @@ function CFQ.ScheduleTrackerRelayout(delay)
     end
 end
 
+-- ============================================================================
+-- QUEST ITEM BUTTONS ON DECKS
+-- A quest with a usable item (an eye, a phial...) still stacks; its item gets our own button to the LEFT
+-- of the deck: in a row beside the collapsed deck, sliding next to its own card as the deck fans out.
+-- Blizzard's button lives on the quest's tracker block, which the deck hides, so we make our own secure
+-- item buttons (SecureActionButtonTemplate, type "item": they work in combat). Secure frames can only be
+-- set up, moved or shown out of combat: in combat they stay where they were (the layout is frozen then
+-- anyway) and catch up when combat ends. They're parented to UIParent and placed by screen position,
+-- never anchored to a deck: anchoring them would make the deck protected and break its hover animation.
+-- ============================================================================
+CFQ.ITEM_BTN_SIZE = 24
+CFQ.itemButtons = {}
+
+function CFQ.AcquireItemButton(i)
+    local b = CFQ.itemButtons[i]
+    if b then return b end
+    b = CreateFrame("Button", "HandkerquestQuestItem" .. i, UIParent, "SecureActionButtonTemplate")
+    b:SetSize(CFQ.ITEM_BTN_SIZE, CFQ.ITEM_BTN_SIZE)
+    b:SetFrameStrata("MEDIUM")
+    b:SetFrameLevel(30)
+    b:RegisterForClicks("AnyUp", "AnyDown")
+    b:SetAttribute("type", "item")
+    b.bg = b:CreateTexture(nil, "BACKGROUND")
+    b.bg:SetPoint("TOPLEFT", -1, 1)
+    b.bg:SetPoint("BOTTOMRIGHT", 1, -1)
+    b.bg:SetColorTexture(0, 0, 0, 0.85)
+    b.icon = b:CreateTexture(nil, "ARTWORK")
+    b.icon:SetAllPoints()
+    b.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    b:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
+    b:SetPushedTexture("Interface\\Buttons\\UI-Quickslot-Depress")
+    b.count = b:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
+    b.count:SetPoint("BOTTOMRIGHT", b, "BOTTOMRIGHT", -1, 1)
+    local okC, cd = pcall(CreateFrame, "Cooldown", nil, b, "CooldownFrameTemplate")
+    if okC and cd then
+        cd:SetAllPoints()
+        b.cooldown = cd
+    end
+    b:SetScript("OnEnter", function(self)
+        if not self.link then return end
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        pcall(GameTooltip.SetHyperlink, GameTooltip, self.link)
+        GameTooltip:Show()
+    end)
+    b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    b:Hide()
+    CFQ.itemButtons[i] = b
+    return b
+end
+
+-- Can this client make secure item buttons? (If not, quests with items stay out of decks instead.)
+function CFQ.ItemButtonsSupported()
+    if CFQ.secureItemsOK == nil then
+        if InCombatLockdown() then return false end          -- ask again out of combat
+        local ok, b = pcall(CFQ.AcquireItemButton, 1)
+        CFQ.secureItemsOK = (ok and b and b.SetAttribute) and true or false
+    end
+    return CFQ.secureItemsOK
+end
+
+function CFQ.UpdateItemCooldown(b)
+    if not (b.cooldown and GetQuestLogSpecialItemCooldown and b.logIndex) then return end
+    local ok, start, dur, enable = pcall(GetQuestLogSpecialItemCooldown, b.logIndex)
+    if ok and start and dur and dur > 0 and enable ~= 0 then
+        b.cooldown:SetCooldown(start, dur)
+    elseif b.cooldown.Clear then
+        b.cooldown:Clear()
+    end
+end
+
+-- Point a button at a quest's item (out of combat only: secure attributes)
+function CFQ.SetItemButton(b, it)
+    if b.link ~= it.link then
+        b:SetAttribute("type", "item")
+        b:SetAttribute("item", it.link)                   -- used from your bags, like the tracker's own button
+    end
+    b.link, b.logIndex, b.questLogIndex = it.link, it.logIndex, it.logIndex
+    b.icon:SetTexture(it.tex)
+    b.count:SetText((it.charges and it.charges > 1) and tostring(it.charges) or "")
+    CFQ.UpdateItemCooldown(b)
+end
+
+-- Put a button beside every deck quest that has an item: left of the collapsed deck in a row (the top
+-- card's item nearest the deck), gliding next to each quest's own card as the deck fans out.
+function CFQ.PlaceDeckItemButtons()
+    if InCombatLockdown() then CFQ.itemButtonsDirty = true; return end
+    CFQ.itemButtonsDirty = false
+    local used = 0
+    if CFQ.ItemButtonsSupported() then
+        local ui = UIParent:GetEffectiveScale()
+        local size, gap = CFQ.ITEM_BTN_SIZE, 4
+        for _, deck in ipairs(trackerStackDeckPool) do
+            if deck:IsVisible() and deck.displayQuests and deck:GetLeft() and deck:GetTop() then
+                local s = deck:GetEffectiveScale() / ui
+                local p = deck.expandProgress or 0
+                local deckLeft, deckTop = deck:GetLeft() * s, deck:GetTop() * s
+                local k = 0
+                for i, q in ipairs(deck.displayQuests) do
+                    if i > (deck.numActiveCards or 0) then break end
+                    local it = q.questItem
+                    if it and it.link then
+                        used = used + 1
+                        local b = CFQ.AcquireItemButton(used)
+                        CFQ.SetItemButton(b, it)
+                        local x, y = deckLeft - gap - k * (size + 3), deckTop - 4
+                        local card = deck.cards[i]
+                        if p > 0.02 and card and card:IsShown() and card:GetLeft() and card:GetTop() then
+                            local cx, cy = card:GetLeft() * s - gap, card:GetTop() * s - 4
+                            x, y = x + (cx - x) * p, y + (cy - y) * p
+                        end
+                        b:ClearAllPoints()
+                        b:SetPoint("TOPRIGHT", UIParent, "BOTTOMLEFT", x, y)
+                        b.questID = q.questID
+                        b:Show()
+                        k = k + 1
+                    end
+                end
+            end
+        end
+    end
+    for i = used + 1, #CFQ.itemButtons do CFQ.itemButtons[i]:Hide() end
+end
+
 local function LayoutTrackerImpl(isAnimationTick)
     local previousDecksByCluster = {}
     if not isAnimationTick then
@@ -7375,6 +7503,8 @@ local function LayoutTrackerImpl(isAnimationTick)
     if QuestObjectiveTracker then
         ProcessTrackerModule(QuestObjectiveTracker)
     end
+
+    pcall(CFQ.PlaceDeckItemButtons)
 
     if not isAnimationTick and UpdateShoppingListUI then
         UpdateShoppingListUI()
@@ -9750,9 +9880,15 @@ loader:RegisterEvent("ZONE_CHANGED_INDOORS")
 loader:RegisterEvent("ZONE_CHANGED_NEW_AREA")
 loader:RegisterEvent("PLAYER_TARGET_CHANGED")
 loader:RegisterEvent("PLAYER_REGEN_ENABLED")
+loader:RegisterEvent("BAG_UPDATE_COOLDOWN")
 loader:RegisterEvent("LOOT_OPENED")
 loader:SetScript("OnEvent", function(self, event, arg1)
+    if event == "BAG_UPDATE_COOLDOWN" then
+        for _, b in ipairs(CFQ.itemButtons) do if b:IsShown() then CFQ.UpdateItemCooldown(b) end end
+        return
+    end
     if event == "PLAYER_REGEN_ENABLED" then
+        pcall(CFQ.PlaceDeckItemButtons)                -- item buttons catch up after combat
         if CFQ.openOptionsAfterCombat then
             CFQ.openOptionsAfterCombat = false
             CFQ.OpenOptions()
