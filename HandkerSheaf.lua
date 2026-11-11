@@ -65,6 +65,7 @@ local CFQ = {
         tallyLoot = true,               -- the tally lists quest items to gather...
         tallyTasks = true,              -- ...and tasks: enemies to slay / other quest steps
         tallySeparate = false,          -- tasks under their own heading, after the items
+        forMe = true,                   -- "For me": your own tasks at the bottom of the "Near me" page
     },
     parchmentFont = "QUILL",            -- handwriting on the parchment: "QUILL", "SCRAWL", "PLAIN" or "BLOTTED" (P.FONT_STYLES)
     parchmentStyle = "RAG",             -- the tally's look: "RAG", "CRUMPLED", "STONE", "BARK", "LEAF", "LEATHER", "ARCANE", "HANDKERCHIEF", "PARCHMENT" or "NATIVE"
@@ -388,6 +389,7 @@ local function SaveState()
     QRF_SavedState.parchmentStyle = CFQ.parchmentStyle
     QRF_SavedState.huntSpots = CFQ.huntSpots
     QRF_SavedState.learnedDroppers = CFQ.learnedDroppers
+    QRF_SavedState.notes = CFQ.notes
 end
 
 -- A saved { r, g, b } (each 0-1), or nil if it's missing or broken
@@ -496,10 +498,10 @@ local function LoadState()
             CFQ.learnedQuestAreas = QRF_SavedState.learnedQuestAreas
         end
         local ps = QRF_SavedState.parchmentStyle
-        if ps == "HANDKERCHIEF" or ps == "PARCHMENT" or ps == "CRUMPLED" or ps == "RAG" or ps == "STONE" or ps == "BARK" or ps == "LEAF"
-            or ps == "LEATHER" or ps == "ARCANE" or ps == "NATIVE" then
-            CFQ.parchmentStyle = ps
+        for _, look in ipairs((CFQ.P and CFQ.P.STYLES) or {}) do     -- any look in the Look list (marble, gilded, vellum too)
+            if look.key == ps then CFQ.parchmentStyle = ps break end
         end
+        CFQ.LoadNotes(QRF_SavedState.notes)
         if type(QRF_SavedState.huntSpots) == "table" then
             CFQ.huntSpots = QRF_SavedState.huntSpots
         end
@@ -3819,14 +3821,15 @@ end
 -- ----------------------------------------------------------------------------
 -- CHECKLIST ROWS (hand-inked box, quill tick, per-line strike-through)
 -- ----------------------------------------------------------------------------
-local function AcquireShoppingListRow(idx, parent)
-    local row = shoppingListRowPool[idx]
+local function AcquireShoppingListRow(idx, parent, pool)
+    pool = pool or shoppingListRowPool
+    local row = pool[idx]
     if row then return row end
 
     row = CreateFrame("Button", nil, parent)
     row:SetHeight(20)
     row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-    row.seed = idx * 13.7
+    row.seed = idx * 13.7 + ((pool == shoppingListRowPool) and 0 or 701)   -- "For me" rows: their own wobble
 
     row.highlight = row:CreateTexture(nil, "HIGHLIGHT")
     row.highlight:SetAllPoints()
@@ -3880,10 +3883,11 @@ local function AcquireShoppingListRow(idx, parent)
     row.divider:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -2, 0)
     row.divider:SetColorTexture(0.45, 0.32, 0.15, 0.14)
 
-    shoppingListRowPool[idx] = row
+    pool[idx] = row
     P.StyleRow(row)
     return row
 end
+P.AcquireRow = function(idx, parent, pool) return AcquireShoppingListRow(idx, parent, pool) end
 
 -- the box's four crooked strokes, in the current ink
 function P.DrawBoxSides(box)
@@ -4704,7 +4708,8 @@ function P.ShouldHideTally(areas)
     for _, a in ipairs(areas) do
         if #a.items > 0 then anyItems = true break end
     end
-    return not anyItems or (#current.items == 0 and (#areas == 1 or CFQ.parchmentOpts.hideWhenNothingNearby))
+    if not anyItems and not CFQ.HasOpenTasks() then return true end
+    return #current.items == 0 and CFQ.parchmentOpts.hideWhenNothingNearby and true or false
 end
 
 -- The same, judged on everything the tally could list: switching items or tasks off never puts the
@@ -5030,12 +5035,15 @@ function P.Render(f)
         row:ClearAllPoints()
         row:SetPoint("TOPLEFT", f.content, "TOPLEFT", 0, -2)
         row:SetPoint("TOPRIGHT", f.content, "TOPRIGHT", 0, -2)
-        row:SetHeight(math.max(36, math.ceil(row.itemText:GetStringHeight() or 30) + 6))
+        local msgH = math.max(36, math.ceil(row.itemText:GetStringHeight() or 30) + 6)
+        row:SetHeight(msgH)
         row:SetScript("OnClick", nil)
         row:SetScript("OnEnter", nil)
         row:SetScript("OnLeave", nil)
         row:Show()
         f.footerFS:SetText("nothing here" .. pageStr)
+        P.RenderForMe(f, area, -2 - msgH, math.max(150, w - 12 - padL - padR),
+            math.max(55, (f:GetHeight() or 175) - 45 - padT - padB))
         return
     end
 
@@ -5045,6 +5053,7 @@ function P.Render(f)
 
     local contentW = math.max(150, w - 12 - padL - padR)
     local contentH = math.max(55, (f:GetHeight() or 175) - 45 - padT - padB)
+    local questH = area.isCurrent and (contentH - P.ForMeReserve(f, contentW, contentH, true)) or contentH
     local yCursor = 0
     local shownRows = 0
     P.SetInkFont(f.measureFS, "item")
@@ -5156,7 +5165,7 @@ function P.Render(f)
         local group = P.LineGroup(entry)
         local headH = (heads and group ~= lastGroup) and P.KIND_HEADING_H or 0
 
-        if (math.abs(yCursor) + headH + rowH) > (contentH + 4) and shownRows > 0 then
+        if (math.abs(yCursor) + headH + rowH) > (questH + 4) and shownRows > 0 then
             row:Hide()
             break
         end
@@ -5214,6 +5223,7 @@ function P.Render(f)
     end
 
     P.HideKindHeadings(f, usedHeads + 1)
+    P.RenderForMe(f, area, yCursor, contentW, contentH)
     local doneCount = area.doneCount or 0
     local verb = P.TallyVerb()
     if #items > shownRows then
@@ -5259,6 +5269,561 @@ UpdateShoppingListUI = function()
     P.Render(f)
     P.UpdateCorner(f)
     P.ApplyStackLayout(f)
+end
+
+-- ----------------------------------------------------------------------------
+-- "FOR ME": the player's own tasks, written at the bottom of the "Near me" page
+-- ----------------------------------------------------------------------------
+-- CFQ.notes (saved as QRF_SavedState.notes, account-wide):
+--   tasks = { { text, done, t (server time), when ("10 Nov 21:40"), place = { mapID, x, y, zone, subzone },
+--               owner ("Name-Realm") }, ... }   in the order written
+--   forMeFolded = true while the section is folded to its heading
+-- Drawn like tally lines (inked box, quill tick, strike), from their own row pool (f.forMeRows).
+CFQ.notes = CFQ.notes or { tasks = {}, forMeFolded = false }
+P.NOTE_MAX_LETTERS = 200
+P.NOTE_MAX_TASKS = 200
+P.FORME_GAP = 4                -- space between the quest lines and the "For me" heading
+P.FORME_SHARE = 0.5            -- with quest lines on the page, "For me" keeps at most this much of it
+
+-- Saved notes, checked field by field (a broken save never stops the addon loading)
+function CFQ.LoadNotes(saved)
+    local notes = { tasks = {}, forMeFolded = false }
+    if type(saved) == "table" then
+        notes.forMeFolded = (saved.forMeFolded == true)
+        if type(saved.tasks) == "table" then
+            for _, t in ipairs(saved.tasks) do
+                if type(t) == "table" and type(t.text) == "string" and t.text ~= "" and #notes.tasks < P.NOTE_MAX_TASKS then
+                    local task = {
+                        text = t.text, done = (t.done == true),
+                        t = (type(t.t) == "number") and t.t or nil,
+                        when = (type(t.when) == "string") and t.when or nil,
+                        owner = (type(t.owner) == "string") and t.owner or nil,
+                    }
+                    if type(t.place) == "table" then
+                        local pl = t.place
+                        task.place = {
+                            mapID = (type(pl.mapID) == "number") and pl.mapID or nil,
+                            x = (type(pl.x) == "number") and pl.x or nil,
+                            y = (type(pl.y) == "number") and pl.y or nil,
+                            zone = (type(pl.zone) == "string") and pl.zone or nil,
+                            subzone = (type(pl.subzone) == "string") and pl.subzone or nil,
+                        }
+                    end
+                    table.insert(notes.tasks, task)
+                end
+            end
+        end
+    end
+    CFQ.notes = notes
+end
+
+-- What the player typed, made safe to draw: trimmed, one line, no "|" (WoW's colour/link escapes)
+function CFQ.CleanNoteText(s)
+    s = tostring(s or "")
+    s = string.gsub(s, "|", "")
+    s = string.gsub(s, "[\r\n\t]+", " ")
+    s = string.match(s, "^%s*(.-)%s*$") or ""
+    if string.len(s) > P.NOTE_MAX_LETTERS then s = string.sub(s, 1, P.NOTE_MAX_LETTERS) end
+    return s
+end
+
+-- Realm date and time (the in-game calendar's clock); the PC's clock if this client can't say
+P.MONTHS = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" }
+function CFQ.NoteTime()
+    local t
+    if GetServerTime then
+        local ok, v = pcall(GetServerTime)
+        if ok and type(v) == "number" then t = v end
+    end
+    if not t then t = time and time() or 0 end
+    local d
+    if C_DateAndTime and C_DateAndTime.GetCurrentCalendarTime then
+        local ok, c = pcall(C_DateAndTime.GetCurrentCalendarTime)
+        if ok and type(c) == "table" and c.month and c.monthDay then
+            d = { day = c.monthDay, month = c.month, hour = c.hour or 0, min = c.minute or 0 }
+        end
+    end
+    if not d and date then
+        local ok, c = pcall(date, "*t")
+        if ok and type(c) == "table" then d = { day = c.day, month = c.month, hour = c.hour, min = c.min } end
+    end
+    local when = d and string.format("%d %s %02d:%02d", d.day or 1, P.MONTHS[d.month or 1] or "?", d.hour or 0, d.min or 0) or nil
+    return t, when
+end
+
+-- Where the player stands: map, spot and the zone / sub-zone names
+function CFQ.HerePlace()
+    local place = { zone = GetRealZoneText and GetRealZoneText() or nil, subzone = GetSubZoneText and GetSubZoneText() or nil }
+    if place.zone == "" then place.zone = nil end
+    if place.subzone == "" then place.subzone = nil end
+    if C_Map and C_Map.GetBestMapForUnit then
+        local ok, mapID = pcall(C_Map.GetBestMapForUnit, "player")
+        if ok and mapID then
+            place.mapID = mapID
+            local okP, pos = pcall(C_Map.GetPlayerMapPosition, mapID, "player")
+            if okP and pos and pos.GetXY then
+                local x, y = pos:GetXY()
+                if x and y then place.x, place.y = P.Round4(x), P.Round4(y) end
+            end
+        end
+    end
+    return place
+end
+
+function CFQ.NoteOwner()
+    local name = UnitName and UnitName("player") or nil
+    local realm = GetRealmName and GetRealmName() or nil
+    if not name then return nil end
+    return (realm and realm ~= "") and (name .. "-" .. realm) or name
+end
+
+-- Adds a task to "For me"; returns it (nil if the text was empty or the list is full)
+function CFQ.AddTask(text)
+    text = CFQ.CleanNoteText(text)
+    if text == "" or #CFQ.notes.tasks >= P.NOTE_MAX_TASKS then return nil end
+    local t, when = CFQ.NoteTime()
+    local task = { text = text, done = false, t = t, when = when, place = CFQ.HerePlace(), owner = CFQ.NoteOwner() }
+    table.insert(CFQ.notes.tasks, task)
+    return task
+end
+
+function CFQ.HasOpenTasks()
+    if not CFQ.parchmentOpts.forMe then return false end
+    for _, t in ipairs(CFQ.notes.tasks) do
+        if not t.done then return true end
+    end
+    return false
+end
+
+-- After any change to the tasks: save and redraw (the tally may need to come up or go away)
+function P.ForMeChanged()
+    SaveState()
+    UpdateShoppingListUI()
+end
+
+function P.ToggleTask(i)
+    local task = CFQ.notes.tasks[i]
+    if not task then return end
+    task.done = not task.done
+    P.ForMeChanged()
+end
+
+function P.RubOutTask(i)
+    if not CFQ.notes.tasks[i] then return end
+    table.remove(CFQ.notes.tasks, i)
+    P.ForMeChanged()
+end
+
+function P.RubOutTickedTasks()
+    local kept = {}
+    for _, t in ipairs(CFQ.notes.tasks) do
+        if not t.done then table.insert(kept, t) end
+    end
+    local gone = #CFQ.notes.tasks - #kept
+    CFQ.notes.tasks = kept
+    P.ForMeChanged()
+    return gone
+end
+
+function P.ToggleForMeFold()
+    CFQ.notes.forMeFolded = not CFQ.notes.forMeFolded
+    P.CancelForMeEdit()
+    P.ForMeChanged()
+end
+
+-- Writing: P.forMeEditing = { index = n } while re-writing task n, { } while writing a new one, nil otherwise
+function P.EnsureForMeEditBox(f)
+    if f.forMeEdit then return f.forMeEdit end
+    local eb = CreateFrame("EditBox", nil, f.content)
+    P.SetInkFont(eb, "item")              -- a font first: WoW won't take text into a box without one
+    eb:SetAutoFocus(false)
+    eb:SetMultiLine(false)
+    eb:SetMaxLetters(P.NOTE_MAX_LETTERS)
+    eb:SetHeight(18)
+    eb:SetFrameLevel((f.baseLevel or 30) + 24)
+    eb:SetJustifyH("LEFT")
+    eb.wash = eb:CreateTexture(nil, "BACKGROUND")
+    eb.wash:SetPoint("TOPLEFT", eb, "TOPLEFT", -3, 1)
+    eb.wash:SetPoint("BOTTOMRIGHT", eb, "BOTTOMRIGHT", 3, -1)
+    eb:SetScript("OnEnterPressed", function() P.CommitForMeEdit() end)
+    eb:SetScript("OnEscapePressed", function() P.CancelForMeEdit() end)
+    -- clicking away keeps what was written (the redraw waits a frame: the click that took the focus
+    -- away may be on another line)
+    eb:SetScript("OnEditFocusLost", function() if P.forMeEditing then P.CommitForMeEdit(true) end end)
+    -- hidden with the tally (put away, page turned): never keep the keyboard
+    eb:SetScript("OnHide", function(self) if self.HasFocus and self:HasFocus() then self:ClearFocus() end end)
+    eb:Hide()
+    f.forMeEdit = eb
+    return eb
+end
+
+function P.BeginForMeEdit(index)
+    local f = shoppingListFrame
+    if not f then return end
+    local eb = P.EnsureForMeEditBox(f)
+    local task = index and CFQ.notes.tasks[index]
+    P.SetInkFont(eb, "item")
+    eb:SetText(task and task.text or "")
+    P.forMeEditing = { index = task and index or nil }
+    P.Render(f)
+    eb:Show()
+    eb:SetFocus()
+    if eb.HighlightText and task then eb:HighlightText() end
+end
+
+-- Enter (or clicking away): keep what was written. Re-writing a task to nothing rubs it out.
+function P.CommitForMeEdit(deferRedraw)
+    local editing = P.forMeEditing
+    if not editing then return end
+    P.forMeEditing = nil                       -- first, so ClearFocus's focus-lost doesn't commit twice
+    local f = shoppingListFrame
+    local eb = f and f.forMeEdit
+    local text = CFQ.CleanNoteText(eb and eb:GetText() or "")
+    if eb then eb:ClearFocus(); eb:Hide() end
+    if editing.index then
+        local task = CFQ.notes.tasks[editing.index]
+        if task then
+            if text == "" then table.remove(CFQ.notes.tasks, editing.index) else task.text = text end
+        end
+    else
+        CFQ.AddTask(text)
+    end
+    if deferRedraw and C_Timer and C_Timer.After then
+        SaveState()
+        C_Timer.After(0, function() UpdateShoppingListUI() end)
+    else
+        P.ForMeChanged()
+    end
+end
+
+-- Where a task is in the list now (rows remember their task, not a position that can shift)
+function P.TaskIndex(task)
+    for i, t in ipairs(CFQ.notes.tasks) do
+        if t == task then return i end
+    end
+    return nil
+end
+
+function P.CancelForMeEdit()
+    if not P.forMeEditing then return end
+    P.forMeEditing = nil
+    local f = shoppingListFrame
+    local eb = f and f.forMeEdit
+    if eb then eb:ClearFocus(); eb:Hide() end
+    if f and f:IsShown() then P.Render(f) end
+end
+
+-- Height of one written line in the list's handwriting (f.measureFS never wraps)
+function P.LineHeight(f)
+    P.SetInkFont(f.measureFS, "item")
+    f.measureFS:SetText("Ag")
+    return math.max(12, math.ceil(f.measureFS:GetStringHeight() or 12))
+end
+
+function P.TaskRowHeight(f, task, textW, lineH)
+    local lines = P.WrapLines(f.measureFS, task.text, textW)
+    return math.max(14, math.ceil(#lines * lineH)) + 7
+end
+
+-- How much of the page "For me" wants: its heading, then (unfolded) every task and the writing line
+function P.ForMeWantedHeight(f, contentW)
+    local h = P.FORME_GAP + P.ForMeHeadHeight(f)
+    if CFQ.notes.forMeFolded then return h end
+    local textW = math.max(110, contentW - 24)
+    local lineH = P.LineHeight(f)
+    for _, task in ipairs(CFQ.notes.tasks) do h = h + P.TaskRowHeight(f, task, textW, lineH) end
+    return h + math.max(14, lineH) + 7
+end
+
+-- Space kept free under the quest lines for "For me": all it wants, but with quest lines on the page at
+-- most P.FORME_SHARE of it (never less than its heading and writing line)
+function P.ForMeReserve(f, contentW, contentH, hasQuestLines)
+    if not CFQ.parchmentOpts.forMe then return 0 end
+    local want = P.ForMeWantedHeight(f, contentW)
+    if not hasQuestLines then return want end
+    local least = P.FORME_GAP + P.ForMeHeadHeight(f) + (CFQ.notes.forMeFolded and 0 or (math.max(14, P.LineHeight(f)) + 7))
+    return math.min(want, math.max(least, contentH * P.FORME_SHARE))
+end
+
+function P.HideForMe(f)
+    for _, row in ipairs(f.forMeRows or {}) do row:Hide() end
+    if f.forMeHead then f.forMeHead:Hide() end
+    if f.forMeWrite then f.forMeWrite:Hide() end
+    if f.forMeEdit then
+        if P.forMeEditing then P.CommitForMeEdit() end
+        f.forMeEdit:Hide()
+    end
+end
+
+-- Height of the "For me" heading: written like the page's own heading ("Near me"), so in its size of
+-- writing, plus its double quill underline. Leaves f.measureFS back in the list's writing.
+function P.ForMeHeadHeight(f)
+    P.SetInkFont(f.measureFS, "title")
+    f.measureFS:SetText("For me")
+    local h = math.max(14, math.ceil(f.measureFS:GetStringHeight() or 14))
+    P.SetInkFont(f.measureFS, "item")
+    return h + 11
+end
+
+-- The "For me" heading, written exactly like the page's heading ("Near me"): the heading's writing and
+-- ink (gilded first letter on vellum, wet ink / glow), and the same double quill underline sized to the
+-- words. A note after it in the sub-heading ink, as "· Dolanaar" is: "· 3" folded, "· +2" when older
+-- tasks don't fit. Click folds it.
+function P.DrawForMeHeading(f, y, w, st, hiddenCount)
+    local h = f.forMeHead
+    if not h then
+        h = CreateFrame("Button", nil, f.content)
+        h:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+        h.fs = h:CreateFontString(nil, "OVERLAY")
+        h.fs:SetJustifyH("LEFT")
+        h.fs:SetWordWrap(false)
+        if h.fs.SetMaxLines then h.fs:SetMaxLines(1) end
+        h.fs.singleLine = true          -- its bold pass / wet-ink copies cut off with it, never wrap under it
+        h.fs:SetPoint("TOPLEFT", h, "TOPLEFT", 4, -2)
+        h.fs:SetPoint("RIGHT", h, "RIGHT", -2, 0)
+        h.rule = P.NewStroke(h, "ARTWORK", 4)
+        h.rule2 = P.NewStroke(h, "ARTWORK", 4)
+        h:SetScript("OnClick", function(_, button)
+            if button == "RightButton" then P.RubOutTickedTasks() else P.ToggleForMeFold() end
+        end)
+        h:SetScript("OnEnter", function(self)
+            P.PlaceTooltip(self)
+            GameTooltip:AddLine("For me", 1, 0.82, 0)
+            GameTooltip:AddLine("Your own tasks, kept between logins on every character.", 0.9, 0.9, 0.9, true)
+            if (self.hiddenCount or 0) > 0 then
+                GameTooltip:AddLine(string.format("%d older task%s don't fit: make the tally taller to see them.", self.hiddenCount, self.hiddenCount == 1 and "" or "s"), 0.9, 0.75, 0.4, true)
+            end
+            GameTooltip:AddLine((CFQ.notes.forMeFolded and "Left-Click: open" or "Left-Click: fold away")
+                .. "  |  Right-Click: rub out ticked tasks", 0.65, 0.65, 0.65)
+            GameTooltip:Show()
+        end)
+        h:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        f.forMeHead = h
+    end
+    h.hiddenCount = hiddenCount
+    P.SetInkFont(h.fs, "title")
+    h.fs:SetTextColor(st.title[1], st.title[2], st.title[3], 1)
+    local title = "For me"
+    if st.initial then                       -- illuminated: the first letter in gold, as on the page heading
+        title = "|c" .. P.Hex(st.initial) .. "F|r" .. "or me"
+    end
+    local n = #CFQ.notes.tasks
+    local note
+    if CFQ.notes.forMeFolded then
+        if n > 0 then note = tostring(n) end
+    elseif (hiddenCount or 0) > 0 then
+        note = "+" .. hiddenCount
+    end
+    if note then title = title .. "  |c" .. P.Hex(st.sub or st.faded) .. "· " .. note .. "|r" end
+    h.fs:SetText(title)
+    P.SetHalo(h.fs, h.fs:GetText(), st.title)
+    local headH = P.ForMeHeadHeight(f)
+    h:SetHeight(headH)
+    h:ClearAllPoints()
+    h:SetPoint("TOPLEFT", f.content, "TOPLEFT", 0, y)
+    h:SetPoint("TOPRIGHT", f.content, "TOPRIGHT", 0, y)
+    -- the page heading's double underline, as long as the words (+22), under the writing
+    local ruleW = math.min(w - 4, math.max(60, (h.fs:GetStringWidth() or 60) + 22))
+    local ry = -(headH - 7)
+    P.DrawStroke(h.rule, h, 2, ry, 2 + ruleW, ry + 1, 1.2, 0.70)
+    P.DrawStroke(h.rule2, h, 8, ry - 2.5, 2 + ruleW * 0.55, ry - 2, 0.7, 0.40)
+    h:Show()
+end
+
+-- One task, inked like a tally line: open = full ink, done = ticked, faded and struck through
+function P.InkTaskRow(f, row, task, textW, st)
+    P.StyleRow(row)
+    P.SetRowFX(row, nil)
+    P.SetRowLasso(row, false)
+    row.box:Show()
+    row.suffixText:Hide()
+    P.HideStrikes(row)
+    P.SetInkFont(row.itemText, "item")
+    row.itemText:SetWidth(textW)
+    local wa = st.wash
+    row.box.wash:SetColorTexture(wa[1], wa[2], wa[3], wa[4])
+    local ink, strH, lines, widths
+    if task.done then
+        P.ShowTick(row.box, row.seed)
+        lines, widths = P.WrapLines(f.measureFS, task.text, textW)
+        row.itemText:SetTextColor(st.faded[1], st.faded[2], st.faded[3], 1)
+        row.itemText:SetText(table.concat(lines, "\n"))
+        strH = math.max(14, math.ceil(row.itemText:GetStringHeight() or 14))
+        local lineH = strH / #lines
+        for k, lw in ipairs(widths) do
+            local tilt = (P.Hash01(row.seed, k, 5) - 0.5) * 1.8
+            local y = -(k - 0.5) * lineH + 0.5
+            P.DrawStroke(P.GetStrike(row, k), row.itemText, -2, y + tilt * 0.5, lw + 2, y - tilt * 0.5, 1.3, 0.82)
+        end
+        ink = st.faded
+    else
+        P.HideTick(row.box)
+        local nameInk = st.name or st.ink
+        row.itemText:SetTextColor(nameInk[1], nameInk[2], nameInk[3], 1)
+        row.itemText:SetText(task.text)
+        strH = math.max(14, math.ceil(row.itemText:GetStringHeight() or 14))
+        ink = P.INK
+    end
+    P.SetHalo(row.itemText, row.itemText:GetText(), ink)
+    if P.EffectiveFont().drops then
+        if not lines then lines, widths = P.WrapLines(f.measureFS, task.text, textW) end
+        P.SetInkDrops(row, { key = "forme" .. tostring(task.t or 0) .. task.text, lastW = widths[#widths] or 0,
+            textH = strH, lines = #lines, textW = textW, ink = ink })
+    else
+        P.SetInkDrops(row, nil)
+    end
+    return strH + 7
+end
+
+function P.TaskTooltip(row, task)
+    P.PlaceTooltip(row)
+    GameTooltip:AddLine(task.done and "Done" or "To do", 1, 0.82, 0)
+    GameTooltip:AddLine(task.text, 0.95, 0.95, 0.95, true)
+    local pl = task.place
+    local where = pl and (pl.subzone or pl.zone)
+    if task.when or where then
+        GameTooltip:AddLine("Written " .. (task.when or "") .. ((task.when and where) and " · " or "") .. (where or ""), 0.7, 0.7, 0.7)
+    end
+    GameTooltip:AddLine((task.done and "Left-Click: not done after all" or "Left-Click: tick it off")
+        .. "  |  Right-Click: re-write", 0.65, 0.65, 0.65)
+    GameTooltip:AddLine("Shift-Click: rub it out", 0.65, 0.65, 0.65)
+    GameTooltip:Show()
+end
+
+-- The "For me" section, from y (<= 0, under the quest lines) to the bottom of the page. Only on "Near me".
+function P.RenderForMe(f, area, y, contentW, contentH)
+    if not (area and area.isCurrent and CFQ.parchmentOpts.forMe) then P.HideForMe(f) return end
+    local st = P.GetStyle()
+    f.forMeRows = f.forMeRows or {}
+    for _, row in ipairs(f.forMeRows) do row:Hide() end
+    local tasks = CFQ.notes.tasks
+    local editing = P.forMeEditing
+    local eb = f.forMeEdit
+    local textW = math.max(110, contentW - 24)
+    local lineH = P.LineHeight(f)
+    local writeH = math.max(14, lineH) + 7
+
+    -- The section stands on the bottom of the page and grows upward a line at a time: the writing line
+    -- at the very bottom, the tasks above it (in the order written), its heading on top. y is where the
+    -- quest lines end; the section never rises above it. Tasks that don't fit: the newest stay, so the one
+    -- just written is always in sight; the heading counts the older ones.
+    local folded = CFQ.notes.forMeFolded
+    local room = contentH - math.abs(y)
+    local headH = P.ForMeHeadHeight(f)
+    local used = P.FORME_GAP + headH + (folded and 0 or writeH)
+    local first = #tasks + 1
+    if not folded then
+        for i = #tasks, 1, -1 do
+            local need = P.TaskRowHeight(f, tasks[i], textW, lineH)
+            if used + need > room + 4 then break end
+            used = used + need
+            first = i
+        end
+    end
+    y = math.min(y, -(contentH - used)) - P.FORME_GAP
+    local headY = y
+    y = y - headH
+
+    if folded then
+        P.DrawForMeHeading(f, headY, contentW, st, 0)
+        if f.forMeWrite then f.forMeWrite:Hide() end
+        if eb then eb:Hide() end
+        return
+    end
+
+    local editRow = nil
+    for i = first, #tasks do
+        local task = tasks[i]
+        local row = P.AcquireRow(i - first + 1, f.content, f.forMeRows)
+        local rowH = P.InkTaskRow(f, row, task, textW, st)
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", f.content, "TOPLEFT", 0, y)
+        row:SetPoint("TOPRIGHT", f.content, "TOPRIGHT", 0, y)
+        row:SetHeight(rowH)
+        row:SetScript("OnClick", function(_, button)
+            local idx = P.TaskIndex(task)
+            if not idx then return end
+            if button == "RightButton" then
+                P.BeginForMeEdit(idx)
+            elseif IsShiftKeyDown and IsShiftKeyDown() then
+                P.RubOutTask(idx)
+            else
+                P.ToggleTask(idx)
+            end
+        end)
+        row:SetScript("OnEnter", function(self) P.TaskTooltip(self, task) end)
+        row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        if editing and editing.index == i then
+            -- being re-written: the box shows the words instead
+            row.itemText:SetText("")
+            P.SetHalo(row.itemText, "", P.INK)
+            P.HideStrikes(row)
+            P.SetInkDrops(row, nil)
+            editRow = row
+        end
+        row:Show()
+        y = y - rowH
+    end
+    P.DrawForMeHeading(f, headY, contentW, st, first - 1)
+
+    -- the writing line: "+ add a task" in faded ink; click to write. The button is only as wide as its
+    -- words (user decision): the rest of the bottom row, and the dog-ear in its corner, stay free for
+    -- turning the page.
+    local wl = f.forMeWrite
+    if not wl then
+        wl = CreateFrame("Button", nil, f.content)
+        wl:RegisterForClicks("LeftButtonUp")
+        wl.highlight = wl:CreateTexture(nil, "HIGHLIGHT")
+        wl.highlight:SetAllPoints()
+        wl.plus = wl:CreateFontString(nil, "OVERLAY")
+        wl.plus:SetPoint("TOPLEFT", wl, "TOPLEFT", 3, -1)
+        wl.fs = wl:CreateFontString(nil, "OVERLAY")
+        wl.fs:SetPoint("TOPLEFT", wl, "TOPLEFT", 20, -2)
+        wl.fs:SetJustifyH("LEFT")
+        wl.fs:SetWordWrap(false)
+        wl:SetScript("OnClick", function() P.BeginForMeEdit(nil) end)
+        wl:SetScript("OnEnter", function(self)
+            P.PlaceTooltip(self)
+            GameTooltip:AddLine("Write a task for yourself", 1, 0.82, 0)
+            GameTooltip:AddLine("Enter: keep it  |  Escape: never mind", 0.65, 0.65, 0.65)
+            GameTooltip:AddLine("Also: /hanky task <what to do>", 0.65, 0.65, 0.65)
+            GameTooltip:Show()
+        end)
+        wl:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        f.forMeWrite = wl
+    end
+    local hl = st.highlight
+    wl.highlight:SetColorTexture(hl[1], hl[2], hl[3], hl[4])
+    P.SetInkFont(wl.plus, "item")
+    P.SetInkFont(wl.fs, "item")
+    wl.plus:SetTextColor(st.faded[1], st.faded[2], st.faded[3], 1)
+    wl.fs:SetTextColor(st.faded[1], st.faded[2], st.faded[3], 1)
+    wl.plus:SetText("+")
+    local writingNew = editing and not editing.index
+    wl.fs:SetText(writingNew and "" or ((#tasks == 0) and "add a task for yourself..." or "add a task..."))
+    local wordsW = math.min(textW - P.CORNER_MAX, math.ceil(wl.fs:GetStringWidth() or 0))
+    wl.fs:SetWidth(math.max(1, wordsW))
+    wl:ClearAllPoints()
+    wl:SetPoint("TOPLEFT", f.content, "TOPLEFT", 0, y)
+    wl:SetWidth(20 + wordsW + 6)
+    wl:SetHeight(writeH)
+    wl:Show()
+
+    -- the writing box, over the line being written
+    if editing then
+        eb = P.EnsureForMeEditBox(f)
+        P.SetInkFont(eb, "item")
+        eb:SetTextColor(P.INK[1], P.INK[2], P.INK[3], 1)
+        eb.wash:SetColorTexture(hl[1], hl[2], hl[3], (hl[4] or 0.1) * 1.5)
+        eb:ClearAllPoints()
+        local anchor = editRow and editRow.itemText or wl.fs
+        eb:SetPoint("TOPLEFT", anchor, "TOPLEFT", 0, 2)
+        eb:SetWidth(math.max(60, textW - P.CORNER_MAX))     -- clear of the dog-ear (at its biggest)
+        eb:SetHeight(math.max(16, lineH + 4))
+        eb:Show()
+    elseif eb then
+        eb:Hide()
+    end
 end
 
 -- Why the tally stays put away right after you switch it on (or nil if it's up), so it never seems broken
@@ -9342,6 +9907,10 @@ function CFQ.BuildOptionsPanel()
         "Items first, then the tasks under their own heading. Off: items and tasks together, in the tracker's quest order.",
         function() return CFQ.parchmentOpts.tallySeparate end,
         function(v) CFQ.parchmentOpts.tallySeparate = v; P.OnTallyChoiceChanged() end)
+    Check("\"For me\": your own tasks on the Near me page",
+        "Write yourself tasks at the bottom of the Near me page (click \"+ add a task\", or /hanky task <what to do>). Tick them off like quest lines; they're kept between logins. Off: the page is all quest lines again (your tasks are kept).",
+        function() return CFQ.parchmentOpts.forMe end,
+        function(v) CFQ.parchmentOpts.forMe = v; P.CancelForMeEdit(); P.OnTallyChoiceChanged() end)
 
     Check("Pages for other areas",
         "Quests that aren't near you go on more pages in the pile, one per place (see Other pages by). Click the dog-eared corner to turn to the next page (right-click to go back).",
@@ -9868,6 +10437,16 @@ SlashCmdList["HANDKERQUEST"] = function(msg)
         UpdateShoppingListUI()
         CFQ.RefreshOptionsPanel()
         print("|cFFFFD100HandkerSheaf:|r Field Tally look: " .. P.GetStyle().label)
+    elseif cmd == "task" or string.find(cmd, "^task%s") then
+        local text = string.match(strtrim(msg or ""), "^%S+%s+(.+)$")   -- as typed (not lower-cased)
+        local task = text and CFQ.AddTask(text)
+        if task then
+            P.ForMeChanged()
+            print("|cFFFFD100" .. CONFIG.DISPLAY_NAME .. ":|r added to For me: " .. task.text ..
+                (showShoppingList and "" or "  (the tally is put away: /hanky list)"))
+        else
+            print("|cFFFFD100" .. CONFIG.DISPLAY_NAME .. ":|r /hanky task <what to do> adds a task to For me.")
+        end
     elseif cmd == "options" or cmd == "opt" or cmd == "config" or cmd == "settings" then
         CFQ.OpenOptions()
     else

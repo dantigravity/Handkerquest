@@ -58,7 +58,12 @@ function methods:GetFrameStrata() return self.__strata or "MEDIUM" end
 function methods:GetFrameLevel() return self.__level end
 function methods:SetParent(p) self.__parent = p end
 function methods:GetParent() return self.__parent end
-function methods:SetText(t) self.__text = t or "" end
+function methods:SetText(t)
+    if self.__kind == "EditBox" and not self.__template and not self.__font then
+        error("EditBox:SetText(): Font not set", 2)
+    end
+    self.__text = t or ""
+end
 function methods:GetText() return self.__text end
 function methods:GetStringWidth() return 6 * #tostring(self.__text or "") end
 function methods:GetUnboundedStringWidth() return 6 * #tostring(self.__text or "") end
@@ -96,7 +101,11 @@ frameMT = { __index = function(t, k)
     return nil
 end }
 
-function CreateFrame(kind, name, parent) return NewRegion(kind or "Frame", parent, name) end
+function CreateFrame(kind, name, parent, template)
+    local o = NewRegion(kind or "Frame", parent, name)
+    o.__template = template
+    return o
+end
 UIParent = CreateFrame("Frame", "UIParent"); UIParent.__w, UIParent.__h = 1920, 1080
 UIParent.GetCenter = function() return 960, 540 end
 ChatFrame1 = CreateFrame("Frame", "ChatFrame1"); ChatFrame1.__w, ChatFrame1.__h = 430, 120
@@ -211,3 +220,12 @@ C_AddOns = {
         return found
     end,
 }
+
+-- Clocks: the realm's calendar time (retail API) plus WoW's global date()/time()
+C_DateAndTime = {
+    GetCurrentCalendarTime = function() return { year = 2026, month = 11, monthDay = 10, weekday = 3, hour = 21, minute = 40 } end,
+}
+function GetServerTime() return 1794350400 end
+date = date or os.date
+time = time or os.time
+function GetRealmName() return "Forever" end

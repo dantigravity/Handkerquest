@@ -195,12 +195,136 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
   (`style.cloth`, `P.LayoutClothShape`), woven border stripes, soft gradient creases, drape wrinkles.
   No torn/deckled edges on it.
 - Default spot sits `P.PILE_MARGIN_Y` above the chat tabs so the back pages never lap over chat.
+- **"For me"** (built, step 1 of the notes plan below): the player's own tasks at the bottom of "Near me"
+  (`P.RenderForMe`, called from `P.Render`, both the normal and the empty-page path). `CFQ.notes` = saved
+  `QRF_SavedState.notes` (`CFQ.LoadNotes` checks every field; `tasks` in written order, `forMeFolded`).
+  Each task: `text`, `done`, `t` (`GetServerTime`), `when` ("10 Nov 21:40", realm calendar via
+  `CFQ.NoteTime`), `place` (`CFQ.HerePlace`: mapID, x, y, zone, subzone), `owner` ("Name-Realm"); account-wide,
+  every character sees every task (whether to split by character is still **Open**).
+  - Rows come from their own pool (`f.forMeRows`, `P.AcquireRow(i, parent, pool)`), inked by `P.InkTaskRow`
+    exactly like tally lines (box, tick, strike, halo, ink drops). A row's click finds its task by identity
+    (`P.TaskIndex`), never by a position that may have shifted.
+  - Click = tick / untick; right-click = re-write in place (empty = rubbed out); shift-click = rub out.
+    Its own heading, always shown, **written like the page heading "Near me"** (user decision: title
+    writing and ink, gilded first letter on vellum, wet ink, the same double quill underline sized to the
+    words; `P.DrawForMeHeading`, height `P.ForMeHeadHeight`). A note after it in the sub ink, as
+    "· Dolanaar": "· 3" folded, "· +2" = older tasks that don't fit. Click folds, right-click rubs out the
+    ticked ones. Ticked tasks stay struck until rubbed out.
+  - **Stands on the page bottom and rises** (user decision: not tucked under the quest lines): writing
+    line at the very bottom, tasks above it in written order, heading on top; each new task lifts the
+    heading a line. Never rises above where the quest lines end. Not all fit → the **newest** stay (the one
+    just written is always in sight).
+  - The "+ add a task..." button is **only as wide as its words** (user decision: a full-row button got in
+    the way of turning the page at the dog-ear); the writing box also stops `P.CORNER_MAX` short of it.
+  - Writing line "+ add a task...": one `EditBox` (`f.forMeEdit`, `P.forMeEditing`), handwriting font, plain
+    ink while typing. **The box gets its font before any text** (bug fix: WoW errors on `SetText` without
+    one, which left the line showing only "+" and no box; `wowmock.lua` now refuses it too), and
+    `P.forMeEditing` is set only after the text is in. Enter keeps, Escape cancels, clicking away keeps (redraw deferred a frame). Hidden
+    with the tally → it lets go of the keyboard. `CFQ.CleanNoteText` trims and strips `|` (no colour/link
+    escapes yet; item links come with the quick-insert menu). Also `/hanky task <text>` (keeps capitals).
+  - Room: no tasks = heading + writing line; with quest lines on the page "For me" keeps at most
+    `P.FORME_SHARE` (half) of it (`P.ForMeReserve`); quest lines scroll as before.
+  - Open tasks keep the tally up when there are no quest lines anywhere; "...only when something is nearby"
+    still puts it away (tasks don't count as nearby). Options: "For me" checkbox (`parchmentOpts.forMe`,
+    default on; off = nothing drawn, no room kept, tasks kept). `smoke.lua` keeps it off for the older checks.
+
+## Planned: notes and journal (design agreed with the user, Nov 2026)
+Private notes inside the tally. **Step 1 ("For me" tasks + writing line) is built** — see "Design rules";
+the rest is not built yet: build to this, and move each part into "Design rules" as it lands. Items marked
+**Open** still need the user's call.
+
+**One stack, no separate window** (user decision). Two kinds of writing:
+- **"For me" section** at the bottom of the "Near me" page: the player's own **tasks**. Drawn like tally
+  rows (hand-inked box, quill tick, strike-through), so reuse the row code. Its heading folds the section
+  ("For me (3)") instead of adding a new button (keeps "Keep the tally's controls simple").
+- **Journal page**: longer **entries**, newest first, a page in the same pile (not an area page: never
+  merged, never counted in `P.MAX_AREAS`). An entry can be opened and written longer (multi-line EditBox
+  in a scroll frame, handwriting font). Plain ink while typing; drawn with the look's wet ink / glow /
+  chalk once focus leaves.
+
+**The writing line** (last line of "For me": "+ write..."): one input, Enter saves, Escape cancels.
+- A small inked switch in front: **box = task** (stays in "For me", never moves on its own), **quill =
+  entry** (stamped, then leaves "For me" and goes to the Journal). The entry visibly flies off into the
+  Journal knot and the knot nudges, so it never looks deleted.
+- A **"with" glyph** (two figures): opt-in per entry (remembers the last choice) — stamps the party/raid
+  names ("with Sam, Rosie"; cap ~5, then "and N others"). Faded and inert when solo. Optional: target name.
+- **Right-click while typing = quick-insert menu**, our own menu in the look's ink/material (not Blizzard's
+  drop-down; same strata care as the Look list). Categories open a side list on hover:
+  - **Players**: recently played with (party/raid roster seen on `GROUP_ROSTER_UPDATE`, last 10-15, newest
+    first, saved), current target first if a player. The "with" glyph uses the same list.
+  - **Enemies**: recently killed, current target, the quests' slay targets (`qData.taskObjectives`).
+  - **Items**: recently looted + quest items, inserted as item links (tooltip on hover in the journal).
+    **Open:** links drawn in the ink colour with a faint underline (suggested), quality colour only in the
+    tooltip.
+  - **Quests**: tracked quests (quest links). **Places**: here (subzone, zone) and the quests' areas.
+  - Later maybe: NPCs talked to. Optional shortcut: typing `@` opens Players.
+- Right-click elsewhere is unchanged: on a finished task/entry = its own menu (edit, move to journal,
+  delete, remove a name); on a quest line = quest log.
+
+**Every task and entry is tied to a place**: subzone, zone, mapID and x/y where it was written.
+- Entry stamp: realm date/time + place, e.g. "10 Nov, 21:40 · Goldshire" (+ "with ..."). Time from
+  `C_DateAndTime.GetCurrentCalendarTime` (realm clock, same as the in-game calendar), also stored as
+  `GetServerTime()` for sorting; `pcall`, fall back to `time()`/`date()` (PC clock) — check in game which
+  this client gives. There is no separate Azeroth date. **Open:** optional Shire Reckoning month names.
+- Hovering an entry shows `CFQ.ShowMapPreview` with a dot where it was written. Clicking an entry's
+  place stamp filters the Journal to that place (click again = all). No filter buttons.
+- Tasks: **Open** — "everywhere" (suggested default) or "here" (shows in "For me" only near where it was
+  written); right-click switches (built: everywhere only). Built: tasks don't count as nearby for
+  `hideWhenNothingNearby` (**Open** to revisit).
+- Ticked tasks: built as "stay struck until rubbed out" (**Open** to revisit). Optional: ticking logs
+  "Done: ..." to the Journal (off by default). Right-click a task → "Move to journal" (needs the step-4 menu;
+  right-click currently re-writes).
+
+**Knots = the two quick tabs** (user decision; replaces the idea of side tabs — **no ribbons**, minimal):
+- **Top-right knot = "Near me"** (the front page): hangs off the sheet's right edge just outside the
+  corner, clear of the close button (`closeBtn`, TOPRIGHT of the chrome).
+- **Bottom-right knot = Journal**: hangs from the bottom edge **just left of the dog-ear, never
+  overlapping it**. The resize grip stays bottom-left; the dog-ear still turns area pages.
+- **On hover a knot dangles** like it was tapped (swings round its tie point, a few damped swings), the
+  way the dog-ear lifts on hover. Tooltip names the page. Clicking the knot of the page you're on flips
+  back to where you were.
+- Cloth/paper looks: a real knot of the material (a procedural knot shape from `tools/TexGen.cs`,
+  textured with the look's own image like `P.DrawMaterialFold`). Rigid looks: a knot **mark** in their
+  lettering (chalked / carved / gilded / engraved / a glowing arcane loop) that glints instead of
+  swinging. See-through window: an inked knot glyph.
+
+**Saved data** (`QRF_SavedState`, account-wide; `parchmentOpts` only loads booleans, so a new key):
+`notes = { tasks = {...}, journal = {...}, recentPlayers = {...}, recentKills = {...}, recentLoot = {...} }`.
+Each task/entry: `text`, `kind`, `done`, `t` (server time), `stamp`, `place = { mapID, x, y, zone,
+subzone }`, `with = { names }`, `owner = "Name-Realm"` (so an entry can be one character's or all of
+them: **Open**). Stays only on the player's PC (WTF folder); never sent anywhere. Written on reload /
+logout / quit only: a client crash loses that session's new writing.
+
+**Auto-recording** (user decision): the addon writes a Journal entry itself when something passes a
+threshold set in the **options panel** (never on the tally). Each trigger is its own on/off:
+- **Rare loot**: WoW gives **no drop rates** (and there's no bundled drop database), so it means:
+  - **item quality** at or above a chosen level (e.g. Rare and up);
+  - **first time ever looted** (remember every item ID looted; catches odd greys/whites);
+  - later extra: **our own observed rate** ("seen in under N% of kills"), counted from loot tries like the
+    quest-item counts behind `P.RULE_OUT_LOOTS`; only meaningful after many kills.
+- **Achievements earned** (`ACHIEVEMENT_EARNED`): only offered if this client has achievements — check in
+  game first; hide the option when the API/event is missing.
+- **Level ups** (`PLAYER_LEVEL_UP`): every level, or every 5 / 10.
+- **Rare / elite kills** (`UnitClassification`: rare, elite, rareelite, worldboss).
+- **New places**: first time entering a zone / subzone.
+- **Quests turned in**: all, or only those that took longer than X days.
+- **Deaths** (optional): "Died to Hogger, Elwynn Forest".
+- **No money trigger** (user decision).
+
+Keep it from turning into spam: auto entries are drawn differently (faded ink or a small stamp) so the
+player's own writing stands out; similar events within a few minutes merge into one entry ("Looted 3 rare
+items in the Fargodeep Mine"); everything is **off by default except level ups and first-time rares**.
+
+**Build order**: ~~"For me" tasks + writing line~~ (done) → Journal page + entries/stamps (+ the task/entry
+switch on the writing line) → knots → "with" + quick-insert menu → auto-recording.
 
 ## Code conventions
 - Main chunk is near Lua's 200-local limit: put new state/functions in the `CFQ` or `P` (parchment)
   tables, not new top-level locals.
 - Saved settings: `QRF_SavedState` (account-wide). Keep old keys loadable; new keys need defaults.
-  `parchmentOpts` only loads boolean values.
+  `parchmentOpts` only loads boolean values. The saved look loads if its key is in `P.STYLES` (`LoadState`
+  reaches it as `CFQ.P`: `P` is declared later), so a new look needs no change there (marble / gilded /
+  vellum used to be dropped on every reload).
 - Wrap risky Blizzard API calls in `pcall`; layout passes are guarded so an error can't freeze the tracker.
 
 ## Naming

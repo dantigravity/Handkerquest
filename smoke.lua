@@ -69,6 +69,8 @@ Fire("ADDON_LOADED", "Handkerquest")
 Fire("PLAYER_ENTERING_WORLD")
 for _, t in ipairs(TIMERS or {}) do t() end; TIMERS = {}
 
+-- "For me" (your own tasks) is tested on its own near the end: off here so the older checks keep their room
+CFQ.parchmentOpts.forMe = false; P.OnTallyChoiceChanged()
 local f = QRF_ClusterShoppingList
 check(f ~= nil, "parchment frame exists")
 check(f:IsShown(), "parchment shown with nearby quantity quests")
@@ -1499,6 +1501,211 @@ do  -- tally colours: Arcane script's runes (beside the Look button, only on tha
     for _ = 1, 3 do TICKER() end
     CFQ.inkColors = {}; CFQ.parchmentStyle = "RAG"; P.ApplyStyle()
     check(Same(rag.ink, ragInk) and Same(stone.ink, P.StyleDefaults(stone).ink), "all looks back to their own ink")
+end
+do  -- "For me": your own tasks at the bottom of the "Near me" page
+    local function redraw() P.OnTallyChoiceChanged() end
+    local fw0, fh0 = f:GetWidth(), f:GetHeight()
+    f:SetSize(320, 420)          -- room for a few tasks under the quest lines
+    CFQ.parchmentOpts.forMe = true
+    CFQ.notes = { tasks = {}, forMeFolded = false }
+    P.selectedKey = P.areas[1].key            -- on "Near me"
+    redraw()
+    check(f:IsShown() and f.forMeWrite and f.forMeWrite.__shown, "For me: the writing line is on Near me")
+    check(f.forMeWrite.fs.__text == "add a task for yourself...", "For me: an empty list invites a first task (" .. tostring(f.forMeWrite.fs.__text) .. ")")
+    check(f.forMeHead and f.forMeHead.__shown and f.forMeHead.fs.__text == "For me", "For me: its own heading, even before the first task")
+    -- the section stands on the page bottom: the writing line's foot is the page's foot
+    local function ContentH()
+        local _, padT, _, padB = P.GetPads(f)
+        return math.max(55, f:GetHeight() - 45 - padT - padB)
+    end
+    local writeH = math.max(14, P.LineHeight(f)) + 7
+    check(math.abs(f.forMeWrite.__py - -(ContentH() - writeH)) < 0.5,
+        "For me: the writing line sits on the bottom of the page (" .. f.forMeWrite.__py .. " vs " .. -(ContentH() - writeH) .. ")")
+    local headY0 = f.forMeHead.__py
+    check(headY0 < -ContentH() * 0.5, "For me: with no tasks the heading sits low on the page, not under the quest lines")
+
+    -- written like the page's own heading ("Near me"): same writing, same ink, the double underline
+    do
+        local hf, tf = f.forMeHead.fs, f.titleFS
+        check(hf.inkKind == "title" and hf.__font and tf.__font and hf.__font[2] == tf.__font[2],
+            "For me heading: the page heading's writing and size (" .. tostring(hf.__font and hf.__font[2]) .. " vs " .. tostring(tf.__font and tf.__font[2]) .. ")")
+        check(f.forMeHead.rule.main.__shown and f.forMeHead.rule2.main.__shown, "For me heading: the double quill underline")
+    end
+
+    -- the "+ add a task" button is only as wide as its words: the bottom row's right end (dog-ear) stays free
+    do
+        local wl = f.forMeWrite
+        local wordsW = wl.fs:GetStringWidth()
+        local anchoredRight = false
+        for _, pt in ipairs(wl.__points) do if pt[1] == "TOPRIGHT" or pt[1] == "RIGHT" or pt[1] == "BOTTOMRIGHT" then anchoredRight = true end end
+        local contentW = math.max(150, f:GetWidth() - 12 - (select(1, P.GetPads(f))) - (select(3, P.GetPads(f))))
+        check(not anchoredRight and wl.__w == 20 + wordsW + 6, "For me: the add-task button is only as wide as its words (" .. tostring(wl.__w) .. ")")
+        check(wl.__w <= contentW - P.CORNER_MAX, "For me: ...and stays clear of the dog-ear")
+    end
+
+    -- write one: click the line, type, Enter
+    f.forMeWrite:GetScript("OnClick")(f.forMeWrite, "LeftButton")
+    check(f.forMeEdit.__w <= math.max(150, f:GetWidth() - 12 - (select(1, P.GetPads(f))) - (select(3, P.GetPads(f)))) - 24 - P.CORNER_MAX + 0.01,
+        "For me: the writing box stops short of the dog-ear")
+    check(P.forMeEditing and f.forMeEdit and f.forMeEdit.__shown, "For me: clicking the line opens a writing box")
+    check(f.forMeEdit.__font ~= nil, "For me: the writing box has its font before any text (WoW refuses text without one)")
+    f.forMeEdit:SetText("  Buy bigger bags  ")
+    f.forMeEdit:GetScript("OnEnterPressed")(f.forMeEdit)
+    local t1 = CFQ.notes.tasks[1]
+    check(#CFQ.notes.tasks == 1 and t1.text == "Buy bigger bags" and not t1.done, "For me: Enter keeps the task, trimmed")
+    check(not P.forMeEditing and not f.forMeEdit.__shown, "For me: the writing box closes after Enter")
+    check(type(t1.when) == "string" and t1.when:find("%d+ %a%a%a %d%d:%d%d") and type(t1.t) == "number",
+        "For me: a task is stamped with the time (" .. tostring(t1.when) .. ")")
+    check(t1.place and t1.place.zone == GetRealZoneText() and t1.place.mapID ~= nil, "For me: a task is tied to where it was written")
+    check(type(t1.owner) == "string" and t1.owner ~= "", "For me: a task knows who wrote it")
+    check(f.forMeHead and f.forMeHead.__shown and f.forMeHead.fs.__text == "For me", "For me: the heading stays with the first task")
+    local r1 = f.forMeRows and f.forMeRows[1]
+    check(r1 and math.abs(f.forMeHead.__py - (headY0 + r1.__h)) < 0.5, "For me: each task lifts the heading by its line (rises from the bottom)")
+    check(r1 and math.abs(r1.__py - (f.forMeWrite.__py + r1.__h)) < 0.5, "For me: the newest task sits right above the writing line")
+    check(math.abs(f.forMeWrite.__py - -(ContentH() - writeH)) < 0.5, "For me: the writing line stays on the bottom")
+    check(r1 and r1.__shown and r1.itemText.__text == "Buy bigger bags" and r1.box.__shown, "For me: the task is written with an inked box")
+    check(r1.seed ~= (shoppingListRowPool and shoppingListRowPool[1] and shoppingListRowPool[1].seed), "For me rows have their own wobble")
+    check(QRF_SavedState.notes and QRF_SavedState.notes.tasks[1].text == "Buy bigger bags", "For me: saved straight away")
+
+    -- tick it off, and back
+    r1:GetScript("OnClick")(r1, "LeftButton")
+    check(CFQ.notes.tasks[1].done and r1.strikes[1] and r1.strikes[1].main.__shown, "For me: click ticks it off and strikes it through")
+    check(r1.box.tick[1].main.__shown, "For me: ...with the quill tick")
+    r1:GetScript("OnClick")(r1, "LeftButton")
+    check(not CFQ.notes.tasks[1].done and not r1.strikes[1].main.__shown, "For me: click again: not done after all")
+
+    -- Escape: nothing written
+    f.forMeWrite:GetScript("OnClick")(f.forMeWrite, "LeftButton")
+    f.forMeEdit:SetText("never mind this")
+    f.forMeEdit:GetScript("OnEscapePressed")(f.forMeEdit)
+    check(#CFQ.notes.tasks == 1 and not P.forMeEditing, "For me: Escape writes nothing")
+    -- clicking away keeps what was written; "|" can't sneak in colour codes
+    f.forMeWrite:GetScript("OnClick")(f.forMeWrite, "LeftButton")
+    f.forMeEdit:SetText("Mine the |cffff0000copper|r")
+    f.forMeEdit:GetScript("OnEditFocusLost")(f.forMeEdit)
+    check(#CFQ.notes.tasks == 2 and not CFQ.notes.tasks[2].text:find("|", 1, true), "For me: clicking away keeps it, without '|' escapes (" .. tostring(CFQ.notes.tasks[2] and CFQ.notes.tasks[2].text) .. ")")
+    -- an empty line adds nothing
+    f.forMeWrite:GetScript("OnClick")(f.forMeWrite, "LeftButton")
+    f.forMeEdit:SetText("    ")
+    f.forMeEdit:GetScript("OnEnterPressed")(f.forMeEdit)
+    check(#CFQ.notes.tasks == 2, "For me: a blank line adds nothing")
+
+    -- right-click re-writes; re-writing to nothing rubs it out
+    local r2 = f.forMeRows[2]
+    r2:GetScript("OnClick")(r2, "RightButton")
+    check(P.forMeEditing and P.forMeEditing.index == 2 and f.forMeEdit:GetText() == CFQ.notes.tasks[2].text, "For me: right-click opens it for re-writing")
+    check(r2.itemText.__text == "", "For me: ...the box takes the line's place while you write")
+    f.forMeEdit:SetText("Mine the copper vein")
+    f.forMeEdit:GetScript("OnEnterPressed")(f.forMeEdit)
+    check(CFQ.notes.tasks[2].text == "Mine the copper vein" and r2.itemText.__text == "Mine the copper vein", "For me: re-written")
+    r2:GetScript("OnClick")(r2, "RightButton")
+    f.forMeEdit:SetText("")
+    f.forMeEdit:GetScript("OnEnterPressed")(f.forMeEdit)
+    check(#CFQ.notes.tasks == 1, "For me: re-writing a task to nothing rubs it out")
+
+    -- slash command keeps the player's capitals
+    SlashCmdList["HANDKERQUEST"]("task Feed Gizmo the Cat")
+    check(#CFQ.notes.tasks == 2 and CFQ.notes.tasks[2].text == "Feed Gizmo the Cat", "/hanky task adds a task as typed (" .. tostring(CFQ.notes.tasks[2] and CFQ.notes.tasks[2].text) .. ")")
+    local nBefore = #CFQ.notes.tasks
+    SlashCmdList["HANDKERQUEST"]("task")
+    check(#CFQ.notes.tasks == nBefore, "/hanky task with nothing after it adds nothing")
+
+    -- shift-click rubs out
+    local realShift = IsShiftKeyDown
+    IsShiftKeyDown = function() return true end
+    f.forMeRows[2]:GetScript("OnClick")(f.forMeRows[2], "LeftButton")
+    IsShiftKeyDown = realShift
+    check(#CFQ.notes.tasks == 1 and CFQ.notes.tasks[1].text == "Buy bigger bags", "For me: shift-click rubs a task out")
+
+    -- fold away, and back
+    CFQ.AddTask("Train cooking"); redraw()
+    f.forMeHead:GetScript("OnClick")(f.forMeHead, "LeftButton")
+    check(CFQ.notes.forMeFolded and P.PlainText(f.forMeHead.fs.__text) == "For me  · 2" and not f.forMeRows[1].__shown and not f.forMeWrite.__shown,
+        "For me: clicking the heading folds it to For me · 2")
+    f.forMeHead:GetScript("OnClick")(f.forMeHead, "LeftButton")
+    check(not CFQ.notes.forMeFolded and f.forMeRows[1].__shown and f.forMeWrite.__shown, "For me: ...and open again")
+    -- right-click the heading rubs out the ticked ones
+    CFQ.notes.tasks[1].done = true
+    f.forMeHead:GetScript("OnClick")(f.forMeHead, "RightButton")
+    check(#CFQ.notes.tasks == 1 and CFQ.notes.tasks[1].text == "Train cooking", "For me: right-click the heading rubs out ticked tasks")
+
+    -- only on "Near me"
+    P.RenderForMe(f, { isCurrent = false }, 0, 200, 120)
+    check(not f.forMeWrite.__shown and not f.forMeRows[1].__shown and not f.forMeHead.__shown, "For me: not on other pages")
+    redraw()
+
+    -- room: with quest lines on the page, For me takes at most half of it (never less than heading + writing line)
+    for k = 1, 12 do CFQ.AddTask("Task number " .. k) end
+    local res = P.ForMeReserve(f, 200, 120, true)
+    check(res <= 120 * P.FORME_SHARE + 0.01 and res >= P.KIND_HEADING_H, "For me: quest lines keep at least half the page (" .. res .. ")")
+    redraw()
+    check(f.forMeHead.hiddenCount > 0 and P.PlainText(f.forMeHead.fs.__text):find("^For me  · %+%d+$"), "For me: tasks that don't fit are counted on the heading (" .. tostring(f.forMeHead.fs.__text) .. ")")
+    local lastShown
+    for _, row in ipairs(f.forMeRows) do if row.__shown then lastShown = row end end
+    check(lastShown and lastShown.itemText.__text == CFQ.notes.tasks[#CFQ.notes.tasks].text,
+        "For me: when they don't all fit, the newest stays in sight (" .. tostring(lastShown and lastShown.itemText.__text) .. ")")
+    check(f.forMeHead.__py <= -P.FORME_GAP and f.forMeHead.__py >= -ContentH(), "For me: the heading stays on the page")
+
+    -- open tasks keep the tally up with no quest lines anywhere; "hide when nothing is nearby" still puts it away
+    local empty = { { items = {} } }
+    check(not P.ShouldHideTally(empty), "For me: open tasks keep the tally up with no quests")
+    CFQ.parchmentOpts.hideWhenNothingNearby = true
+    check(P.ShouldHideTally(empty), "For me: ...but 'only when something is nearby' still hides it")
+    CFQ.parchmentOpts.hideWhenNothingNearby = false
+    for _, t in ipairs(CFQ.notes.tasks) do t.done = true end
+    check(P.ShouldHideTally(empty), "For me: only open tasks count (all ticked: hidden as before)")
+    for _, t in ipairs(CFQ.notes.tasks) do t.done = false end
+    CFQ.parchmentOpts.forMe = false
+    check(P.ShouldHideTally(empty), "For me switched off: tasks don't hold the tally up")
+    check(P.ForMeReserve(f, 200, 120, true) == 0, "For me switched off: no room kept")
+    redraw()
+    check(not f.forMeWrite.__shown and not f.forMeHead.__shown, "For me switched off: nothing drawn")
+    CFQ.parchmentOpts.forMe = true
+    redraw()
+
+    -- a row ticks its own task even if the list shifted under it before the redraw
+    CFQ.notes.tasks = {}
+    CFQ.AddTask("One"); CFQ.AddTask("Two"); CFQ.AddTask("Three"); redraw()
+    local row3 = f.forMeRows[3]
+    table.remove(CFQ.notes.tasks, 1)            -- (as a re-write to nothing would, a frame before the redraw)
+    row3:GetScript("OnClick")(row3, "LeftButton")
+    check(CFQ.notes.tasks[2].text == "Three" and CFQ.notes.tasks[2].done and not CFQ.notes.tasks[1].done,
+        "For me: a row ticks its own task after the list shifted")
+    for _, t in ipairs(CFQ.notes.tasks) do t.done = false end
+
+    -- saved and loaded back (reload)
+    local n, firstText = #CFQ.notes.tasks, CFQ.notes.tasks[1].text
+    CFQ.notes.tasks[1].done = true
+    CFQ.notes.forMeFolded = true
+    P.ForMeChanged()
+    Fire("ADDON_LOADED", "Handkerquest")
+    check(#CFQ.notes.tasks == n and CFQ.notes.tasks[1].done and CFQ.notes.tasks[1].text == firstText and CFQ.notes.forMeFolded,
+        "For me: tasks, ticks and the fold survive a reload")
+    check(CFQ.notes.tasks[1].place and CFQ.notes.tasks[1].place.zone ~= nil, "For me: ...with where they were written")
+    -- a broken save loads what it can
+    QRF_SavedState.notes = { tasks = { "junk", { text = 5 }, { text = "" }, { text = "Keep me", done = "yes", place = "here" } }, forMeFolded = "no" }
+    Fire("ADDON_LOADED", "Handkerquest")
+    check(#CFQ.notes.tasks == 1 and CFQ.notes.tasks[1].text == "Keep me" and CFQ.notes.tasks[1].done == false
+        and CFQ.notes.tasks[1].place == nil and CFQ.notes.forMeFolded == false, "For me: a broken save loads what it can")
+    QRF_SavedState.notes = "nonsense"
+    Fire("ADDON_LOADED", "Handkerquest")
+    check(type(CFQ.notes) == "table" and #CFQ.notes.tasks == 0, "For me: a nonsense save gives an empty list")
+    CFQ.notes = { tasks = {}, forMeFolded = false }
+    CFQ.parchmentOpts.forMe = false
+    f:SetSize(fw0, fh0)
+    redraw()
+end
+do  -- every look survives a reload (sanctified marble / gilded plate / illuminated vellum used to fall back to the rag)
+    local before = CFQ.parchmentStyle
+    for _, key in ipairs({ "MARBLE", "GILDED", "VELLUM", "LEATHER" }) do
+        QRF_SavedState.parchmentStyle = key
+        Fire("ADDON_LOADED", "Handkerquest")
+        check(CFQ.parchmentStyle == key, key .. " is still the look after a reload")
+    end
+    QRF_SavedState.parchmentStyle = "BOGUS"
+    Fire("ADDON_LOADED", "Handkerquest")
+    check(CFQ.parchmentStyle == "VELLUM" or CFQ.parchmentStyle == "LEATHER", "an unknown saved look leaves the look alone")
+    CFQ.parchmentStyle = before; QRF_SavedState.parchmentStyle = before; P.ApplyStyle()
 end
 do  -- the .toc loads files that exist (code file renamed Handkerquest.lua -> Handkerchief.lua -> HandkerSheaf.lua; folder/.toc kept)
     local toc = io.open(here .. "/Handkerquest.toc")
