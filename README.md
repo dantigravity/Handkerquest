@@ -14,7 +14,7 @@ preview placement, minimap pins, default position margins.
 ## Run
 From the addon folder (needs Lua 5.1 — WoW's Lua version):
 
-    "C:\Program Files (x86)\Lua\5.1\lua.exe" smoke.lua Handkerchief.lua
+    "C:\Program Files (x86)\Lua\5.1\lua.exe" smoke.lua HandkerSheaf.lua
 
 Prints any failures, then "N passed, N failed". Exit code is 0 only if everything passed.
 

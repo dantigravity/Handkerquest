@@ -1,10 +1,10 @@
 local here = (arg[0]:match("^(.*)[/\\]") or ".")
 dofile(here .. "/wowmock.lua")
-local addonPath = arg[1] or (here .. "/Handkerchief.lua")
+local addonPath = arg[1] or (here .. "/HandkerSheaf.lua")
 
 -- Expose the addon's locals to the test (test copy only)
 local src = assert(io.open(addonPath), "cannot open " .. addonPath):read("*a") .. "\n_G.__CFQ = CFQ\n_G.__LAYOUT = function() LayoutObjectiveTrackerWithStacks() end\n_G.__QMAP = function() return questRewardMap end\n_G.__STATE = function() return { lvl = levelSortMode, dist = distSortMode, primary = primarySortKey, incomp = incompleteStackEnabled, turnin = turnInStackEnabled } end\n"
-local chunk = assert(loadstring(src, "Handkerchief.lua"))
+local chunk = assert(loadstring(src, "HandkerSheaf.lua"))
 chunk()
 local CFQ, P = __CFQ, __CFQ.P
 
@@ -1381,6 +1381,33 @@ for _ = 1, 4 do TICKER() end
 
 check(SLASH_HANDKERQUEST1 == "/hanky" and SLASH_HANDKERQUEST2 == "/handkerquest" and SLASH_HANDKERQUEST3 == "/cfq", "slash commands: /hanky, /handkerquest, old /cfq")
 check(QRF_OptionsPanel and true, "options panel exists under the new name")
+do  -- the options heading shows the .toc's version live (no hard-coded number to forget)
+    local tocVersion
+    local fh = io.open(here .. "/Handkerquest.toc")
+    if fh then
+        for line in fh:lines() do tocVersion = tocVersion or line:gsub("\r", ""):match("^##%s*Version:%s*(.-)%s*$") end
+        fh:close()
+    end
+    check(tocVersion and CFQ.AddonVersion() == tocVersion, "version comes from the .toc (" .. tostring(CFQ.AddonVersion()) .. " / " .. tostring(tocVersion) .. ")")
+    local heading = CFQ.optionsTitle and CFQ.optionsTitle.__text or ""
+    check(heading:find("HandkerSheaf", 1, true) and heading:find("v" .. tostring(tocVersion), 1, true), "options heading: " .. heading)
+    local realMeta = C_AddOns
+    C_AddOns = nil
+    local okNo, vNo = pcall(CFQ.AddonVersion)
+    C_AddOns = realMeta
+    check(okNo and vNo == nil, "no metadata API: no version, no error")
+end
+do  -- players see "HandkerSheaf" (options panel, Settings list, chat); the addon id stays "Handkerquest"
+    check(QRF_OptionsPanel.name == "HandkerSheaf", "options panel is listed as HandkerSheaf (" .. tostring(QRF_OptionsPanel.name) .. ")")
+    local said, realPrintN = {}, print
+    print = function(s) said[#said + 1] = tostring(s) end
+    local styleBefore = CFQ.parchmentStyle
+    pcall(SlashCmdList["HANDKERQUEST"], "look rag")
+    print = realPrintN
+    CFQ.parchmentStyle = styleBefore; P.ApplyStyle()
+    check(said[1] and said[1]:find("HandkerSheaf:", 1, true) and not said[1]:find("Handkerquest", 1, true),
+        "chat lines start with HandkerSheaf: (" .. tostring(said[1]) .. ")")
+end
 do  -- every slider (tracker (•••) bar, options panel) got a real range
     local bad, n = 0, 0
     for _, fr in ipairs(allFrames) do
@@ -1473,7 +1500,7 @@ do  -- tally colours: Arcane script's runes (beside the Look button, only on tha
     CFQ.inkColors = {}; CFQ.parchmentStyle = "RAG"; P.ApplyStyle()
     check(Same(rag.ink, ragInk) and Same(stone.ink, P.StyleDefaults(stone).ink), "all looks back to their own ink")
 end
-do  -- the .toc loads files that exist (code file renamed Handkerquest.lua -> Handkerchief.lua; folder/.toc kept)
+do  -- the .toc loads files that exist (code file renamed Handkerquest.lua -> Handkerchief.lua -> HandkerSheaf.lua; folder/.toc kept)
     local toc = io.open(here .. "/Handkerquest.toc")
     local listed, missing = {}, {}
     if toc then
@@ -1488,7 +1515,7 @@ do  -- the .toc loads files that exist (code file renamed Handkerquest.lua -> Ha
         toc:close()
     end
     check(toc and #listed > 0 and #missing == 0, "Handkerquest.toc lists only files that exist (" .. #listed .. " listed, missing: " .. table.concat(missing, ", ") .. ")")
-    check(listed[1] == "Handkerchief.lua", "Handkerquest.toc loads Handkerchief.lua")
+    check(listed[1] == "HandkerSheaf.lua", "Handkerquest.toc loads HandkerSheaf.lua")
 end
 check(#ERRORS == 0, "no Lua errors reported (" .. #ERRORS .. ")")
 print(string.format("\n%d passed, %d failed", pass, fail))

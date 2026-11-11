@@ -1,9 +1,10 @@
 # Handkerquest — notes for Claude
 
 WoW addon: Objective Tracker sorting/filters + (?)/(•••) quest stacks, and the "Field Tally" parchment
-(a pile of handwritten pages listing quest items to gather and tasks to do). Single file: `Handkerchief.lua` (renamed from `Handkerquest.lua` after v2.3.0; the folder, `.toc`, addon name and
+(a pile of handwritten pages listing quest items to gather and tasks to do). Single file: `HandkerSheaf.lua` (was `Handkerquest.lua`, then `Handkerchief.lua` after v2.3.0, renamed again after v2.4.1; the in-game title is "HandkerSheaf"; the folder, `.toc`, addon name and
 SavedVariables stay "Handkerquest" so players' installs and settings carry over).
-Version lives in `Handkerquest.toc` (`## Version`) and `CONFIG.VERSION`; release commits are titled `vX.Y.Z`.
+Version lives only in `Handkerquest.toc` (`## Version`): the options heading reads it live (`CFQ.AddonVersion`,
+`C_AddOns.GetAddOnMetadata`; no number in the code to bump). Release commits are titled `vX.Y.Z`.
 Formerly "Cache ForQuest" (renamed in v1.3.0: handkerchief + quest, after Bilbo setting off without his handkerchief).
 Internal names keep the old `CFQ` / `QRF_` prefixes on purpose — renaming `QRF_SavedState` would wipe
 players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
@@ -35,8 +36,8 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
   `media/` (CurseForge GIFs) and `tools/` are excluded from the package in `.pkgmeta`.
 
 ## Testing
-- `"C:\Program Files (x86)\Lua\5.1\lua.exe" smoke.lua Handkerchief.lua` (Lua 5.1 = WoW's version).
-  Must end with `N passed, 0 failed`. Syntax only: `luac.exe -p Handkerchief.lua`.
+- `"C:\Program Files (x86)\Lua\5.1\lua.exe" smoke.lua HandkerSheaf.lua` (Lua 5.1 = WoW's version).
+  Must end with `N passed, 0 failed`. Syntax only: `luac.exe -p HandkerSheaf.lua`.
 - `wowmock.lua` is loose (unknown capitalized methods are no-ops): catches logic errors and crashes,
   not visuals. Add `check(...)` lines to `smoke.lua` for every feature/fix; stub missing APIs in the mock.
 - The user tests in game; say plainly what was and wasn't verified there.
@@ -205,9 +206,12 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
 ## Naming
 - The folder name, `.toc` filename, `ADDON_LOADED` check and `.pkgmeta` `package-as` must all match.
   The SavedVariables file in `WTF\Account\<id>\SavedVariables\` is named after the folder too.
+- **Players see "HandkerSheaf"** (user decision, after v2.4.1): `.toc` `## Title`, `CONFIG.DISPLAY_NAME` (options
+  panel, Settings list entry) and every chat/tooltip prefix. `CONFIG.ADDON_NAME` stays "Handkerquest" (internal
+  id); never use it for visible text.
 - Folder must be `Interface\AddOns\Handkerquest` (matches `Handkerquest.toc` and `arg1 == "Handkerquest"`).
   Settings file: `WTF\Account\<id>\SavedVariables\Handkerquest.lua` (was `CacheForQuest.lua`).
-- The code file's name is free: only the `.toc` file list points at it (`Handkerchief.lua`). Renaming it
+- The code file's name is free: only the `.toc` file list points at it (`HandkerSheaf.lua`). Renaming it
   doesn't touch the folder, addon name or settings. Never rename the folder/`.toc`/`package-as` — that
   shows up as a new addon to players and their settings file would be left behind.
   `smoke.lua` checks every file the `.toc` lists exists.

@@ -194,3 +194,20 @@ Settings = {
 ColorPickerFrame = CreateFrame("Frame", "ColorPickerFrame")
 function ColorPickerFrame:SetupColorPickerAndShow(info) self.__info = info; self.__rgb = { info.r, info.g, info.b }; self:Show() end
 function ColorPickerFrame:GetColorRGB() local c = self.__rgb or { 1, 1, 1 }; return c[1], c[2], c[3] end
+
+-- Addon metadata: read from the real .toc next to the mock, like the client does
+C_AddOns = {
+    GetAddOnMetadata = function(addon, field)
+        if addon ~= "Handkerquest" then return nil end
+        local here = (arg and arg[0] and arg[0]:match("^(.*)[/\]")) or "."
+        local fh = io.open(here .. "/Handkerquest.toc")
+        if not fh then return nil end
+        local found
+        for line in fh:lines() do
+            local k, v = line:gsub("\r", ""):match("^##%s*([^:]-)%s*:%s*(.-)%s*$")
+            if k == field then found = v; break end
+        end
+        fh:close()
+        return found
+    end,
+}

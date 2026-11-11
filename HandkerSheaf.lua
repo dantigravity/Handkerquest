@@ -1,5 +1,5 @@
 -- ============================================================================
--- Handkerchief.lua (the Handkerquest addon) - WoW Forever Edition
+-- HandkerSheaf.lua (the Handkerquest addon) - WoW Forever Edition
 -- "Don't go off on an adventure without your handkerchief." (the name: handkerchief + quest)
 -- Objective Tracker sorting, filters & (?)/(•••) quest stacks, plus the Field Tally:
 -- a handwritten list (on a torn rag, soft hide, slate, bark, a pipe-weed leaf, glowing arcane script and
@@ -28,8 +28,8 @@
 -- ============================================================================
 -- EDIT: names and labels shown on the filter buttons and menu headers
 local CONFIG = {
-    ADDON_NAME          = "Handkerquest",
-    VERSION             = "2.3.0",
+    ADDON_NAME          = "Handkerquest",   -- internal: folder / .toc / ADDON_LOADED. Never change (players' settings)
+    DISPLAY_NAME        = "HandkerSheaf",   -- the name players see (options panel, Settings list, chat)
     REWARD_BTN_ALL      = "Rewards: All",
     LEVEL_BTN_ALL       = "Levels: All",
     TRACKER_BTN_ALL     = "Filter: All",
@@ -50,7 +50,7 @@ local distSortMode = "NONE"         -- "NONE", "ASC" (nearest first), or "DESC" 
 local primarySortKey = "LVL"        -- "LVL" or "DIST": whichever sort was switched on most recently wins ties
 
 -- Settings and shared state. EDIT: the true/false values below are the defaults a new player
--- starts with (each can also be switched in Options > AddOns > Handkerquest).
+-- starts with (each can also be switched in Options > AddOns > HandkerSheaf).
 -- Add new settings to this table rather than as new "local" lines: Lua allows only 200 locals here.
 local CFQ = {
     parchmentOpts = {
@@ -4210,7 +4210,7 @@ local function EnsureShoppingListFrame()
         self.txt:SetTextColor(P.INK_RED[1], P.INK_RED[2], P.INK_RED[3])
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
         GameTooltip:AddLine("Put the Field Tally away", 1, 0.82, 0)
-        GameTooltip:AddLine("Bring it back in Handkerquest Options (gear above the tracker) or with /hanky list", 0.85, 0.85, 0.85, true)
+        GameTooltip:AddLine("Bring it back in HandkerSheaf Options (gear above the tracker) or with /hanky list", 0.85, 0.85, 0.85, true)
         GameTooltip:Show()
     end)
     closeBtn:SetScript("OnLeave", function(self)
@@ -4226,7 +4226,7 @@ local function EnsureShoppingListFrame()
         if CFQ.RefreshOptionsPanel then CFQ.RefreshOptionsPanel() end
     end)
 
-    -- Options gear -> Handkerquest options panel
+    -- Options gear -> HandkerSheaf options panel
     local optBtn = CreateFrame("Button", nil, chrome)
     optBtn:SetSize(13, 13)
     optBtn:SetPoint("RIGHT", closeBtn, "LEFT", -3, 0)
@@ -4237,7 +4237,7 @@ local function EnsureShoppingListFrame()
     optBtn:SetScript("OnEnter", function(self)
         CFQ.SetGearHover(self, true)
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:AddLine("Handkerquest Options", 1, 0.82, 0)
+        GameTooltip:AddLine("HandkerSheaf Options", 1, 0.82, 0)
         GameTooltip:AddLine("Look, handwriting, tracker & map settings", 0.85, 0.85, 0.85)
         GameTooltip:AddLine("Right-Click: reset the parchment's size & position", 0.65, 0.65, 0.65)
         GameTooltip:Show()
@@ -5284,7 +5284,7 @@ function P.TurnTallyOn()
     showShoppingList = true
     UpdateShoppingListUI()
     local why = P.HiddenReason()
-    if why then print("|cFFFFD100Handkerquest:|r " .. why) end
+    if why then print("|cFFFFD100HandkerSheaf:|r " .. why) end
 end
 
 -- ============================================================================
@@ -7034,9 +7034,9 @@ function CFQ.ReportError(err)
     CFQ.reportedErrors[msg] = true
     local handler = geterrorhandler and geterrorhandler()
     if handler then
-        handler("Handkerquest: " .. msg)
+        handler("HandkerSheaf: " .. msg)
     else
-        print("|cFFFF5555Handkerquest error:|r " .. msg)
+        print("|cFFFF5555HandkerSheaf error:|r " .. msg)
     end
 end
 
@@ -7063,7 +7063,7 @@ end
 
 -- /hanky debug: prints what the tracker contents frame holds so in-game layout problems can be diagnosed
 function CFQ.DebugDumpTracker()
-    local out = function(s) print("|cFFFFD100CFQ|r " .. s) end
+    local out = function(s) print("|cFFFFD100" .. CONFIG.DISPLAY_NAME .. "|r " .. s) end
     local mod = QuestObjectiveTracker
     out(string.format("turnIn=%s incomp=%s lvl=%s dist=%s filters=%d/%d",
         tostring(turnInStackEnabled), tostring(incompleteStackEnabled), levelSortMode, distSortMode,
@@ -7092,7 +7092,7 @@ end
 
 -- /hanky items: every counted objective, its type, and whether it's an item (+) or a task (-) (for "why is X listed?")
 function CFQ.DebugDumpItems()
-    print("|cFFFFD100Handkerquest items:|r objectives with counts (+ = item, - = task)")
+    print("|cFFFFD100HandkerSheaf items:|r objectives with counts (+ = item, - = task)")
     local ids = {}
     for qID in pairs(questRewardMap) do table.insert(ids, qID) end
     table.sort(ids)
@@ -8856,7 +8856,7 @@ local function EnsureSharedMenu()
     end
     optionsRow.label = optionsRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     optionsRow.label:SetPoint("LEFT", optionsRow.gear, "RIGHT", 5, 0)
-    optionsRow.label:SetText("|cFFFFD100Handkerquest Options...|r |cFF888888(parchment & more)|r")
+    optionsRow.label:SetText("|cFFFFD100HandkerSheaf Options...|r |cFF888888(parchment & more)|r")
     local optHl = optionsRow:CreateTexture(nil, "HIGHLIGHT")
     optHl:SetAllPoints()
     optHl:SetColorTexture(1, 1, 1, 0.08)
@@ -8951,9 +8951,9 @@ local function CreateObjectiveTrackerButton()
     end)
     optBtn:SetScript("OnEnter", function(self)
         CFQ.SetGearHover(self, true)
-        self.label:SetText("|cFFFFD100Handkerquest|r")
+        self.label:SetText("|cFFFFD100HandkerSheaf|r")
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:AddLine("Handkerquest Options", 1, 0.82, 0)
+        GameTooltip:AddLine("HandkerSheaf Options", 1, 0.82, 0)
         GameTooltip:AddLine("Parchment pages, handwriting, tracker & map settings", 0.85, 0.85, 0.85, true)
         GameTooltip:Show()
     end)
@@ -9122,13 +9122,23 @@ CFQ.RefreshOptionsPanel = function()
     if CFQ.RefreshSortButtons then CFQ.RefreshSortButtons() end
 end
 
+-- The version comes live from the .toc's "## Version" line, so it never needs bumping here.
+-- nil if the client can't tell us (the panel heading then shows the name alone).
+function CFQ.AddonVersion()
+    local get = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
+    if not get then return nil end
+    local ok, v = pcall(get, CONFIG.ADDON_NAME, "Version")
+    if ok and type(v) == "string" and v ~= "" then return v end
+    return nil
+end
+
 function CFQ.BuildOptionsPanel()
     if CFQ.optionsPanel then return CFQ.optionsPanel end
 
     -- The panel scrolls: it's taller than the Settings window. Everything below is built on the scroll
     -- child (p); the registered panel is the outer frame.
     local outer = CreateFrame("Frame", "QRF_OptionsPanel")
-    outer.name = CONFIG.ADDON_NAME
+    outer.name = CONFIG.DISPLAY_NAME
     outer:Hide()
     local okS, scroll = pcall(CreateFrame, "ScrollFrame", nil, outer, "UIPanelScrollFrameTemplate")
     if not okS or not scroll then scroll = CreateFrame("ScrollFrame", nil, outer) end
@@ -9153,7 +9163,9 @@ function CFQ.BuildOptionsPanel()
 
     local title = p:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
     title:SetPoint("TOPLEFT", p, "TOPLEFT", 16, y)
-    title:SetText(CONFIG.ADDON_NAME .. " |cFF888888v" .. CONFIG.VERSION .. "|r")
+    local version = CFQ.AddonVersion()
+    title:SetText(CONFIG.DISPLAY_NAME .. (version and (" |cFF888888v" .. version .. "|r") or ""))
+    CFQ.optionsTitle = title
     y = y - 22
     local sub = p:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
     sub:SetPoint("TOPLEFT", p, "TOPLEFT", 16, y)
@@ -9739,7 +9751,7 @@ function CFQ.RegisterOptions()
     CFQ.optionsRegistered = true
     local p = CFQ.BuildOptionsPanel()
     if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOnCategory then
-        local ok, category = pcall(Settings.RegisterCanvasLayoutCategory, p, CONFIG.ADDON_NAME)
+        local ok, category = pcall(Settings.RegisterCanvasLayoutCategory, p, CONFIG.DISPLAY_NAME)
         if ok and category then
             pcall(Settings.RegisterAddOnCategory, category)
             CFQ.optionsCategory = category
@@ -9790,7 +9802,7 @@ CFQ.OpenOptions = function()
     CFQ.RegisterOptions()
     if CFQ.optionsCategory and Settings and Settings.OpenToCategory then
         if InCombatLockdown() then
-            print("|cFFFFD100Handkerquest:|r options will open after combat.")
+            print("|cFFFFD100HandkerSheaf:|r options will open after combat.")
             CFQ.openOptionsAfterCombat = true
             return
         end
@@ -9855,7 +9867,7 @@ SlashCmdList["HANDKERQUEST"] = function(msg)
         P.ApplyStyle()
         UpdateShoppingListUI()
         CFQ.RefreshOptionsPanel()
-        print("|cFFFFD100Handkerquest:|r Field Tally look: " .. P.GetStyle().label)
+        print("|cFFFFD100HandkerSheaf:|r Field Tally look: " .. P.GetStyle().label)
     elseif cmd == "options" or cmd == "opt" or cmd == "config" or cmd == "settings" then
         CFQ.OpenOptions()
     else
