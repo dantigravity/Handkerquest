@@ -31,6 +31,8 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
     not the raw SafeRect: the writing must stay off the borders)
   - `::Icon(tga, png, 64, 3)` → icon (64, the AddOns-list icon, `.toc` `IconTexture`: a rag scrap with soot
     writing and a brown quill; drawn at 4x and averaged down so it reads at 16-20px)
+  - `::EdgeProfile(tga)` prints a sheet image's bottom / right edge as a Lua table → `P.SHEET_EDGES[look]`
+    (the quick tabs sit on the real edge; re-run after regenerating a sheet texture).
 
   Re-measure `inset` / `imageCorner` with `[TexGen]::SafeRect(tga)` after regenerating.
   `media/` (CurseForge GIFs) and `tools/` are excluded from the package in `.pkgmeta`.
@@ -226,10 +228,69 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
     `P.FORME_SHARE` (half) of it (`P.ForMeReserve`); quest lines scroll as before.
   - Open tasks keep the tally up when there are no quest lines anywhere; "...only when something is nearby"
     still puts it away (tasks don't count as nearby). Options: "For me" checkbox (`parchmentOpts.forMe`,
-    default on; off = nothing drawn, no room kept, tasks kept). `smoke.lua` keeps it off for the older checks.
+    default on; off = nothing drawn, no room kept, tasks kept, no Journal page). `smoke.lua` keeps it off
+    for the older checks.
+  - **Two choices at the bottom** (user decision: a lone box/quill switch read as a plain checkbox and went
+    unnoticed): "[box] add a task..." (`f.forMeWrite`) and "[quill] write a note..." (`f.forMeNote`), side by
+    side, each only as wide as its words; shorter words ("a task" / "a note", then "task" / "note") when the
+    page is narrow, always clear of the dog-ear. The player calls journal entries **notes**: use that word
+    on screen. `P.StartWriting(kind)` sets `CFQ.notes.writeMode` (saved) and opens the box.
+    While typing, the choices step aside and the glyph in front (`wl.mode`, `P.WRITE_GLYPHS`,
+    `P.DrawWriteGlyph`) shows what it becomes; clicking it switches task / note without ending the writing
+    (focus-lost ignores a click on it). A note is stamped and leaves "For me": its words fly off to the page
+    Journal tab (`P.FlyToJournal` / `P.AnimateFly`, `P.FLY_DUR`), which tugs as it lands.
+  - **Writing boxes hold the keyboard** (bug fix: in the Journal, keys went to the action bars):
+    `P.FocusBox` enables the keyboard, focuses, and focuses again a frame later; a focus loss within
+    `P.FOCUS_GRACE` (0.3 s) of opening is the opening click, so the box takes focus back (`P.FocusGrace`)
+    instead of closing; clicking into a box always focuses it. Tests step `NOW` past the grace before
+    simulating "clicking away".
+- **Journal** (built, step 2 of the notes plan): the **last page of the pile** while "For me" is on
+  (`P.JournalArea`, key `P.JOURNAL_KEY`, appended to `P.areas` in `UpdateShoppingListUI` after
+  `P.BuildAreas`, so never merged or counted in `P.MAX_AREAS`). Reached with its quill tab, the dog-ear
+  or `/hanky journal`; `/hanky entry <text>` writes one. While it's the open page the tally stays
+  up even with nothing to gather.
+  - `CFQ.notes.journal` = entries in written order (`text`, `t`, `when`, `place`, `owner`; loaded by
+    `CFQ.LoadNoteFields`, shared with tasks), drawn **newest first** (`P.RenderJournal`, own row pool
+    `f.journalRows`): a stamp line in the sub ink ("10 Nov 21:40  ·  Goldshire", `P.EntryStamp`) over the
+    words in the ink (wet ink halo), a ruled line between entries. Mouse wheel scrolls (`shoppingScrollOffset`).
+    Full (`P.NOTE_MAX_ENTRIES` = 1000): the oldest makes room.
+  - Writing: "write a note..." on top (quill glyph, only as wide as its words). One **multi-line** box
+    (`f.journalEdit`, `P.journalEditing`, at least `P.JOURNAL_EDIT_LINES` tall, up to
+    `P.ENTRY_MAX_LETTERS` = 2000): Enter keeps, **Shift-Enter = new line**, Escape cancels, clicking away
+    keeps. Enter checks the character before the cursor and removes a line break the client put in itself
+    (multi-line boxes may or may not add one: check in game). `CFQ.CleanEntryText` keeps line breaks (at
+    most one blank line), strips `|`.
+  - Click an entry = write more in its place (empty = rubbed out); shift-click = rub out. **Click the place
+    in a stamp** = only entries written there (`P.journalFilter`; shown after the heading as "· Fargodeep
+    Mine" and in the footer); click again = all.
+  - Walking into a new area never turns the page while you're writing (`P.IsWriting` in `P.CheckAreaChange`).
+  - Not yet: the hover map with a dot where it was written (`CFQ.ShowMapPreview` is quest-only),
+    "with", the insert menu, auto entries.
+- **Quick tabs** (built, step 3 of the notes plan). **Knots were tried and dropped** (user feedback: too
+  small and nothing like the material; procedural knot art + rotation by texture coords): **don't bring
+  them back**. Instead two index tabs **cut from the sheet itself** (user decision; still no ribbons), shown
+  while "For me" is on (`P.LayoutTabs` every redraw, after `P.LayoutPads`; `f.tabs.near` / `f.tabs.journal`).
+  - On the sheet's **right edge, just below the close button**: "Near me" (inked compass) above "Journal"
+    (inked quill), `P.TAB_H` tall, `P.TAB_GAP` apart (`P.TAB_GLYPHS`, drawn by `P.DrawTabGlyph` in the ink,
+    red on hover, faded when not open).
+  - Each tab is **a strip of the look's own sheet image** (`st.image`, texcoords = the sheet's rows at that
+    height, unstretched) ending just past the material's edge, moved out by `P.TAB_OUT` (+ `P.TAB_OPEN` for the
+    open page) and **tucked under the top sheet** (frame level between the pages underneath and the top
+    sheet), so only the part past the edge shows and its end is the material's real edge (torn threads,
+    the leaf's curve, the slate's rim). Drawn looks: the paper colour. A closed tab sits a shade back.
+    Only the part sticking out takes the mouse (`SetHitRectInsets`). Hover slides it out `P.TAB_HOVER`
+    (`P.AnimateTabs` while `f.tabsMoving`).
+  - The edge comes from `P.SHEET_EDGES[look]` (right / bottom edge profiles measured from each sheet TGA with
+    `[TexGen]::EdgeProfile`, read by `P.EdgeAt`, which skips rows with no material). Drawn looks use the
+    frame's edge; arcane (no edge) uses half its margin.
+  - Click = turn to its page (`P.TabClick`); on that page already = back to where the tab took you from
+    (`P.tabBack`). Tooltip names the page (Journal: note count) and what a click does.
+  - A note written in "For me" flies into the Journal tab, which gives a little tug as it lands (the
+    dog-ear flicks only when the tabs are off).
 
 ## Planned: notes and journal (design agreed with the user, Nov 2026)
-Private notes inside the tally. **Step 1 ("For me" tasks + writing line) is built** — see "Design rules";
+Private notes inside the tally. **Steps 1-3 ("For me" tasks + writing line, Journal page + entries +
+the task / entry switch, the quick tabs) are built** — see "Design rules";
 the rest is not built yet: build to this, and move each part into "Design rules" as it lands. Items marked
 **Open** still need the user's call.
 
@@ -245,7 +306,7 @@ the rest is not built yet: build to this, and move each part into "Design rules"
 **The writing line** (last line of "For me": "+ write..."): one input, Enter saves, Escape cancels.
 - A small inked switch in front: **box = task** (stays in "For me", never moves on its own), **quill =
   entry** (stamped, then leaves "For me" and goes to the Journal). The entry visibly flies off into the
-  Journal knot and the knot nudges, so it never looks deleted.
+  Journal tab and the tab tugs, so it never looks deleted. (Built as two choices: see "Design rules".)
 - A **"with" glyph** (two figures): opt-in per entry (remembers the last choice) — stamps the party/raid
   names ("with Sam, Rosie"; cap ~5, then "and N others"). Faded and inert when solo. Optional: target name.
 - **Right-click while typing = quick-insert menu**, our own menu in the look's ink/material (not Blizzard's
@@ -275,18 +336,9 @@ the rest is not built yet: build to this, and move each part into "Design rules"
   "Done: ..." to the Journal (off by default). Right-click a task → "Move to journal" (needs the step-4 menu;
   right-click currently re-writes).
 
-**Knots = the two quick tabs** (user decision; replaces the idea of side tabs — **no ribbons**, minimal):
-- **Top-right knot = "Near me"** (the front page): hangs off the sheet's right edge just outside the
-  corner, clear of the close button (`closeBtn`, TOPRIGHT of the chrome).
-- **Bottom-right knot = Journal**: hangs from the bottom edge **just left of the dog-ear, never
-  overlapping it**. The resize grip stays bottom-left; the dog-ear still turns area pages.
-- **On hover a knot dangles** like it was tapped (swings round its tie point, a few damped swings), the
-  way the dog-ear lifts on hover. Tooltip names the page. Clicking the knot of the page you're on flips
-  back to where you were.
-- Cloth/paper looks: a real knot of the material (a procedural knot shape from `tools/TexGen.cs`,
-  textured with the look's own image like `P.DrawMaterialFold`). Rigid looks: a knot **mark** in their
-  lettering (chalked / carved / gilded / engraved / a glowing arcane loop) that glints instead of
-  swinging. See-through window: an inked knot glyph.
+**Quick tabs** (built; see "Design rules"). Knots (a knot tied in the corner, dangling on hover) were the
+first plan; built, tried in game and dropped by the user (too small, didn't look like the material).
+Replaced by index tabs cut from the sheet itself, no ribbons.
 
 **Saved data** (`QRF_SavedState`, account-wide; `parchmentOpts` only loads booleans, so a new key):
 `notes = { tasks = {...}, journal = {...}, recentPlayers = {...}, recentKills = {...}, recentLoot = {...} }`.
@@ -315,8 +367,9 @@ Keep it from turning into spam: auto entries are drawn differently (faded ink or
 player's own writing stands out; similar events within a few minutes merge into one entry ("Looted 3 rare
 items in the Fargodeep Mine"); everything is **off by default except level ups and first-time rares**.
 
-**Build order**: ~~"For me" tasks + writing line~~ (done) → Journal page + entries/stamps (+ the task/entry
-switch on the writing line) → knots → "with" + quick-insert menu → auto-recording.
+**Build order**: ~~"For me" tasks + writing line~~ (done) → ~~Journal page + entries/stamps (+ the task/entry
+switch on the writing line)~~ (done; hover map for entries still to do) → ~~quick tabs~~ (done, cut from the sheet; knots dropped) → "with" + quick-insert
+menu → auto-recording.
 
 ## Code conventions
 - Main chunk is near Lua's 200-local limit: put new state/functions in the `CFQ` or `P` (parchment)

@@ -1419,4 +1419,51 @@ public static class TexGen
             }
         Save(img, tga, png);
     }
+
+    // ---------------------------------------------------------------- sheet edges (the quick tabs)
+    static double[,,] LoadTga(string path)
+    {
+        byte[] b = File.ReadAllBytes(path);
+        int idLen = b[0];
+        int W = b[12] | (b[13] << 8), H = b[14] | (b[15] << 8);
+        bool top = (b[17] & 0x20) != 0;
+        var img = new double[W, H, 4];
+        int o = 18 + idLen;
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                int row = top ? y : H - 1 - y;
+                int i = o + (row * W + x) * 4;
+                img[x, y, 0] = b[i + 2] / 255.0; img[x, y, 1] = b[i + 1] / 255.0; img[x, y, 2] = b[i] / 255.0; img[x, y, 3] = b[i + 3] / 255.0;
+            }
+        return img;
+    }
+
+    // Where a sheet image's material ends, for hanging the knots on its real edge: the bottom edge at
+    // x = 0, 0.05 .. 1 (fraction of the height up from the image's bottom) and the right edge at
+    // y = 0, 0.05 .. 1 (fraction of the width in from its right). Printed as a Lua table for P.KNOT_EDGES.
+    public static string EdgeProfile(string tgaPath)
+    {
+        var img = LoadTga(tgaPath);
+        int W = img.GetLength(0), H = img.GetLength(1);
+        var sb = new System.Text.StringBuilder();
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        sb.Append("b = { ");
+        for (int k = 0; k <= 20; k++)
+        {
+            int x = Math.Min(W - 1, (int)(k / 20.0 * (W - 1)));
+            int y = H - 1;
+            while (y > 0 && img[x, y, 3] < 0.6) y--;
+            sb.Append(((H - 1 - y) / (double)H).ToString("0.000", inv)).Append(k < 20 ? ", " : " }, ");
+        }
+        sb.Append("r = { ");
+        for (int k = 0; k <= 20; k++)
+        {
+            int y = Math.Min(H - 1, (int)(k / 20.0 * (H - 1)));
+            int x = W - 1;
+            while (x > 0 && img[x, y, 3] < 0.6) x--;
+            sb.Append(((W - 1 - x) / (double)W).ToString("0.000", inv)).Append(k < 20 ? ", " : " }");
+        }
+        return sb.ToString();
+    }
 }

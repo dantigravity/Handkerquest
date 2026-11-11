@@ -3779,6 +3779,8 @@ function P.OnUpdate(f, elapsed)
         P.PulseHalo(f, GetTime())
     end
     if f.sheenOn then P.AnimateSheen(f, GetTime()) end
+    if f.fly then P.AnimateFly(f, dt) end
+    if f.tabsMoving then P.AnimateTabs(f, dt) end
 
     local c = f.corner
     if c and c:IsShown() then
@@ -3808,7 +3810,7 @@ function P.CheckAreaChange(f)
     P.lastAreaSig = sig
     P.currentGlowUntil = GetTime() + 7
 
-    if CFQ.parchmentOpts.autoFrontOnAreaChange and P.selectedKey ~= P.CURRENT_KEY then
+    if CFQ.parchmentOpts.autoFrontOnAreaChange and P.selectedKey ~= P.CURRENT_KEY and not P.IsWriting() then
         if f:IsShown() and not f.shuffle then
             f.shuffle = { t = 0, dur = 0.55, key = P.CURRENT_KEY, swapped = false, dir = -1 }
         elseif not f.shuffle then
@@ -4980,6 +4982,7 @@ function P.Render(f)
     for _, row in ipairs(shoppingListRowPool) do
         row:Hide()
     end
+    if not area.isJournal then P.HideJournal(f) end
 
     local pageIdx, pageCount = P.GetAreaIndex(area.key), #P.areas
     local pageStr = (pageCount > 1) and string.format("  ·  page %d of %d", pageIdx, pageCount) or ""
@@ -4988,6 +4991,7 @@ function P.Render(f)
     local st = P.GetStyle()
     if f.styleKey ~= st.key then P.ApplyStyle(f) end
     P.LayoutPads(f)
+    P.LayoutTabs(f)
     local padL, padT, padR, padB = P.GetPads(f)
     for _, b in pairs(f.quickBtns or {}) do P.DrawQuickButton(b) end      -- in this look's ink
 
@@ -5004,7 +5008,7 @@ function P.Render(f)
     else
         f.titleFS:SetTextColor(st.title[1], st.title[2], st.title[3], 1)
     end
-    if area.isCurrent and area.subtitle and area.subtitle ~= "" then
+    if (area.isCurrent or area.isJournal) and area.subtitle and area.subtitle ~= "" then
         f.titleFS:SetText(title .. "  |c" .. P.Hex(st.sub) .. "· " .. area.subtitle .. "|r")
     else
         f.titleFS:SetText(title)
@@ -5014,6 +5018,12 @@ function P.Render(f)
     local ruleW = math.min(w - 20 - padL - padR, math.max(60, (f.titleFS:GetStringWidth() or 80) + 22))
     P.DrawStroke(f.titleRule, f.chrome, 8 + padL, -25 - padT, 8 + padL + ruleW, -24 - padT, 1.2, 0.70)
     P.DrawStroke(f.titleRule2, f.chrome, 14 + padL, -27.5 - padT, 8 + padL + ruleW * 0.55, -27 - padT, 0.7, 0.40)
+
+    if area.isJournal then
+        P.RenderJournal(f, area, math.max(150, w - 12 - padL - padR),
+            math.max(55, (f:GetHeight() or 175) - 45 - padT - padB), pageStr)
+        return
+    end
 
     if #items == 0 then
         P.HideKindHeadings(f, 1)
@@ -5242,6 +5252,7 @@ UpdateShoppingListUI = function()
     end
 
     local areas = P.BuildAreas()
+    if CFQ.parchmentOpts.forMe then table.insert(areas, P.JournalArea()) end
     P.areas = areas
     local current = areas[1]
     P.CheckAreaChange(f)
@@ -5257,7 +5268,7 @@ UpdateShoppingListUI = function()
 
     -- whether to put the tally away is judged on everything it could list, so filtering it down to
     -- nothing (even with "hide when nothing is nearby") never takes its buttons away
-    if P.ShouldHideUnfiltered(areas) then
+    if P.ShouldHideUnfiltered(areas) and P.selectedKey ~= P.JOURNAL_KEY then
         f:Hide()
         return
     end
@@ -5279,37 +5290,51 @@ end
 --               owner ("Name-Realm") }, ... }   in the order written
 --   forMeFolded = true while the section is folded to its heading
 -- Drawn like tally lines (inked box, quill tick, strike), from their own row pool (f.forMeRows).
-CFQ.notes = CFQ.notes or { tasks = {}, forMeFolded = false }
+CFQ.notes = CFQ.notes or { tasks = {}, journal = {}, forMeFolded = false, writeMode = "task" }
 P.NOTE_MAX_LETTERS = 200
 P.NOTE_MAX_TASKS = 200
 P.FORME_GAP = 4                -- space between the quest lines and the "For me" heading
 P.FORME_SHARE = 0.5            -- with quest lines on the page, "For me" keeps at most this much of it
 
+-- One saved task / entry's fields, checked one by one
+function CFQ.LoadNoteFields(t)
+    local out = {
+        text = t.text, done = (t.done == true),
+        t = (type(t.t) == "number") and t.t or nil,
+        when = (type(t.when) == "string") and t.when or nil,
+        owner = (type(t.owner) == "string") and t.owner or nil,
+    }
+    if type(t.place) == "table" then
+        local pl = t.place
+        out.place = {
+            mapID = (type(pl.mapID) == "number") and pl.mapID or nil,
+            x = (type(pl.x) == "number") and pl.x or nil,
+            y = (type(pl.y) == "number") and pl.y or nil,
+            zone = (type(pl.zone) == "string") and pl.zone or nil,
+            subzone = (type(pl.subzone) == "string") and pl.subzone or nil,
+        }
+    end
+    return out
+end
+
 -- Saved notes, checked field by field (a broken save never stops the addon loading)
 function CFQ.LoadNotes(saved)
-    local notes = { tasks = {}, forMeFolded = false }
+    local notes = { tasks = {}, journal = {}, forMeFolded = false, writeMode = "task" }
     if type(saved) == "table" then
         notes.forMeFolded = (saved.forMeFolded == true)
+        if saved.writeMode == "entry" then notes.writeMode = "entry" end
+        if type(saved.journal) == "table" then
+            for _, e in ipairs(saved.journal) do
+                if type(e) == "table" and type(e.text) == "string" and e.text ~= "" and #notes.journal < (P.NOTE_MAX_ENTRIES or 1000) then
+                    local entry = CFQ.LoadNoteFields(e)
+                    table.insert(notes.journal, entry)
+                end
+            end
+        end
         if type(saved.tasks) == "table" then
             for _, t in ipairs(saved.tasks) do
                 if type(t) == "table" and type(t.text) == "string" and t.text ~= "" and #notes.tasks < P.NOTE_MAX_TASKS then
-                    local task = {
-                        text = t.text, done = (t.done == true),
-                        t = (type(t.t) == "number") and t.t or nil,
-                        when = (type(t.when) == "string") and t.when or nil,
-                        owner = (type(t.owner) == "string") and t.owner or nil,
-                    }
-                    if type(t.place) == "table" then
-                        local pl = t.place
-                        task.place = {
-                            mapID = (type(pl.mapID) == "number") and pl.mapID or nil,
-                            x = (type(pl.x) == "number") and pl.x or nil,
-                            y = (type(pl.y) == "number") and pl.y or nil,
-                            zone = (type(pl.zone) == "string") and pl.zone or nil,
-                            subzone = (type(pl.subzone) == "string") and pl.subzone or nil,
-                        }
-                    end
-                    table.insert(notes.tasks, task)
+                    table.insert(notes.tasks, CFQ.LoadNoteFields(t))
                 end
             end
         end
@@ -5431,12 +5456,39 @@ function P.ToggleForMeFold()
     P.ForMeChanged()
 end
 
+-- Gives a writing box the keyboard so typing never reaches the action bars: now, and again a frame later
+-- (the click that opened it may still take focus away). Losing focus within P.FOCUS_GRACE seconds of
+-- opening is that click, not the player clicking away: the box takes it back (P.FocusGrace).
+P.FOCUS_GRACE = 0.3
+function P.FocusBox(eb, stillWanted)
+    if not eb then return end
+    if eb.EnableKeyboard then eb:EnableKeyboard(true) end
+    eb.focusAt = GetTime()
+    eb:Show()
+    eb:SetFocus()
+    if C_Timer and C_Timer.After then
+        C_Timer.After(0, function()
+            if stillWanted() and eb:IsShown() and not (eb.HasFocus and eb:HasFocus()) then eb:SetFocus() end
+        end)
+    end
+end
+
+function P.FocusGrace(eb)
+    if eb.focusAt and (GetTime() - eb.focusAt) < P.FOCUS_GRACE and eb:IsShown() then
+        eb:SetFocus()
+        return true
+    end
+    return false
+end
+
 -- Writing: P.forMeEditing = { index = n } while re-writing task n, { } while writing a new one, nil otherwise
 function P.EnsureForMeEditBox(f)
     if f.forMeEdit then return f.forMeEdit end
     local eb = CreateFrame("EditBox", nil, f.content)
     P.SetInkFont(eb, "item")              -- a font first: WoW won't take text into a box without one
     eb:SetAutoFocus(false)
+    eb:EnableMouse(true)
+    eb:SetScript("OnMouseDown", function(self) self:SetFocus() end)   -- click into it: the keyboard is its again
     eb:SetMultiLine(false)
     eb:SetMaxLetters(P.NOTE_MAX_LETTERS)
     eb:SetHeight(18)
@@ -5449,7 +5501,12 @@ function P.EnsureForMeEditBox(f)
     eb:SetScript("OnEscapePressed", function() P.CancelForMeEdit() end)
     -- clicking away keeps what was written (the redraw waits a frame: the click that took the focus
     -- away may be on another line)
-    eb:SetScript("OnEditFocusLost", function() if P.forMeEditing then P.CommitForMeEdit(true) end end)
+    eb:SetScript("OnEditFocusLost", function(self)
+        local wl = f.forMeWrite
+        if wl and wl.mode and wl.mode.IsMouseOver and wl.mode:IsMouseOver() then return end   -- switching task / note
+        if P.forMeEditing and P.FocusGrace(self) then return end
+        if P.forMeEditing then P.CommitForMeEdit(true) end
+    end)
     -- hidden with the tally (put away, page turned): never keep the keyboard
     eb:SetScript("OnHide", function(self) if self.HasFocus and self:HasFocus() then self:ClearFocus() end end)
     eb:Hide()
@@ -5460,14 +5517,14 @@ end
 function P.BeginForMeEdit(index)
     local f = shoppingListFrame
     if not f then return end
+    if P.journalEditing then P.CommitJournalEdit() end
     local eb = P.EnsureForMeEditBox(f)
     local task = index and CFQ.notes.tasks[index]
     P.SetInkFont(eb, "item")
     eb:SetText(task and task.text or "")
     P.forMeEditing = { index = task and index or nil }
     P.Render(f)
-    eb:Show()
-    eb:SetFocus()
+    P.FocusBox(eb, function() return P.forMeEditing ~= nil end)
     if eb.HighlightText and task then eb:HighlightText() end
 end
 
@@ -5485,6 +5542,9 @@ function P.CommitForMeEdit(deferRedraw)
         if task then
             if text == "" then table.remove(CFQ.notes.tasks, editing.index) else task.text = text end
         end
+    elseif P.WriteMode() == "entry" then
+        local e = CFQ.AddEntry(text)
+        if e and f then P.FlyToJournal(f, e.text, 20, (f.forMeWriteY or 0) - 2) end
     else
         CFQ.AddTask(text)
     end
@@ -5494,6 +5554,27 @@ function P.CommitForMeEdit(deferRedraw)
     else
         P.ForMeChanged()
     end
+end
+
+-- "add a task" / "write a note" on the front page: start writing that kind
+function P.StartWriting(kind)
+    CFQ.notes.writeMode = (kind == "entry") and "entry" or "task"
+    SaveState()
+    P.BeginForMeEdit(nil)
+end
+
+-- The switch's tooltip: what the writing line makes now
+function P.ModeTooltip(b)
+    GameTooltip:SetOwner(b, "ANCHOR_TOP")
+    if P.WriteMode() == "entry" then
+        GameTooltip:AddLine("Writing: a note", 1, 0.82, 0)
+        GameTooltip:AddLine("Stamped with the time and place, then kept in your Journal (the quill tab on the right).", 0.9, 0.9, 0.9, true)
+    else
+        GameTooltip:AddLine("Writing: a task", 1, 0.82, 0)
+        GameTooltip:AddLine("Stays here in For me until you tick it off.", 0.9, 0.9, 0.9, true)
+    end
+    GameTooltip:AddLine("Click: make it " .. ((P.WriteMode() == "entry") and "a task" or "a note"), 0.65, 0.65, 0.65)
+    GameTooltip:Show()
 end
 
 -- Where a task is in the list now (rows remember their task, not a position that can shift)
@@ -5549,6 +5630,7 @@ function P.HideForMe(f)
     for _, row in ipairs(f.forMeRows or {}) do row:Hide() end
     if f.forMeHead then f.forMeHead:Hide() end
     if f.forMeWrite then f.forMeWrite:Hide() end
+    if f.forMeNote then f.forMeNote:Hide() end
     if f.forMeEdit then
         if P.forMeEditing then P.CommitForMeEdit() end
         f.forMeEdit:Hide()
@@ -5727,6 +5809,7 @@ function P.RenderForMe(f, area, y, contentW, contentH)
     if folded then
         P.DrawForMeHeading(f, headY, contentW, st, 0)
         if f.forMeWrite then f.forMeWrite:Hide() end
+        if f.forMeNote then f.forMeNote:Hide() end
         if eb then eb:Hide() end
         return
     end
@@ -5775,38 +5858,108 @@ function P.RenderForMe(f, area, y, contentW, contentH)
         wl:RegisterForClicks("LeftButtonUp")
         wl.highlight = wl:CreateTexture(nil, "HIGHLIGHT")
         wl.highlight:SetAllPoints()
-        wl.plus = wl:CreateFontString(nil, "OVERLAY")
-        wl.plus:SetPoint("TOPLEFT", wl, "TOPLEFT", 3, -1)
+        -- the switch in front: a box (task) or a quill (entry); click to change what you're writing
+        wl.mode = CreateFrame("Button", nil, wl)
+        wl.mode:SetSize(15, 15)
+        wl.mode:SetPoint("TOPLEFT", wl, "TOPLEFT", 2, -1)
+        wl.mode:SetFrameLevel((f.baseLevel or 30) + 25)
+        wl.mode:SetScript("OnClick", function(self)
+            if not P.forMeEditing then P.StartWriting("task") return end      -- not typing: same as the line
+            CFQ.notes.writeMode = (P.WriteMode() == "entry") and "task" or "entry"
+            SaveState()
+            P.Render(f)
+            P.ModeTooltip(self)
+            if P.forMeEditing and f.forMeEdit then P.FocusBox(f.forMeEdit, function() return P.forMeEditing ~= nil end) end  -- keep writing
+        end)
+        wl.mode:SetScript("OnEnter", function(self)
+            self.hover = true
+            P.DrawWriteGlyph(self, self.glyphKind or "task", true)
+            if P.forMeEditing then P.ModeTooltip(self) else wl:GetScript("OnEnter")(wl) end
+        end)
+        wl.mode:SetScript("OnLeave", function(self) self.hover = false; P.DrawWriteGlyph(self, self.glyphKind or "task", false); GameTooltip:Hide() end)
         wl.fs = wl:CreateFontString(nil, "OVERLAY")
         wl.fs:SetPoint("TOPLEFT", wl, "TOPLEFT", 20, -2)
         wl.fs:SetJustifyH("LEFT")
         wl.fs:SetWordWrap(false)
-        wl:SetScript("OnClick", function() P.BeginForMeEdit(nil) end)
+        wl:SetScript("OnClick", function() P.StartWriting("task") end)
         wl:SetScript("OnEnter", function(self)
             P.PlaceTooltip(self)
-            GameTooltip:AddLine("Write a task for yourself", 1, 0.82, 0)
-            GameTooltip:AddLine("Enter: keep it  |  Escape: never mind", 0.65, 0.65, 0.65)
-            GameTooltip:AddLine("Also: /hanky task <what to do>", 0.65, 0.65, 0.65)
+            GameTooltip:AddLine("Add a task", 1, 0.82, 0)
+            GameTooltip:AddLine("Stays here in For me until you tick it off.", 0.9, 0.9, 0.9, true)
+            GameTooltip:AddLine("Enter: keep it  |  Escape: never mind  |  Also: /hanky task <what to do>", 0.65, 0.65, 0.65, true)
             GameTooltip:Show()
         end)
         wl:SetScript("OnLeave", function() GameTooltip:Hide() end)
         f.forMeWrite = wl
     end
+    -- "[quill] write a note": a note is stamped and goes to the Journal (the last page)
+    local nl = f.forMeNote
+    if not nl then
+        nl = CreateFrame("Button", nil, f.content)
+        nl:RegisterForClicks("LeftButtonUp")
+        nl.highlight = nl:CreateTexture(nil, "HIGHLIGHT")
+        nl.highlight:SetAllPoints()
+        nl.glyph = CreateFrame("Frame", nil, nl)
+        nl.glyph:SetSize(15, 15)
+        nl.glyph:SetPoint("TOPLEFT", nl, "TOPLEFT", 2, -1)
+        nl.fs = nl:CreateFontString(nil, "OVERLAY")
+        nl.fs:SetPoint("TOPLEFT", nl, "TOPLEFT", 20, -2)
+        nl.fs:SetJustifyH("LEFT")
+        nl.fs:SetWordWrap(false)
+        nl:SetScript("OnClick", function() P.StartWriting("entry") end)
+        nl:SetScript("OnEnter", function(self)
+            P.DrawWriteGlyph(self.glyph, "entry", true)
+            P.PlaceTooltip(self)
+            GameTooltip:AddLine("Write a note", 1, 0.82, 0)
+            GameTooltip:AddLine("Stamped with the time and where you are, then kept in your Journal (the quill tab on the right).", 0.9, 0.9, 0.9, true)
+            GameTooltip:AddLine("Enter: keep it  |  Escape: never mind  |  Also: /hanky note <text>", 0.65, 0.65, 0.65, true)
+            GameTooltip:Show()
+        end)
+        nl:SetScript("OnLeave", function(self) P.DrawWriteGlyph(self.glyph, "entry", false); GameTooltip:Hide() end)
+        f.forMeNote = nl
+    end
     local hl = st.highlight
     wl.highlight:SetColorTexture(hl[1], hl[2], hl[3], hl[4])
-    P.SetInkFont(wl.plus, "item")
+    nl.highlight:SetColorTexture(hl[1], hl[2], hl[3], hl[4])
     P.SetInkFont(wl.fs, "item")
-    wl.plus:SetTextColor(st.faded[1], st.faded[2], st.faded[3], 1)
+    P.SetInkFont(nl.fs, "item")
     wl.fs:SetTextColor(st.faded[1], st.faded[2], st.faded[3], 1)
-    wl.plus:SetText("+")
+    nl.fs:SetTextColor(st.faded[1], st.faded[2], st.faded[3], 1)
     local writingNew = editing and not editing.index
-    wl.fs:SetText(writingNew and "" or ((#tasks == 0) and "add a task for yourself..." or "add a task..."))
-    local wordsW = math.min(textW - P.CORNER_MAX, math.ceil(wl.fs:GetStringWidth() or 0))
-    wl.fs:SetWidth(math.max(1, wordsW))
+    f.forMeWriteY = y
+    local room = textW - P.CORNER_MAX          -- both choices stay clear of the dog-ear
     wl:ClearAllPoints()
     wl:SetPoint("TOPLEFT", f.content, "TOPLEFT", 0, y)
-    wl:SetWidth(20 + wordsW + 6)
     wl:SetHeight(writeH)
+    if writingNew then
+        -- typing: the glyph in front says (and switches) what this becomes; the choices step aside
+        P.DrawWriteGlyph(wl.mode, P.WriteMode(), wl.mode.hover)
+        wl.fs:SetText("")
+        wl.fs:SetWidth(1)
+        wl:SetWidth(20)
+        nl:Hide()
+    else
+        -- two choices side by side, each only as wide as its words; shorter words when the page is narrow
+        P.DrawWriteGlyph(wl.mode, "task", wl.mode.hover)
+        P.DrawWriteGlyph(nl.glyph, "entry", false)
+        local GAP = 10
+        local labels = { { "add a task...", "write a note..." }, { "a task", "a note" }, { "task", "note" } }
+        local w1, w2
+        for _, pair in ipairs(labels) do
+            wl.fs:SetText(pair[1]); nl.fs:SetText(pair[2])
+            w1 = math.ceil(wl.fs:GetStringWidth() or 0)
+            w2 = math.ceil(nl.fs:GetStringWidth() or 0)
+            if (20 + w1 + 6) + GAP + (20 + w2 + 6) <= room then break end
+        end
+        wl.fs:SetWidth(math.max(1, w1))
+        nl.fs:SetWidth(math.max(1, w2))
+        wl:SetWidth(20 + w1 + 6)
+        nl:ClearAllPoints()
+        nl:SetPoint("TOPLEFT", f.content, "TOPLEFT", 20 + w1 + 6 + GAP, y)
+        nl:SetWidth(20 + w2 + 6)
+        nl:SetHeight(writeH)
+        nl:Show()
+    end
     wl:Show()
 
     -- the writing box, over the line being written
@@ -5824,6 +5977,735 @@ function P.RenderForMe(f, area, y, contentW, contentH)
     elseif eb then
         eb:Hide()
     end
+end
+
+-- ----------------------------------------------------------------------------
+-- JOURNAL: longer entries, newest first, on the last page of the pile
+-- ----------------------------------------------------------------------------
+-- CFQ.notes.journal = { { text, t, when, place, owner }, ... } in the order written (drawn newest first).
+-- Written from the "For me" line with the quill switch (CFQ.notes.writeMode = "entry"), or on the Journal
+-- page itself ("write an entry..."). The page is reached with its quill tab, the dog-ear or
+-- /hanky journal. Not an area page: never merged, never counted in P.MAX_AREAS.
+P.JOURNAL_KEY = "JOURNAL"
+P.ENTRY_MAX_LETTERS = 2000
+P.NOTE_MAX_ENTRIES = 1000
+P.JOURNAL_EDIT_LINES = 4          -- the writing box is at least this many lines tall
+P.FLY_DUR = 0.7                   -- an entry written in "For me" flies off to the page corner this long
+
+-- Writing glyphs (inked strokes like the basket / sword toggles): a box = a task, a quill = an entry
+P.WRITE_GLYPHS = {
+    task = {       -- an empty hand-inked box, like a task line's
+        { 2, -2.5, 11.5, -2, 1.05 }, { 11.5, -2, 11.8, -11.5, 1.05 }, { 11.8, -11.5, 2.2, -11.8, 1.05 }, { 2.2, -11.8, 2, -2.5, 1.05 },
+    },
+    entry = {      -- a quill: shaft from the nib (bottom-left) up to the right, vanes along it
+        { 1.5, -13.5, 12.5, -2, 1.1 },                                     -- shaft
+        { 5.5, -9.2, 7.8, -4.5, 0.8 }, { 7.8, -4.5, 12.5, -2, 0.8 },        -- upper vane
+        { 5.5, -9.2, 10.4, -7.6, 0.8 }, { 10.4, -7.6, 12.5, -2, 0.8 },      -- lower vane
+        { 1.5, -13.5, 2.6, -11.2, 1.6 },                                    -- nib
+    },
+}
+
+-- What the player wrote for an entry: several lines allowed, no "|" (colour / link escapes)
+function CFQ.CleanEntryText(s)
+    s = tostring(s or "")
+    s = string.gsub(s, "|", "")
+    s = string.gsub(s, "\r", "")
+    s = string.gsub(s, "\t", " ")
+    s = string.gsub(s, "\n[ ]*\n[%s]*\n", "\n\n")          -- at most one blank line in a row
+    s = string.match(s, "^%s*(.-)%s*$") or ""
+    if string.len(s) > P.ENTRY_MAX_LETTERS then s = string.sub(s, 1, P.ENTRY_MAX_LETTERS) end
+    return s
+end
+
+function CFQ.AddEntry(text)
+    text = CFQ.CleanEntryText(text)
+    if text == "" then return nil end
+    local journal = CFQ.notes.journal
+    while #journal >= P.NOTE_MAX_ENTRIES do table.remove(journal, 1) end    -- the oldest makes room
+    local t, when = CFQ.NoteTime()
+    local e = { text = text, t = t, when = when, place = CFQ.HerePlace(), owner = CFQ.NoteOwner() }
+    table.insert(journal, e)
+    return e
+end
+
+function P.EntryPlaceName(e)
+    local pl = e and e.place
+    return pl and (pl.subzone or pl.zone) or nil
+end
+
+function P.EntryStamp(e)
+    local where = P.EntryPlaceName(e)
+    if e.when and where then return e.when .. "  ·  " .. where end
+    return e.when or where or ""
+end
+
+function P.WriteMode()
+    return (CFQ.notes.writeMode == "entry") and "entry" or "task"
+end
+
+function P.IsWriting()
+    return (P.forMeEditing or P.journalEditing) and true or false
+end
+
+-- The Journal's page in the pile (P.areas): always the last one while "For me" is on
+function P.JournalArea()
+    return { key = P.JOURNAL_KEY, title = "Journal", isJournal = true, items = {}, subtitle = P.journalFilter }
+end
+
+-- The entries shown: newest first, only those written in P.journalFilter's place if one is picked
+function P.JournalList()
+    local list = {}
+    local journal = CFQ.notes.journal
+    for i = #journal, 1, -1 do
+        local e = journal[i]
+        if not P.journalFilter or P.EntryPlaceName(e) == P.journalFilter then table.insert(list, e) end
+    end
+    return list
+end
+
+-- Opens the tally on the Journal page (/hanky journal)
+function P.OpenJournal()
+    if not CFQ.parchmentOpts.forMe then
+        print("|cFFFFD100" .. CONFIG.DISPLAY_NAME .. ":|r the Journal comes with \"For me\": switch it on in the options.")
+        return
+    end
+    P.selectedKey = P.JOURNAL_KEY
+    shoppingScrollOffset = 0
+    if showShoppingList then UpdateShoppingListUI() else P.TurnTallyOn() end
+    SaveState()
+end
+
+function P.ToggleJournalFilter(e)
+    local name = P.EntryPlaceName(e)
+    if P.journalFilter or not name then P.journalFilter = nil else P.journalFilter = name end
+    shoppingScrollOffset = 0
+    UpdateShoppingListUI()
+end
+
+function P.RubOutEntry(e)
+    for i, x in ipairs(CFQ.notes.journal) do
+        if x == e then table.remove(CFQ.notes.journal, i) break end
+    end
+    P.ForMeChanged()
+end
+
+-- The writing glyph (box / quill), drawn in faded ink; hover = red ink like the toggles
+function P.DrawWriteGlyph(b, kind, hover)
+    local glyph = P.WRITE_GLYPHS[kind]
+    b.strokes = b.strokes or {}
+    local st = P.GetStyle()
+    local ink = hover and P.INK_RED or (st.faded or P.INK)
+    for i = 1, math.max(#glyph, #b.strokes) do
+        local g = glyph[i]
+        if g then
+            b.strokes[i] = b.strokes[i] or P.NewStroke(b, "OVERLAY", 4)
+            P.DrawStroke(b.strokes[i], b, g[1], g[2], g[3], g[4], 1.1 * (g[5] or 1), hover and 0.95 or 0.85, ink)
+        elseif b.strokes[i] then
+            P.HideStroke(b.strokes[i])
+        end
+    end
+    b.glyphKind = kind
+end
+
+-- ---- writing an entry: one multi-line box, over the line being written ----------------------------
+-- P.journalEditing = { entry = e } while re-writing entry e, { } while writing a new one, nil otherwise
+function P.EnsureJournalEditBox(f)
+    if f.journalEdit then return f.journalEdit end
+    local eb = CreateFrame("EditBox", nil, f.content)
+    P.SetInkFont(eb, "item")              -- a font first: WoW won't take text into a box without one
+    eb:SetAutoFocus(false)
+    eb:EnableMouse(true)
+    eb:SetScript("OnMouseDown", function(self) self:SetFocus() end)   -- click into it: the keyboard is its again
+    eb:SetMultiLine(true)
+    eb:SetMaxLetters(P.ENTRY_MAX_LETTERS)
+    eb:SetFrameLevel((f.baseLevel or 30) + 24)
+    eb:SetJustifyH("LEFT")
+    eb.wash = eb:CreateTexture(nil, "BACKGROUND")
+    eb.wash:SetPoint("TOPLEFT", eb, "TOPLEFT", -3, 2)
+    eb.wash:SetPoint("BOTTOMRIGHT", eb, "BOTTOMRIGHT", 3, -2)
+    -- Enter keeps the entry; Shift-Enter starts a new line. (Whether the client already put a line break
+    -- in for Enter differs between boxes, so look at what's before the cursor rather than guess.)
+    eb:SetScript("OnEnterPressed", function(self)
+        local txt = self:GetText() or ""
+        local pos = self.GetCursorPosition and self:GetCursorPosition()
+        local brokeLine = type(pos) == "number" and pos > 0 and string.sub(txt, pos, pos) == "\n"
+        if IsShiftKeyDown and IsShiftKeyDown() then
+            if not brokeLine and self.Insert then self:Insert("\n") end
+            return
+        end
+        if brokeLine then self:SetText(string.sub(txt, 1, pos - 1) .. string.sub(txt, pos + 1)) end
+        P.CommitJournalEdit()
+    end)
+    eb:SetScript("OnEscapePressed", function() P.CancelJournalEdit() end)
+    eb:SetScript("OnEditFocusLost", function(self)
+        if P.journalEditing and P.FocusGrace(self) then return end
+        if P.journalEditing then P.CommitJournalEdit(true) end
+    end)
+    eb:SetScript("OnHide", function(self) if self.HasFocus and self:HasFocus() then self:ClearFocus() end end)
+    eb:Hide()
+    f.journalEdit = eb
+    return eb
+end
+
+function P.BeginJournalEdit(e)
+    local f = shoppingListFrame
+    if not f then return end
+    if P.forMeEditing then P.CommitForMeEdit() end
+    local eb = P.EnsureJournalEditBox(f)
+    P.SetInkFont(eb, "item")
+    eb:SetText(e and e.text or "")
+    P.journalEditing = { entry = e }
+    P.Render(f)
+    P.FocusBox(eb, function() return P.journalEditing ~= nil end)
+end
+
+function P.CommitJournalEdit(deferRedraw)
+    local editing = P.journalEditing
+    if not editing then return end
+    P.journalEditing = nil
+    local f = shoppingListFrame
+    local eb = f and f.journalEdit
+    local text = CFQ.CleanEntryText(eb and eb:GetText() or "")
+    if eb then eb:ClearFocus(); eb:Hide() end
+    if editing.entry then
+        if text == "" then
+            for i, x in ipairs(CFQ.notes.journal) do
+                if x == editing.entry then table.remove(CFQ.notes.journal, i) break end
+            end
+        else
+            editing.entry.text = text
+        end
+    else
+        CFQ.AddEntry(text)
+    end
+    if deferRedraw and C_Timer and C_Timer.After then
+        SaveState()
+        C_Timer.After(0, function() UpdateShoppingListUI() end)
+    else
+        P.ForMeChanged()
+    end
+end
+
+function P.CancelJournalEdit()
+    if not P.journalEditing then return end
+    P.journalEditing = nil
+    local f = shoppingListFrame
+    local eb = f and f.journalEdit
+    if eb then eb:ClearFocus(); eb:Hide() end
+    if f and f:IsShown() then P.Render(f) end
+end
+
+-- ---- an entry written in "For me" flies off to the page corner (where the Journal is) --------------
+function P.FlyToJournal(f, text, x, y)
+    if not (f and f.content and f:IsShown()) then return end
+    local fs = f.flyFS
+    if not fs then
+        fs = f.content:CreateFontString(nil, "OVERLAY")
+        fs:SetJustifyH("LEFT")
+        fs:SetWordWrap(false)
+        f.flyFS = fs
+    end
+    P.SetInkFont(fs, "item")
+    fs:SetTextColor(P.INK[1], P.INK[2], P.INK[3], 1)
+    local s = text or ""
+    if string.len(s) > 32 then s = string.sub(s, 1, 30) .. "..." end
+    fs:SetText(s)
+    fs:SetAlpha(1)
+    fs:ClearAllPoints()
+    fs:SetPoint("TOPLEFT", f.content, "TOPLEFT", x or 20, y or 0)
+    fs:Show()
+    f.fly = { t = 0, x0 = x or 20, y0 = y or 0 }
+end
+
+function P.AnimateFly(f, dt)
+    local fl = f.fly
+    if not fl then return end
+    fl.t = fl.t + dt / P.FLY_DUR
+    local fs = f.flyFS
+    local w = f.content:GetWidth() or 200
+    local h = f.content:GetHeight() or 120
+    local x1, y1 = math.max(fl.x0, w - 40), -(h - 4)
+    local T = f.tabs and f.tabs.journal
+    if T and T:IsShown() and T.edgeX then
+        -- the content's top-left sits at (6 + padL, 28 + padT) on the chrome (P.LayoutPads)
+        x1 = T.edgeX - (6 + (f.padL or 0)) - 30
+        y1 = -(T.y + 4 - (28 + (f.padT or 0)))
+    end
+    if fl.t >= 1 then
+        f.fly = nil
+        fs:Hide()
+        if T and T:IsShown() then
+            T.slide = P.TAB_HOVER * 2             -- the tab gives a little tug as the note lands in it
+            P.SlideTab(T, 0)
+        else
+            local c = f.corner
+            if c and c:IsShown() then            -- no tabs: the corner gives a little flick
+                c.size = (c.target or P.CORNER_REST) + 10
+                c.target = c.target or P.CORNER_REST
+                P.DrawCorner(c)
+            end
+        end
+        return
+    end
+    local e = fl.t * fl.t * (3 - 2 * fl.t)       -- ease in and out
+    local lift = math.sin(math.pi * fl.t) * 10   -- a small arc, as if picked up
+    fs:ClearAllPoints()
+    fs:SetPoint("TOPLEFT", f.content, "TOPLEFT", fl.x0 + (x1 - fl.x0) * e, fl.y0 + (y1 - fl.y0) * e + lift)
+    fs:SetAlpha(1 - e * 0.85)
+end
+
+-- ---- the Journal page ----------------------------------------------------------------------------
+function P.HideJournal(f)
+    for _, row in ipairs(f.journalRows or {}) do row:Hide() end
+    if f.journalWrite then f.journalWrite:Hide() end
+    if f.journalEdit then
+        if P.journalEditing then P.CommitJournalEdit() end
+        f.journalEdit:Hide()
+    end
+end
+
+function P.AcquireJournalRow(f, k)
+    f.journalRows = f.journalRows or {}
+    local row = f.journalRows[k]
+    if row then return row end
+    row = CreateFrame("Button", nil, f.content)
+    row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    row.highlight = row:CreateTexture(nil, "HIGHLIGHT")
+    row.highlight:SetAllPoints()
+    row.stamp = row:CreateFontString(nil, "OVERLAY")
+    row.stamp:SetPoint("TOPLEFT", row, "TOPLEFT", 4, -2)
+    row.stamp:SetJustifyH("LEFT")
+    row.stamp:SetWordWrap(false)
+    row.text = row:CreateFontString(nil, "OVERLAY")
+    row.text:SetJustifyH("LEFT")
+    row.text:SetJustifyV("TOP")
+    row.text:SetWordWrap(true)
+    row.divider = row:CreateTexture(nil, "BACKGROUND")
+    row.divider:SetHeight(1)
+    row.divider:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 2, 0)
+    row.divider:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -2, 0)
+    -- the place in the stamp: click it to see only what was written there
+    row.stampBtn = CreateFrame("Button", nil, row)
+    row.stampBtn:SetPoint("TOPLEFT", row.stamp, "TOPLEFT", 0, 1)
+    row.stampBtn:SetScript("OnClick", function(self) if self.entry then P.ToggleJournalFilter(self.entry) end end)
+    row.stampBtn:SetScript("OnEnter", function(self)
+        local name = self.entry and P.EntryPlaceName(self.entry)
+        if not name then return end
+        P.PlaceTooltip(self)
+        if P.journalFilter then
+            GameTooltip:AddLine("Showing what you wrote in " .. P.journalFilter, 1, 0.82, 0)
+            GameTooltip:AddLine("Click: show every entry again", 0.65, 0.65, 0.65)
+        else
+            GameTooltip:AddLine("Written in " .. name, 1, 0.82, 0)
+            GameTooltip:AddLine("Click: show only what you wrote here", 0.65, 0.65, 0.65)
+        end
+        GameTooltip:Show()
+    end)
+    row.stampBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    f.journalRows[k] = row
+    return row
+end
+
+function P.EntryTooltip(row, e)
+    P.PlaceTooltip(row)
+    GameTooltip:AddLine(P.EntryStamp(e) ~= "" and P.EntryStamp(e) or "Note", 1, 0.82, 0)
+    local pl = e.place
+    if pl and pl.subzone and pl.zone and pl.subzone ~= pl.zone then GameTooltip:AddLine(pl.zone, 0.7, 0.7, 0.7) end
+    GameTooltip:AddLine("Click: write more  |  Shift-Click: rub it out", 0.65, 0.65, 0.65)
+    GameTooltip:Show()
+end
+
+-- The journal's own writing line: a quill and "write an entry...", only as wide as its words
+function P.EnsureJournalWriteLine(f)
+    local wl = f.journalWrite
+    if wl then return wl end
+    wl = CreateFrame("Button", nil, f.content)
+    wl:RegisterForClicks("LeftButtonUp")
+    wl.highlight = wl:CreateTexture(nil, "HIGHLIGHT")
+    wl.highlight:SetAllPoints()
+    wl.glyph = CreateFrame("Frame", nil, wl)
+    wl.glyph:SetSize(14, 14)
+    wl.glyph:SetPoint("TOPLEFT", wl, "TOPLEFT", 3, -2)
+    wl.fs = wl:CreateFontString(nil, "OVERLAY")
+    wl.fs:SetPoint("TOPLEFT", wl, "TOPLEFT", 20, -2)
+    wl.fs:SetJustifyH("LEFT")
+    wl.fs:SetWordWrap(false)
+    wl:SetScript("OnClick", function() P.BeginJournalEdit(nil) end)
+    wl:SetScript("OnEnter", function(self)
+        P.DrawWriteGlyph(self.glyph, "entry", true)
+        P.PlaceTooltip(self)
+        GameTooltip:AddLine("Write a note", 1, 0.82, 0)
+        GameTooltip:AddLine("Stamped with the time and where you are.", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine("Enter: keep it  |  Shift-Enter: new line  |  Escape: never mind", 0.65, 0.65, 0.65)
+        GameTooltip:Show()
+    end)
+    wl:SetScript("OnLeave", function(self) P.DrawWriteGlyph(self.glyph, "entry", false); GameTooltip:Hide() end)
+    f.journalWrite = wl
+    return wl
+end
+
+function P.RenderJournal(f, area, contentW, contentH, pageStr)
+    P.HideForMe(f)
+    P.HideKindHeadings(f, 1)
+    local st = P.GetStyle()
+    local textW = math.max(110, contentW - 8)
+    local lineH = P.LineHeight(f)
+    local writeH = math.max(14, lineH) + 7
+    local editH = lineH * P.JOURNAL_EDIT_LINES + 6
+    local editing = P.journalEditing
+    local hl = st.highlight
+    local list = P.JournalList()
+    f.totalItems = #list
+    if shoppingScrollOffset > math.max(0, #list - 1) then shoppingScrollOffset = math.max(0, #list - 1) end
+    for _, row in ipairs(f.journalRows or {}) do row:Hide() end
+
+    -- the writing line on top (newest first: a new entry goes in right under it)
+    local wl = P.EnsureJournalWriteLine(f)
+    wl.highlight:SetColorTexture(hl[1], hl[2], hl[3], hl[4])
+    P.DrawWriteGlyph(wl.glyph, "entry", false)
+    P.SetInkFont(wl.fs, "item")
+    wl.fs:SetTextColor(st.faded[1], st.faded[2], st.faded[3], 1)
+    local writingNew = editing and not editing.entry
+    wl.fs:SetText(writingNew and "" or ((#CFQ.notes.journal == 0) and "write your first note..." or "write a note..."))
+    local wordsW = math.min(textW - P.CORNER_MAX, math.ceil(wl.fs:GetStringWidth() or 0))
+    wl.fs:SetWidth(math.max(1, wordsW))
+    wl:ClearAllPoints()
+    wl:SetPoint("TOPLEFT", f.content, "TOPLEFT", 0, 0)
+    wl:SetWidth(20 + wordsW + 6)
+    wl:SetHeight(writeH)
+    wl:Show()
+    local y = writingNew and -(editH + 6) or -writeH
+
+    if #list == 0 then
+        local row = P.AcquireJournalRow(f, 1)
+        row.stamp:SetText("")
+        row.stampBtn:Hide()
+        P.SetInkFont(row.text, "item")
+        row.text:SetWidth(textW)
+        row.text:ClearAllPoints()
+        row.text:SetPoint("TOPLEFT", row, "TOPLEFT", 4, -4)
+        row.text:SetTextColor(st.faded[1], st.faded[2], st.faded[3], 1)
+        row.text:SetText(P.journalFilter and ("Nothing written in " .. P.journalFilter .. ".")
+            or "Your journal is empty. Write a note here, or with \"write a note\" under For me.")
+        P.SetHalo(row.text, row.text:GetText(), st.faded)
+        row.divider:Hide()
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", f.content, "TOPLEFT", 0, y - 4)
+        row:SetPoint("TOPRIGHT", f.content, "TOPRIGHT", 0, y - 4)
+        row:SetHeight(math.max(30, math.ceil(row.text:GetStringHeight() or 24) + 8))
+        row:SetScript("OnClick", nil)
+        row:SetScript("OnEnter", nil)
+        row:SetScript("OnLeave", nil)
+        row:Show()
+    end
+
+    local shown, editRowText = 0, nil
+    for k = 1 + shoppingScrollOffset, #list do
+        local e = list[k]
+        local row = P.AcquireJournalRow(f, shown + 1)
+        P.SetInkFont(row.stamp, "small")
+        local sc = st.sub or st.faded
+        row.stamp:SetTextColor(sc[1], sc[2], sc[3], 1)
+        row.stamp:SetText(P.EntryStamp(e))
+        local stampH = math.max(10, math.ceil(row.stamp:GetStringHeight() or 10))
+        row.stampBtn.entry = e
+        row.stampBtn:SetSize(math.max(10, math.ceil(row.stamp:GetStringWidth() or 10)), stampH + 2)
+        row.stampBtn:SetShown(P.EntryPlaceName(e) ~= nil)
+        P.SetInkFont(row.text, "item")
+        row.text:SetWidth(textW)
+        row.text:ClearAllPoints()
+        row.text:SetPoint("TOPLEFT", row, "TOPLEFT", 4, -(stampH + 4))
+        local ink = st.name or st.ink
+        row.text:SetTextColor(ink[1], ink[2], ink[3], 1)
+        local beingEdited = editing and editing.entry == e
+        row.text:SetText(beingEdited and "" or e.text)
+        P.SetHalo(row.text, beingEdited and "" or e.text, P.INK)
+        local textH = beingEdited and editH or math.max(14, math.ceil(row.text:GetStringHeight() or 14))
+        local rowH = stampH + textH + 10
+        if shown > 0 and math.abs(y) + rowH > contentH + 4 then break end
+        row.highlight:SetColorTexture(hl[1], hl[2], hl[3], hl[4])
+        local d = st.divider
+        row.divider:SetColorTexture(d[1], d[2], d[3], d[4])
+        row.divider:Show()
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", f.content, "TOPLEFT", 0, y)
+        row:SetPoint("TOPRIGHT", f.content, "TOPRIGHT", 0, y)
+        row:SetHeight(rowH)
+        row:SetScript("OnClick", function(_, button)
+            if IsShiftKeyDown and IsShiftKeyDown() and button == "LeftButton" then P.RubOutEntry(e) else P.BeginJournalEdit(e) end
+        end)
+        row:SetScript("OnEnter", function(self) P.EntryTooltip(self, e) end)
+        row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        row:Show()
+        if beingEdited then editRowText = row.text end
+        y = y - rowH
+        shown = shown + 1
+    end
+
+    -- the writing box: under the writing line (a new entry) or in place of the entry being re-written
+    local eb = f.journalEdit
+    if editing then
+        eb = P.EnsureJournalEditBox(f)
+        P.SetInkFont(eb, "item")
+        eb:SetTextColor(P.INK[1], P.INK[2], P.INK[3], 1)
+        eb.wash:SetColorTexture(hl[1], hl[2], hl[3], (hl[4] or 0.1) * 1.5)
+        eb:ClearAllPoints()
+        if editRowText then
+            eb:SetPoint("TOPLEFT", editRowText, "TOPLEFT", 0, 0)
+        else
+            eb:SetPoint("TOPLEFT", f.content, "TOPLEFT", 20, 0)          -- where "write an entry..." was
+        end
+        eb:SetWidth(math.max(60, textW - P.CORNER_MAX))
+        eb:SetHeight(editH)
+        eb:Show()
+    elseif eb then
+        eb:Hide()
+    end
+
+    local n = #list
+    local count = (n == 1) and "1 note" or (n .. " notes")
+    if P.journalFilter then count = count .. " in " .. P.journalFilter end
+    if n > shown and n > 0 then
+        count = count .. string.format("  ·  %d-%d shown", shoppingScrollOffset + 1, shoppingScrollOffset + shown)
+    end
+    f.footerFS:SetText(count .. (pageStr or ""))
+end
+
+-- ----------------------------------------------------------------------------
+-- TABS: the two quick tabs, cut from the sheet itself (user decision: knots looked too small and nothing
+-- like the material; no ribbons)
+-- ----------------------------------------------------------------------------
+-- Two index tabs sticking out of the sheet's right edge below the close button: "Near me" (an inked
+-- compass) above "Journal" (an inked quill). Each is a strip of the look's own sheet image tucked behind
+-- the top sheet, so only the part past the edge shows, and its outer end is the material's real edge
+-- (torn threads, the leaf's curve, the slate's rim) moved out: always the very same material. Drawn looks
+-- use their paper colour. The open page's tab sticks out further; hovering slides a tab out a little.
+-- Click = turn to that page; on it already = back where you were. Shown while "For me" is on.
+P.TAB_H = 24                  -- each tab's height
+P.TAB_OUT = 18                -- how far a tab sticks out past the edge (the open page's: + P.TAB_OPEN)
+P.TAB_OPEN, P.TAB_HOVER = 4, 3
+P.TAB_TUCK = 22               -- how far it reaches in under the top sheet
+P.TAB_GAP = 5
+P.TAB_GLYPHS = {
+    near = {       -- a compass rose: the four points and a diamond (y down = negative, as the toggles)
+        { 7.5, -0.5, 7.5, -14.5, 0.9 }, { 0.5, -7.5, 14.5, -7.5, 0.9 },
+        { 7.5, -3.0, 10.5, -7.5, 1.15 }, { 10.5, -7.5, 7.5, -12.0, 1.15 }, { 7.5, -12.0, 4.5, -7.5, 1.15 }, { 4.5, -7.5, 7.5, -3.0, 1.15 },
+    },
+    journal = P.WRITE_GLYPHS.entry,     -- the quill
+}
+-- Where each sheet image's material ends ([TexGen]::EdgeProfile): b = fraction of the height up from the
+-- image's bottom at x = 0, 0.05 .. 1; r = fraction of the width in from its right at y = 0, 0.05 .. 1.
+-- Values near 1 = no material in that column / row.
+P.SHEET_EDGES = {
+    CRUMPLED = { b = { 0.998, 0.027, 0.031, 0.031, 0.027, 0.031, 0.029, 0.035, 0.039, 0.039, 0.037, 0.041, 0.041, 0.041, 0.037, 0.039, 0.037, 0.033, 0.029, 0.031, 0.998 }, r = { 0.998, 0.045, 0.045, 0.039, 0.035, 0.033, 0.035, 0.039, 0.043, 0.041, 0.045, 0.045, 0.045, 0.045, 0.041, 0.039, 0.041, 0.037, 0.033, 0.027, 0.998 } },
+    RAG = { b = { 0.998, 0.059, 0.041, 0.043, 0.043, 0.043, 0.043, 0.045, 0.045, 0.045, 0.045, 0.043, 0.045, 0.045, 0.047, 0.045, 0.045, 0.045, 0.043, 0.102, 0.998 }, r = { 0.998, 0.150, 0.068, 0.078, 0.080, 0.084, 0.063, 0.076, 0.059, 0.045, 0.035, 0.043, 0.043, 0.053, 0.049, 0.057, 0.061, 0.061, 0.051, 0.063, 0.998 } },
+    STONE = { b = { 0.998, 0.320, 0.225, 0.172, 0.129, 0.109, 0.088, 0.070, 0.070, 0.070, 0.072, 0.066, 0.063, 0.064, 0.064, 0.064, 0.082, 0.117, 0.178, 0.285, 0.998 }, r = { 0.998, 0.277, 0.168, 0.109, 0.070, 0.053, 0.039, 0.037, 0.039, 0.041, 0.027, 0.031, 0.035, 0.041, 0.047, 0.064, 0.088, 0.121, 0.168, 0.998, 0.998 } },
+    BARK = { b = { 0.998, 0.400, 0.217, 0.178, 0.143, 0.117, 0.119, 0.125, 0.131, 0.105, 0.094, 0.098, 0.090, 0.086, 0.094, 0.111, 0.139, 0.201, 0.311, 0.352, 0.998 }, r = { 0.998, 0.998, 0.365, 0.156, 0.098, 0.096, 0.100, 0.051, 0.063, 0.053, 0.029, 0.074, 0.068, 0.053, 0.113, 0.139, 0.146, 0.182, 0.271, 0.998, 0.998 } },
+    LEAF = { b = { 0.998, 0.332, 0.215, 0.154, 0.111, 0.082, 0.057, 0.043, 0.029, 0.033, 0.037, 0.047, 0.066, 0.094, 0.123, 0.178, 0.248, 0.316, 0.385, 0.465, 0.998 }, r = { 0.998, 0.998, 0.471, 0.340, 0.277, 0.230, 0.182, 0.141, 0.100, 0.064, 0.029, 0.061, 0.092, 0.125, 0.160, 0.199, 0.234, 0.273, 0.330, 0.439, 0.998 } },
+    LEATHER = { b = { 0.998, 0.119, 0.078, 0.061, 0.059, 0.063, 0.063, 0.070, 0.082, 0.088, 0.094, 0.102, 0.119, 0.127, 0.119, 0.109, 0.113, 0.127, 0.150, 0.764, 0.998 }, r = { 0.998, 0.783, 0.096, 0.059, 0.051, 0.057, 0.072, 0.088, 0.086, 0.072, 0.072, 0.070, 0.082, 0.072, 0.064, 0.064, 0.064, 0.100, 0.441, 0.998, 0.998 } },
+    MARBLE = { b = { 0.998, 0.998, 0.045, 0.047, 0.047, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.047, 0.045, 0.047, 0.045, 0.998, 0.998 }, r = { 0.998, 0.451, 0.277, 0.195, 0.141, 0.098, 0.064, 0.066, 0.064, 0.066, 0.064, 0.070, 0.064, 0.064, 0.066, 0.066, 0.064, 0.064, 0.064, 0.066, 0.998 } },
+    GILDED = { b = { 0.998, 0.998, 0.066, 0.061, 0.063, 0.063, 0.063, 0.063, 0.063, 0.061, 0.061, 0.061, 0.057, 0.059, 0.059, 0.061, 0.061, 0.059, 0.063, 0.998, 0.998 }, r = { 0.998, 0.998, 0.068, 0.063, 0.063, 0.061, 0.063, 0.063, 0.061, 0.061, 0.061, 0.059, 0.061, 0.063, 0.063, 0.061, 0.059, 0.059, 0.063, 0.998, 0.998 } },
+    VELLUM = { b = { 0.998, 0.086, 0.049, 0.049, 0.049, 0.051, 0.051, 0.051, 0.051, 0.051, 0.053, 0.053, 0.053, 0.053, 0.053, 0.053, 0.053, 0.051, 0.051, 0.242, 0.998 }, r = { 0.998, 0.051, 0.051, 0.051, 0.051, 0.051, 0.053, 0.055, 0.053, 0.051, 0.053, 0.053, 0.051, 0.049, 0.051, 0.051, 0.053, 0.053, 0.053, 0.055, 0.998 } },
+}
+
+-- The material's edge at frac (0-1) along a profile, from the nearest measured samples that have material
+function P.EdgeAt(list, frac)
+    local n = #list - 1
+    local pos = math.max(0, math.min(1, frac)) * n
+    local i0 = math.floor(pos)
+    local function ok(i) local v = list[i + 1]; return v and v < 0.9 and v or nil end
+    local a, b = ok(i0), ok(math.min(n, i0 + 1))
+    if a and b then local t = pos - i0; return a * (1 - t) + b * t end
+    if a or b then return a or b end
+    for d = 1, n do
+        local v = ok(i0 - d) or ok(i0 + d)
+        if v then return v end
+    end
+    return 0.02
+end
+
+function P.TabsShown()
+    return CFQ.parchmentOpts.forMe and true or false
+end
+
+function P.TabPageKey(kind)
+    return (kind == "near") and P.CURRENT_KEY or P.JOURNAL_KEY
+end
+
+function P.EnsureTab(f, kind)
+    f.tabs = f.tabs or {}
+    local T = f.tabs[kind]
+    if T then return T end
+    T = CreateFrame("Button", nil, f)
+    T:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    T:SetFrameLevel((f.baseLevel or 30) + 11)       -- above the pages underneath, under the top sheet
+    T.kind = kind
+    T.tex = T:CreateTexture(nil, "BACKGROUND")
+    T.tex:SetAllPoints()
+    T.glyph = CreateFrame("Frame", nil, T)
+    T.glyph:SetSize(12, 12)
+    T.strokes = {}
+    T.slide, T.slideTo = 0, 0
+    T:SetScript("OnEnter", function(self)
+        self.hover = true
+        P.SlideTab(self, P.TAB_HOVER)
+        P.DrawTabGlyph(self)
+        P.TabTooltip(self)
+    end)
+    T:SetScript("OnLeave", function(self)
+        self.hover = false
+        P.SlideTab(self, 0)
+        P.DrawTabGlyph(self)
+        GameTooltip:Hide()
+    end)
+    T:SetScript("OnClick", function(self) P.TabClick(self.kind) end)
+    f.tabs[kind] = T
+    return T
+end
+
+function P.SlideTab(T, to)
+    T.slideTo = to
+    local f = shoppingListFrame
+    if f then f.tabsMoving = true end
+end
+
+-- The tab's glyph in the ink (red while hovered, like the toggles), faded on a tab that isn't open
+function P.DrawTabGlyph(T)
+    local glyph = P.TAB_GLYPHS[T.kind]
+    local st = P.GetStyle()
+    local open = T.open
+    local ink = T.hover and P.INK_RED or (open and P.INK or (st.faded or P.INK))
+    local alpha = (open or T.hover) and 0.95 or 0.70
+    for i, g in ipairs(glyph) do
+        T.strokes[i] = T.strokes[i] or P.NewStroke(T.glyph, "OVERLAY", 4)
+        P.DrawStroke(T.strokes[i], T.glyph, g[1] * 12 / 15, g[2] * 12 / 15, g[3] * 12 / 15, g[4] * 12 / 15,
+            1.1 * (g[5] or 1), alpha, ink)
+    end
+end
+
+function P.TabTooltip(T)
+    GameTooltip:SetOwner(T, "ANCHOR_RIGHT")
+    if T.kind == "near" then
+        GameTooltip:AddLine("Near me", 1, 0.82, 0)
+        GameTooltip:AddLine("What to gather and do around you, and your For me tasks.", 0.9, 0.9, 0.9, true)
+    else
+        local n = #CFQ.notes.journal
+        GameTooltip:AddLine("Journal  ·  " .. ((n == 1) and "1 note" or (n .. " notes")), 1, 0.82, 0)
+        GameTooltip:AddLine("Your notes, newest first, stamped with when and where.", 0.9, 0.9, 0.9, true)
+    end
+    local back = T.open and P.tabBack and P.TabBackArea()
+    if back then
+        GameTooltip:AddLine("Click: back to " .. (back.title or "the last page"), 0.65, 0.65, 0.65)
+    elseif not T.open then
+        GameTooltip:AddLine("Click: turn to it", 0.65, 0.65, 0.65)
+    end
+    GameTooltip:Show()
+end
+
+function P.TabBackArea()
+    for _, a in ipairs(P.areas or {}) do
+        if a.key == P.tabBack then return a end
+    end
+    return nil
+end
+
+-- Click: turn to the tab's page; on it already = back where you were before the tab took you there
+function P.TabClick(kind)
+    local target = P.TabPageKey(kind)
+    if P.selectedKey == target then
+        local back = P.tabBack and P.TabBackArea()
+        if not back then return end
+        P.tabBack = nil
+        P.SelectArea(back.key, true, (kind == "near") and 1 or -1)
+        return
+    end
+    P.tabBack = P.selectedKey
+    P.SelectArea(target, true, (kind == "near") and -1 or 1)
+end
+
+-- Places both tabs for the current look, window size and open page (every redraw; cheap)
+function P.LayoutTabs(f)
+    if not f.topSheet then return end
+    if not P.TabsShown() then
+        for _, T in pairs(f.tabs or {}) do T:Hide() end
+        return
+    end
+    local st = P.GetStyle()
+    local w, h = f:GetWidth() or 230, f:GetHeight() or 175
+    local _, t, r = P.GetPads(f)
+    local edges = P.SHEET_EDGES[st.key]
+    local y = t + 24                                   -- the first tab: just below the close button
+    for _, kind in ipairs({ "near", "journal" }) do
+        local T = P.EnsureTab(f, kind)
+        T.open = (P.selectedKey == P.TabPageKey(kind))
+        local midY = y + P.TAB_H / 2
+        local edgeX
+        if edges then edgeX = w * (1 - P.EdgeAt(edges.r, midY / h))
+        elseif st.arcane then edgeX = w - r * 0.5
+        else edgeX = w - 2 end
+        T.edgeX, T.y = edgeX, y
+        local out = P.TAB_OUT + (T.open and P.TAB_OPEN or 0)
+        T.out = out
+        local width = P.TAB_TUCK + out
+        if st.image then
+            -- a strip of the sheet's own image ending just past its edge, moved out by `out`: its end is
+            -- the material's real edge, the rest is tucked under the top sheet
+            local margin = 4
+            local u0 = math.max(0, (edgeX - (width - out) - margin + 0) / w)
+            local u1 = math.min(1, (edgeX + margin) / w)
+            local v0, v1 = y / h, (y + P.TAB_H) / h
+            T.tex:SetTexture(st.image)
+            T.tex:SetTexCoord(u0, u1, v0, v1)
+            T.tex:SetVertexColor(1, 1, 1, 1)
+            if T.tex.SetBlendMode then T.tex:SetBlendMode(st.arcane and "ADD" or "BLEND") end
+            width = (u1 - u0) * w
+            T.x0 = u0 * w + out
+        else
+            -- drawn looks: the paper's own colour
+            local pc = st.paper or { 0.9, 0.85, 0.7, 1 }
+            T.tex:SetColorTexture(pc[1], pc[2], pc[3], math.max(0.6, pc[4] or 1))
+            T.x0 = edgeX - P.TAB_TUCK
+            width = P.TAB_TUCK + out
+        end
+        T.width = width
+        -- a tab that isn't open sits a shade back, like a page underneath
+        if not T.open then
+            if st.image then T.tex:SetVertexColor(0.86, 0.86, 0.86, 1) else T.tex:SetAlpha(0.9) end
+        else
+            T.tex:SetAlpha(1)
+        end
+        P.PlaceTab(T)
+        -- only the part sticking out takes the mouse (the tucked part is under the sheet)
+        if T.SetHitRectInsets then T:SetHitRectInsets(math.max(0, edgeX - T.x0 + 1), 0, 0, 0) end
+        T.glyph:ClearAllPoints()
+        T.glyph:SetPoint("CENTER", T, "LEFT", (edgeX - T.x0) + out / 2 + 1, 0)
+        P.DrawTabGlyph(T)
+        T:Show()
+        y = y + P.TAB_H + P.TAB_GAP
+    end
+end
+
+function P.PlaceTab(T)
+    local f = shoppingListFrame
+    T:ClearAllPoints()
+    T:SetPoint("TOPLEFT", f, "TOPLEFT", T.x0 + (T.slide or 0), -T.y)
+    T:SetSize(T.width, P.TAB_H)
+end
+
+-- Per frame while a tab slides out (hover) or back
+function P.AnimateTabs(f, dt)
+    local moving = false
+    for _, T in pairs(f.tabs or {}) do
+        local d = (T.slideTo or 0) - (T.slide or 0)
+        if math.abs(d) > 0.05 then
+            T.slide = T.slide + d * math.min(1, dt * 14)
+            moving = true
+        else
+            T.slide = T.slideTo or 0
+        end
+        if T:IsShown() and T.x0 then P.PlaceTab(T) end
+    end
+    f.tabsMoving = moving
 end
 
 -- Why the tally stays put away right after you switch it on (or nil if it's up), so it never seems broken
@@ -10437,6 +11319,17 @@ SlashCmdList["HANDKERQUEST"] = function(msg)
         UpdateShoppingListUI()
         CFQ.RefreshOptionsPanel()
         print("|cFFFFD100HandkerSheaf:|r Field Tally look: " .. P.GetStyle().label)
+    elseif cmd == "journal" or cmd == "diary" then
+        P.OpenJournal()
+    elseif cmd == "entry" or cmd == "note" or string.find(cmd, "^entry%s") or string.find(cmd, "^note%s") then
+        local text = string.match(strtrim(msg or ""), "^%S+%s+(.+)$")
+        local e = text and CFQ.AddEntry(text)
+        if e then
+            P.ForMeChanged()
+            print("|cFFFFD100" .. CONFIG.DISPLAY_NAME .. ":|r written in your Journal (" .. P.EntryStamp(e) .. ").")
+        else
+            print("|cFFFFD100" .. CONFIG.DISPLAY_NAME .. ":|r /hanky note <text> writes a note in your Journal; /hanky journal opens it.")
+        end
     elseif cmd == "task" or string.find(cmd, "^task%s") then
         local text = string.match(strtrim(msg or ""), "^%S+%s+(.+)$")   -- as typed (not lower-cased)
         local task = text and CFQ.AddTask(text)

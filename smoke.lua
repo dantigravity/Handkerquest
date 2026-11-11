@@ -1511,7 +1511,14 @@ do  -- "For me": your own tasks at the bottom of the "Near me" page
     P.selectedKey = P.areas[1].key            -- on "Near me"
     redraw()
     check(f:IsShown() and f.forMeWrite and f.forMeWrite.__shown, "For me: the writing line is on Near me")
-    check(f.forMeWrite.fs.__text == "add a task for yourself...", "For me: an empty list invites a first task (" .. tostring(f.forMeWrite.fs.__text) .. ")")
+    check((f.forMeWrite.fs.__text == "add a task..." or f.forMeWrite.fs.__text == "a task" or f.forMeWrite.fs.__text == "task") and f.forMeNote and f.forMeNote.__shown
+        and f.forMeNote.fs.__text:find("note"), "For me: two choices at the bottom, a task and a note (" .. tostring(f.forMeWrite.fs.__text) .. " / " .. tostring(f.forMeNote and f.forMeNote.fs.__text) .. ")")
+    check(f.forMeWrite.mode.glyphKind == "task" and f.forMeNote.glyph.glyphKind == "entry", "For me: a box in front of the task, a quill in front of the note")
+    do  -- side by side, each only as wide as its words, clear of the dog-ear
+        local wl, nl = f.forMeWrite, f.forMeNote
+        local _, _, _, nx = nl:GetPoint(1)
+        check(nx == wl.__w + 10 and nl.__w == 20 + nl.fs:GetStringWidth() + 6, "For me: the note choice sits just right of the task choice")
+    end
     check(f.forMeHead and f.forMeHead.__shown and f.forMeHead.fs.__text == "For me", "For me: its own heading, even before the first task")
     -- the section stands on the page bottom: the writing line's foot is the page's foot
     local function ContentH()
@@ -1582,6 +1589,9 @@ do  -- "For me": your own tasks at the bottom of the "Near me" page
     -- clicking away keeps what was written; "|" can't sneak in colour codes
     f.forMeWrite:GetScript("OnClick")(f.forMeWrite, "LeftButton")
     f.forMeEdit:SetText("Mine the |cffff0000copper|r")
+    f.forMeEdit:GetScript("OnEditFocusLost")(f.forMeEdit)        -- at once: the opening click, not clicking away
+    check(P.forMeEditing and f.forMeEdit.__shown and #CFQ.notes.tasks == 1, "For me: losing focus right as it opens keeps the box open (focus taken back)")
+    NOW = NOW + 1
     f.forMeEdit:GetScript("OnEditFocusLost")(f.forMeEdit)
     check(#CFQ.notes.tasks == 2 and not CFQ.notes.tasks[2].text:find("|", 1, true), "For me: clicking away keeps it, without '|' escapes (" .. tostring(CFQ.notes.tasks[2] and CFQ.notes.tasks[2].text) .. ")")
     -- an empty line adds nothing
@@ -1693,6 +1703,315 @@ do  -- "For me": your own tasks at the bottom of the "Near me" page
     CFQ.notes = { tasks = {}, forMeFolded = false }
     CFQ.parchmentOpts.forMe = false
     f:SetSize(fw0, fh0)
+    redraw()
+end
+do  -- Journal: longer entries, newest first, on the last page of the pile
+    local function redraw() P.OnTallyChoiceChanged() end
+    local fw0, fh0 = f:GetWidth(), f:GetHeight()
+    f:SetSize(320, 420)
+    CFQ.parchmentOpts.forMe = true
+    CFQ.notes = { tasks = {}, journal = {}, forMeFolded = false, writeMode = "task" }
+    P.journalFilter = nil
+    P.selectedKey = P.areas[1].key
+    redraw()
+    local last = P.areas[#P.areas]
+    check(last and last.isJournal and last.key == P.JOURNAL_KEY, "Journal: the last page of the pile")
+    check(f.corner.__shown, "Journal: the dog-ear is there to turn to it")
+
+    -- /hanky journal opens it
+    SlashCmdList["HANDKERQUEST"]("journal")
+    check(P.selectedKey == P.JOURNAL_KEY and f:IsShown() and P.PlainText(f.titleFS.__text) == "Journal", "/hanky journal opens the Journal page (" .. tostring(f.titleFS.__text) .. ")")
+    check(f.journalWrite.__shown and f.journalWrite.fs.__text == "write your first note...", "Journal: an empty journal invites a first note")
+    check(f.journalRows[1].__shown and f.journalRows[1].text.__text:find("empty"), "Journal: says it's empty")
+    check(not (f.forMeHead and f.forMeHead.__shown) and not (f.forMeWrite and f.forMeWrite.__shown), "Journal: no For me section on the Journal page")
+    check(not (shoppingListRowPool and shoppingListRowPool[1] and shoppingListRowPool[1].__shown), "Journal: no quest lines on it")
+
+    -- write one on the page: a multi-line box under the writing line
+    f.journalWrite:GetScript("OnClick")(f.journalWrite, "LeftButton")
+    local eb = f.journalEdit
+    check(P.journalEditing and eb and eb.__shown and eb.__font ~= nil, "Journal: clicking the line opens a writing box (with its font)")
+    eb:SetText("Met a gnome in the mine.\nShe sold me a torch.")
+    eb:GetScript("OnEnterPressed")(eb)
+    local e1 = CFQ.notes.journal[1]
+    check(#CFQ.notes.journal == 1 and e1.text == "Met a gnome in the mine.\nShe sold me a torch.", "Journal: Enter keeps the entry, lines and all")
+    check(not P.journalEditing and not eb.__shown, "Journal: the box closes after Enter")
+    check(type(e1.when) == "string" and e1.place and e1.place.zone and type(e1.t) == "number" and e1.owner, "Journal: stamped with time, place and who")
+    local r1 = f.journalRows[1]
+    check(r1.__shown and r1.text.__text == e1.text and r1.stamp.__text == P.EntryStamp(e1), "Journal: the entry under its stamp (" .. tostring(r1.stamp.__text) .. ")")
+    check(r1.stamp.__text:find(e1.when, 1, true) and r1.stamp.__text:find(P.EntryPlaceName(e1), 1, true), "Journal: the stamp has the time and the place")
+
+    -- Shift-Enter: a new line, still writing; Enter where the client already broke the line: no stray break
+    f.journalWrite:GetScript("OnClick")(f.journalWrite, "LeftButton")
+    local realShift = IsShiftKeyDown
+    local inserted
+    eb.Insert = function(self, s) inserted = s; self.__text = self.__text .. s end
+    IsShiftKeyDown = function() return true end
+    eb:SetText("First line")
+    eb:GetScript("OnEnterPressed")(eb)
+    IsShiftKeyDown = realShift
+    check(P.journalEditing and inserted == "\n" and #CFQ.notes.journal == 1, "Journal: Shift-Enter starts a new line and keeps writing")
+    eb:SetText("Hel\nlo there")
+    eb.GetCursorPosition = function() return 4 end              -- the client put a break in for Enter
+    eb:GetScript("OnEnterPressed")(eb)
+    eb.GetCursorPosition = nil; eb.Insert = nil
+    check(#CFQ.notes.journal == 2 and CFQ.notes.journal[2].text == "Hello there", "Journal: Enter keeps it without the client's stray line break (" .. tostring(CFQ.notes.journal[2] and CFQ.notes.journal[2].text) .. ")")
+
+    -- newest first
+    check(f.journalRows[1].text.__text == "Hello there" and f.journalRows[2].text.__text == e1.text, "Journal: newest entry first")
+    check(f.footerFS.__text:find("^2 notes"), "Journal: the footer counts notes (" .. tostring(f.footerFS.__text) .. ")")
+
+    -- Escape writes nothing; clicking away keeps it
+    f.journalWrite:GetScript("OnClick")(f.journalWrite, "LeftButton")
+    eb:SetText("never mind")
+    eb:GetScript("OnEscapePressed")(eb)
+    check(#CFQ.notes.journal == 2 and not P.journalEditing, "Journal: Escape writes nothing")
+    f.journalWrite:GetScript("OnClick")(f.journalWrite, "LeftButton")
+    eb:SetText("Clicked away |cffff0000here|r")
+    eb:GetScript("OnEditFocusLost")(eb)
+    check(P.journalEditing and eb.__shown and #CFQ.notes.journal == 2, "Journal: losing focus right as it opens keeps the box open (focus taken back)")
+    NOW = NOW + 1
+    eb:GetScript("OnEditFocusLost")(eb)
+    check(#CFQ.notes.journal == 3 and not CFQ.notes.journal[3].text:find("|", 1, true), "Journal: clicking away keeps it, no '|' escapes")
+    for _, t in ipairs(TIMERS or {}) do t() end; TIMERS = {}
+
+    -- click an entry: write more; to nothing: rubbed out
+    local top = f.journalRows[1]
+    top:GetScript("OnClick")(top, "LeftButton")
+    check(P.journalEditing and P.journalEditing.entry == CFQ.notes.journal[3] and eb:GetText() == CFQ.notes.journal[3].text and top.text.__text == "",
+        "Journal: clicking an entry opens it for writing more, in its place")
+    eb:SetText("Clicked away here, and more besides.")
+    eb:GetScript("OnEnterPressed")(eb)
+    check(CFQ.notes.journal[3].text == "Clicked away here, and more besides.", "Journal: written longer")
+    top:GetScript("OnClick")(top, "LeftButton")
+    eb:SetText("")
+    eb:GetScript("OnEnterPressed")(eb)
+    check(#CFQ.notes.journal == 2, "Journal: written down to nothing = rubbed out")
+    IsShiftKeyDown = function() return true end
+    f.journalRows[1]:GetScript("OnClick")(f.journalRows[1], "LeftButton")
+    IsShiftKeyDown = realShift
+    check(#CFQ.notes.journal == 1 and CFQ.notes.journal[1] == e1, "Journal: shift-click rubs an entry out")
+
+    -- the place filter: click a stamp's place
+    local a = CFQ.AddEntry("In the mine"); a.place = { zone = "Elwynn Forest", subzone = "Fargodeep Mine" }
+    local b = CFQ.AddEntry("At the inn"); b.place = { zone = "Elwynn Forest", subzone = "Goldshire" }
+    redraw()
+    local mineRow
+    for _, row in ipairs(f.journalRows) do if row.__shown and row.text.__text == "In the mine" then mineRow = row end end
+    check(mineRow and mineRow.stampBtn.__shown, "Journal: the place in a stamp is clickable")
+    mineRow.stampBtn:GetScript("OnClick")(mineRow.stampBtn)
+    local shownTexts = {}
+    for _, row in ipairs(f.journalRows) do if row.__shown then table.insert(shownTexts, row.text.__text) end end
+    check(P.journalFilter == "Fargodeep Mine" and #shownTexts == 1 and shownTexts[1] == "In the mine",
+        "Journal: clicking a place shows only what was written there (" .. table.concat(shownTexts, " / ") .. ")")
+    check(P.PlainText(f.titleFS.__text):find("Fargodeep Mine", 1, true) and f.footerFS.__text:find("in Fargodeep Mine", 1, true),
+        "Journal: the heading and footer say which place")
+    f.journalRows[1].stampBtn:GetScript("OnClick")(f.journalRows[1].stampBtn)
+    check(P.journalFilter == nil and f.footerFS.__text:find("^3 notes"), "Journal: click again: every note")
+
+    -- the oldest makes room when the journal is full
+    local maxE = P.NOTE_MAX_ENTRIES
+    P.NOTE_MAX_ENTRIES = 3
+    CFQ.AddEntry("Fourth")
+    check(#CFQ.notes.journal == 3 and CFQ.notes.journal[1] == a and CFQ.notes.journal[3].text == "Fourth", "Journal: full: the oldest entry makes room")
+    P.NOTE_MAX_ENTRIES = maxE
+
+    -- /hanky entry
+    SlashCmdList["HANDKERQUEST"]("entry Saw a Murloc Wearing a Hat")
+    check(CFQ.notes.journal[#CFQ.notes.journal].text == "Saw a Murloc Wearing a Hat", "/hanky entry writes in the journal as typed")
+    SlashCmdList["HANDKERQUEST"]("note Fizz Owes Me")
+    check(CFQ.notes.journal[#CFQ.notes.journal].text == "Fizz Owes Me", "/hanky note writes a note as typed")
+    do  -- bare "/hanky note": says how to use it (it used to open the tracker's filter menu)
+        local nJ, said = #CFQ.notes.journal, nil
+        local realPrint = print
+        print = function(s) said = s end
+        SlashCmdList["HANDKERQUEST"]("note")
+        print = realPrint
+        check(#CFQ.notes.journal == nJ and said and said:find("/hanky note <text>", 1, true), "bare /hanky note explains itself (" .. tostring(said) .. ")")
+    end
+
+    -- the tally stays up while you read the Journal, even with nothing to gather anywhere
+    local realHide = P.ShouldHideUnfiltered
+    P.ShouldHideUnfiltered = function() return true end
+    redraw()
+    check(f:IsShown() and P.selectedKey == P.JOURNAL_KEY, "Journal: the tally stays up while it's open")
+    P.SelectArea(P.areas[1].key)
+    check(not f:IsShown(), "Journal: ...but Near me with nothing on it is put away as before")
+    P.ShouldHideUnfiltered = realHide
+    P.selectedKey = P.JOURNAL_KEY
+    redraw()
+
+    -- walking into a new area never turns the page away from what you're writing
+    f.journalWrite:GetScript("OnClick")(f.journalWrite, "LeftButton")
+    local sub0 = SUBZONE
+    SUBZONE = "Somewhere Else"
+    CFQ.parchmentOpts.autoFrontOnAreaChange = true
+    P.CheckAreaChange(f)
+    frames(40)
+    check(P.selectedKey == P.JOURNAL_KEY and P.journalEditing, "Journal: a new area doesn't turn the page while you write")
+    eb:GetScript("OnEscapePressed")(eb)
+    SUBZONE = sub0
+    P.CheckAreaChange(f); frames(40)
+    P.selectedKey = P.areas[1].key
+    redraw()
+
+    -- "For me": "write a note" goes to the Journal (flying off to the page corner)
+    local wl, nl = f.forMeWrite, f.forMeNote
+    local nTasks, nEntries = #CFQ.notes.tasks, #CFQ.notes.journal
+    nl:GetScript("OnClick")(nl, "LeftButton")
+    check(P.forMeEditing and CFQ.notes.writeMode == "entry" and wl.mode.glyphKind == "entry" and not nl.__shown,
+        "For me: 'write a note' opens the box with a quill in front (the choices step aside)")
+    f.forMeEdit:SetText("Fizz owes me a copper")
+    f.forMeEdit:GetScript("OnEnterPressed")(f.forMeEdit)
+    check(#CFQ.notes.tasks == nTasks and #CFQ.notes.journal == nEntries + 1 and CFQ.notes.journal[#CFQ.notes.journal].text == "Fizz owes me a copper",
+        "For me: an entry goes to the Journal, not the tasks")
+    check(f.fly and f.flyFS.__shown and f.flyFS.__text == "Fizz owes me a copper", "For me: the entry flies off to the page corner")
+    local c = f.corner
+    frames(60)
+    check(not f.fly and not f.flyFS.__shown, "For me: ...and lands")
+    check(c.size > P.CORNER_REST or c.target == P.CORNER_REST, "For me: the corner flicks as it lands")
+    check(nl.__shown and wl.mode.glyphKind == "task", "For me: back to the two choices after writing")
+    -- 'add a task' always starts a task, whatever was written last
+    wl:GetScript("OnClick")(wl, "LeftButton")
+    check(CFQ.notes.writeMode == "task" and wl.mode.glyphKind == "task", "For me: 'add a task' starts a task")
+    f.forMeEdit:GetScript("OnEscapePressed")(f.forMeEdit)
+    -- switching while typing keeps you writing
+    nl:GetScript("OnClick")(nl, "LeftButton")
+    f.forMeEdit:SetText("half a thought")
+    NOW = NOW + 1
+    wl.mode.IsMouseOver = function() return true end
+    f.forMeEdit:GetScript("OnEditFocusLost")(f.forMeEdit)
+    check(P.forMeEditing and #CFQ.notes.journal == nEntries + 1, "For me: clicking the switch while typing doesn't end the writing")
+    wl.mode:GetScript("OnClick")(wl.mode)
+    wl.mode.IsMouseOver = nil
+    check(CFQ.notes.writeMode == "task" and P.forMeEditing, "For me: ...it just switches (now a task)")
+    f.forMeEdit:GetScript("OnEnterPressed")(f.forMeEdit)
+    check(#CFQ.notes.tasks == nTasks + 1 and CFQ.notes.tasks[#CFQ.notes.tasks].text == "half a thought", "For me: ...and Enter keeps it as a task")
+
+    -- saved and loaded back
+    CFQ.notes.writeMode = "entry"
+    P.ForMeChanged()
+    local nJ = #CFQ.notes.journal
+    Fire("ADDON_LOADED", "Handkerquest")
+    check(#CFQ.notes.journal == nJ and CFQ.notes.writeMode == "entry" and CFQ.notes.journal[1].place, "Journal: entries and the switch survive a reload")
+    QRF_SavedState.notes = { journal = { 7, { text = false }, { text = "ok", place = { zone = 5, subzone = "Goldshire" } } }, writeMode = "bogus" }
+    Fire("ADDON_LOADED", "Handkerquest")
+    check(#CFQ.notes.journal == 1 and CFQ.notes.journal[1].text == "ok" and CFQ.notes.journal[1].place.zone == nil
+        and CFQ.notes.journal[1].place.subzone == "Goldshire" and CFQ.notes.writeMode == "task", "Journal: a broken save loads what it can")
+
+    -- switched off: no Journal page
+    CFQ.parchmentOpts.forMe = false
+    redraw()
+    check(not P.areas[#P.areas].isJournal, "Journal: no page with For me switched off")
+    local said
+    local realPrint = print
+    print = function(s) said = s end
+    SlashCmdList["HANDKERQUEST"]("journal")
+    print = realPrint
+    check(said and said:find("For me", 1, true) and P.selectedKey ~= P.JOURNAL_KEY, "/hanky journal with it off: says how to switch it on")
+
+    CFQ.notes = { tasks = {}, journal = {}, forMeFolded = false, writeMode = "task" }
+    P.journalFilter = nil
+    f:SetSize(fw0, fh0)
+    P.selectedKey = P.areas[1].key
+    redraw()
+end
+do  -- Tabs: the two quick tabs, cut from the sheet itself (Near me above Journal, right edge)
+    local function redraw() P.OnTallyChoiceChanged() end
+    local fw0, fh0 = f:GetWidth(), f:GetHeight()
+    local look0 = CFQ.parchmentStyle
+    f:SetSize(320, 420)
+    CFQ.parchmentOpts.forMe = true
+    CFQ.notes = { tasks = {}, journal = {}, forMeFolded = false, writeMode = "task" }
+    CFQ.parchmentStyle = "RAG"; P.ApplyStyle()
+    P.selectedKey = P.areas[1].key
+    P.tabBack = nil
+    redraw()
+    local near, jt = f.tabs and f.tabs.near, f.tabs and f.tabs.journal
+    check(near and jt and near.__shown and jt.__shown, "Tabs: both shown with For me on")
+    local st = P.GetStyle()
+    check(near.tex.__tex == st.image and jt.tex.__tex == st.image, "Tabs: cut from the sheet's own image (the very same rag)")
+    check(not f.knots, "Tabs: no knots any more")
+
+    -- under the top sheet, sticking out of its right edge, below the close button, Near me above Journal
+    check(near.__level < f.topSheet.__level and near.__level > f.backSheets[1].__level, "Tabs: tucked under the top sheet, above the pages underneath")
+    local _, padT = P.GetPads(f)
+    check(near.y >= padT + 20 and jt.y >= near.y + P.TAB_H, "Tabs: below the close button, Near me above the Journal")
+    local function right(T) return T.x0 + T.width end
+    check(near.edgeX > f:GetWidth() * 0.85 and right(near) > near.edgeX + P.TAB_OUT - 1, "Tabs: they stick out past the sheet's right edge")
+    -- the strip's material edge lands P.TAB_OUT (+ open) past the sheet's edge: its right end = edge + 4 + out
+    check(math.abs(right(near) - (near.edgeX + 4 + near.out)) < 0.01 and math.abs(right(jt) - (jt.edgeX + 4 + jt.out)) < 0.01,
+        "Tabs: each is the sheet's edge moved out by exactly its reach")
+    local tc = near.tex.__tc
+    check(tc and math.abs(tc[3] - near.y / f:GetHeight()) < 1e-6 and math.abs((tc[2] - tc[1]) * f:GetWidth() - near.width) < 1e-6,
+        "Tabs: the strip is the sheet's own rows at that height, unstretched")
+    check(near.open and not jt.open and near.out == P.TAB_OUT + P.TAB_OPEN and jt.out == P.TAB_OUT, "Tabs: the open page's tab sticks out further")
+    check(jt.tex.__vc and jt.tex.__vc[1] < 1 and near.tex.__vc[1] == 1, "Tabs: a closed tab sits a shade back")
+    -- only the part sticking out takes the mouse
+    check(near.glyph.__points[1] and near.strokes[1] and near.strokes[1].main.__shown, "Tabs: each has its inked glyph")
+
+    -- hover slides it out a little, then back
+    jt:GetScript("OnEnter")(jt)
+    check(jt.slideTo == P.TAB_HOVER and f.tabsMoving, "Tabs: hover slides it out")
+    frames(30)
+    check(math.abs(jt.slide - P.TAB_HOVER) < 0.06, "Tabs: ...out")
+    jt:GetScript("OnLeave")(jt)
+    frames(30)
+    check(jt.slide == 0 and not f.tabsMoving, "Tabs: ...and back")
+
+    -- click: turn to the page; again: back where you were
+    jt:GetScript("OnClick")(jt, "LeftButton")
+    frames(60)
+    check(P.selectedKey == P.JOURNAL_KEY and jt.open and not near.open, "Tabs: the quill tab turns to the Journal (and is now the open one)")
+    jt:GetScript("OnClick")(jt, "LeftButton")
+    frames(60)
+    check(P.selectedKey == P.CURRENT_KEY, "Tabs: on the Journal, its tab turns back where you were")
+    jt:GetScript("OnClick")(jt, "LeftButton"); frames(60)
+    near:GetScript("OnClick")(near, "LeftButton"); frames(60)
+    check(P.selectedKey == P.CURRENT_KEY, "Tabs: the compass tab turns to Near me")
+    local farKey
+    for _, a in ipairs(P.areas) do if not a.isCurrent and not a.isJournal then farKey = a.key break end end
+    if farKey then
+        P.SelectArea(farKey); P.tabBack = nil
+        near:GetScript("OnClick")(near, "LeftButton"); frames(60)
+        near:GetScript("OnClick")(near, "LeftButton"); frames(60)
+        check(P.selectedKey == farKey, "Tabs: on Near me, its tab turns back to the area page you came from")
+    end
+    near:GetScript("OnClick")(near, "LeftButton"); frames(60)
+
+    -- a note flies into the Journal tab, which gives a tug
+    P.selectedKey = P.areas[1].key; redraw()
+    f.forMeNote:GetScript("OnClick")(f.forMeNote, "LeftButton")
+    f.forMeEdit:SetText("Into the tab")
+    f.forMeEdit:GetScript("OnEnterPressed")(f.forMeEdit)
+    check(f.fly ~= nil, "Tabs: a note flies off")
+    frames(50)
+    check(not f.fly and (jt.slide > 0 or jt.slideTo == 0), "Tabs: ...and the Journal tab tugs as it lands")
+    frames(60)
+
+    -- every look: image looks cut from their image; drawn looks in their paper colour
+    for _, look in ipairs({ "CRUMPLED", "STONE", "BARK", "LEAF", "LEATHER", "MARBLE", "GILDED", "VELLUM", "ARCANE" }) do
+        CFQ.parchmentStyle = look; P.ApplyStyle(); redraw()
+        local s2 = P.GetStyle()
+        check(near.__shown and near.tex.__tex == s2.image and near.edgeX > 0 and near.edgeX <= f:GetWidth(), "Tabs: " .. look .. " cut from its own image")
+    end
+    CFQ.parchmentStyle = "HANDKERCHIEF"; P.ApplyStyle(); redraw()
+    local pp = P.GetStyle().paper
+    check(near.tex.__color and math.abs(near.tex.__color[1] - pp[1]) < 1e-6, "Tabs: the handkerchief's tabs are its own colour")
+
+    -- the edge measurements: a column with no material borrows the nearest one that has it
+    check(P.EdgeAt({ 0.998, 0.10, 0.20, 0.998 }, 0) == 0.10 and math.abs(P.EdgeAt({ 0.1, 0.3 }, 0.5) - 0.2) < 1e-9,
+        "Tabs: edge lookup skips rows with no material and blends between samples")
+
+    -- switched off: no tabs
+    CFQ.parchmentOpts.forMe = false
+    redraw()
+    check(not jt.__shown and not near.__shown, "Tabs: none with For me switched off")
+
+    CFQ.parchmentStyle = look0; P.ApplyStyle()
+    CFQ.notes = { tasks = {}, journal = {}, forMeFolded = false, writeMode = "task" }
+    P.tabBack = nil
+    f:SetSize(fw0, fh0)
+    P.selectedKey = P.areas[1].key
     redraw()
 end
 do  -- every look survives a reload (sanctified marble / gilded plate / illuminated vellum used to fall back to the rag)
