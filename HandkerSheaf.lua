@@ -66,6 +66,8 @@ local CFQ = {
         tallyTasks = true,              -- ...and tasks: enemies to slay / other quest steps
         tallySeparate = false,          -- tasks under their own heading, after the items
         forMe = true,                   -- "For me": your own tasks at the bottom of the "Near me" page
+        autoAchievements = false,       -- the Journal writes down the achievements you earn (only if this client has them)
+        autoQuests = false,             -- the Journal writes down the quests you turn in, and what they gave you
     },
     parchmentFont = "QUILL",            -- handwriting on the parchment: "QUILL", "SCRAWL", "PLAIN" or "BLOTTED" (P.FONT_STYLES)
     parchmentStyle = "RAG",             -- the tally's look: "RAG", "CRUMPLED", "STONE", "BARK", "LEAF", "LEATHER", "ARCANE", "HANDKERCHIEF", "PARCHMENT" or "NATIVE"
@@ -5303,7 +5305,34 @@ function CFQ.LoadNoteFields(t)
         t = (type(t.t) == "number") and t.t or nil,
         when = (type(t.when) == "string") and t.when or nil,
         owner = (type(t.owner) == "string") and t.owner or nil,
+        auto = (t.auto == "achievement" or t.auto == "quest") and t.auto or nil,
+        autoText = (type(t.autoText) == "string") and t.autoText or nil,
     }
+    if out.auto == "quest" and type(t.quests) == "table" then
+        local function num(v) return (type(v) == "number") and v or nil end
+        local function str(v) return (type(v) == "string") and v or nil end
+        out.quests = {}
+        for _, q in ipairs(t.quests) do
+            if type(q) == "table" and type(q.title) == "string" then
+                local lq = { id = num(q.id), title = q.title, xp = num(q.xp) or 0, money = num(q.money) or 0, items = {} }
+                for _, it in ipairs((type(q.items) == "table") and q.items or {}) do
+                    if type(it) == "table" and type(it.name) == "string" then
+                        table.insert(lq.items, { name = it.name, count = num(it.count) or 1, quality = num(it.quality), id = num(it.id), link = str(it.link) })
+                    end
+                end
+                table.insert(out.quests, lq)
+            end
+        end
+    end
+    if out.auto and type(t.achievements) == "table" then
+        out.achievements = {}
+        for _, a in ipairs(t.achievements) do
+            if type(a) == "table" and type(a.name) == "string" then
+                table.insert(out.achievements, { id = (type(a.id) == "number") and a.id or nil, name = a.name,
+                    points = (type(a.points) == "number") and a.points or 0 })
+            end
+        end
+    end
     if type(t.place) == "table" then
         local pl = t.place
         out.place = {
@@ -6005,6 +6034,19 @@ P.WRITE_GLYPHS = {
     },
 }
 
+do
+    local pts, star = {}, {}
+    for k = 0, 4 do
+        local ang = math.rad(90 + 72 * k)
+        pts[k + 1] = { 6.5 + 4.6 * math.cos(ang), -6.5 + 4.6 * math.sin(ang) }
+    end
+    for k = 0, 4 do
+        local p, q = pts[k + 1], pts[(k + 2) % 5 + 1]
+        star[k + 1] = { p[1], p[2], q[1], q[2], 0.8 }
+    end
+    P.WRITE_GLYPHS.auto = star      -- after an auto entry's stamp: written by the addon, not by you
+end
+
 -- What the player wrote for an entry: several lines allowed, no "|" (colour / link escapes)
 function CFQ.CleanEntryText(s)
     s = tostring(s or "")
@@ -6026,6 +6068,196 @@ function CFQ.AddEntry(text)
     local e = { text = text, t = t, when = when, place = CFQ.HerePlace(), owner = CFQ.NoteOwner() }
     table.insert(journal, e)
     return e
+end
+
+-- ---- auto entries: the Journal writes some things down by itself (each its own switch in the options) ----
+-- An auto entry has auto = its kind ("achievement") and is drawn in faded ink with a small inked star after
+-- its stamp, so the player's own writing stands out. Ones of a kind within P.AUTO_MERGE seconds in the same
+-- place share an entry ("Earned 3 achievements: ..."), unless the player has re-written it (autoText).
+P.AUTO_MERGE = 300
+
+-- Only offered when this client has achievements (the event was registered: see the loader)
+function CFQ.AchievementsSupported()
+    return CFQ.achievementEvent == true and type(GetAchievementInfo) == "function"
+end
+
+function CFQ.AchievementInfo(id)
+    if type(GetAchievementInfo) ~= "function" or type(id) ~= "number" then return nil end
+    -- id, name, points, completed, month, day, year, description, flags, icon, rewardText, isGuild
+    local ok, _, name, points, _, _, _, _, description, _, _, _, isGuild = pcall(GetAchievementInfo, id)
+    if not ok or type(name) ~= "string" or name == "" then return nil end
+    name = string.gsub(string.gsub(name, "|c%x%x%x%x%x%x%x%x", ""), "|r", "")     -- colour codes off, then any "|"
+    return { name = CFQ.CleanNoteText(name), points = tonumber(points) or 0,
+        description = (type(description) == "string" and description ~= "") and description or nil, isGuild = isGuild and true or false }
+end
+
+function P.AchievementText(list)
+    local pts = 0
+    for _, a in ipairs(list) do pts = pts + (a.points or 0) end
+    local ptsStr = (pts > 0) and string.format(" (%d point%s)", pts, (pts == 1) and "" or "s") or ""
+    if #list == 1 then return "Earned the achievement \"" .. list[1].name .. "\"" .. ptsStr .. "." end
+    local names = {}
+    for i, a in ipairs(list) do names[i] = "\"" .. a.name .. "\"" end
+    local lastName = table.remove(names)
+    return string.format("Earned %d achievements: %s and %s%s.", #list, table.concat(names, ", "), lastName, ptsStr)
+end
+
+-- The last entry, if a new auto entry of this kind should join it: written by the addon within
+-- P.AUTO_MERGE seconds, in the same place, and not re-written by the player since
+function P.AutoMergeTarget(kind, listKey)
+    local journal = CFQ.notes.journal
+    local last = journal[#journal]
+    if not (last and last.auto == kind and last[listKey] and last.text == last.autoText and last.t) then return nil end
+    local t = CFQ.NoteTime()
+    if t - last.t > P.AUTO_MERGE then return nil end
+    local here = CFQ.HerePlace()
+    if P.EntryPlaceName(last) ~= (here.subzone or here.zone) then return nil end
+    return last
+end
+
+-- Write one thing down (kind "achievement" / "quest"; it goes in entry[listKey]); textFn(list) words the entry
+function P.WriteAuto(kind, listKey, thing, textFn, sameFn)
+    local e = P.AutoMergeTarget(kind, listKey)
+    if e then
+        for _, x in ipairs(e[listKey]) do if sameFn(x, thing) then return e end end    -- told twice
+        table.insert(e[listKey], thing)
+        e.text = CFQ.CleanEntryText(textFn(e[listKey]))
+        e.autoText = e.text
+    else
+        e = CFQ.AddEntry(textFn({ thing }))
+        if not e then return nil end
+        e.auto, e[listKey], e.autoText = kind, { thing }, e.text
+    end
+    SaveState()
+    UpdateShoppingListUI()
+    P.TugJournalTab()
+    return e
+end
+
+-- A name from the game, safe to write: colour codes off, then no "|" at all
+function CFQ.CleanName(s)
+    if type(s) ~= "string" then return "" end
+    s = string.gsub(string.gsub(s, "|c%x%x%x%x%x%x%x%x", ""), "|r", "")
+    return CFQ.CleanNoteText(s)
+end
+
+function CFQ.OnAchievementEarned(id)
+    if not (CFQ.parchmentOpts.forMe and CFQ.parchmentOpts.autoAchievements) then return nil end
+    local info = CFQ.AchievementInfo(id)
+    if not info or info.isGuild then return nil end            -- the guild's achievement isn't yours to write down
+    return P.WriteAuto("achievement", "achievements", { id = id, name = info.name, points = info.points },
+        P.AchievementText, function(a, b) return a.id == b.id end)
+end
+
+-- ---- quests turned in, and what they gave ----------------------------------------------------------
+-- The reward panel is read as it opens (QUEST_COMPLETE): the items always given and the ones to choose
+-- from; the one taken comes from GetQuestReward(choice) (hooked). QUEST_TURNED_IN then brings the xp and
+-- money. A quest that completes itself (no reward panel) is written with its xp and money only.
+P.TURN_IN_WAIT = 15         -- seconds a reward panel read without a quest ID stays good for
+
+function P.RewardItem(kind, i)
+    local ok, name, _, count, quality, _, itemID = pcall(GetQuestItemInfo, kind, i)
+    name = ok and CFQ.CleanName(name) or ""
+    if name == "" then return nil end
+    local link
+    if GetQuestItemLink then
+        local okL, l = pcall(GetQuestItemLink, kind, i)
+        if okL and type(l) == "string" and l ~= "" then link = l end
+    end
+    return { name = name, count = tonumber(count) or 1, quality = tonumber(quality), id = tonumber(itemID), link = link }
+end
+
+function CFQ.OnQuestComplete()
+    P.questTurnIn = nil
+    if type(GetQuestItemInfo) ~= "function" then return end
+    local okQ, qid = pcall(function() return GetQuestID and GetQuestID() end)
+    local okT, title = pcall(function() return GetTitleText and GetTitleText() end)
+    local snap = { questID = (okQ and type(qid) == "number" and qid > 0) and qid or nil,
+        title = okT and CFQ.CleanName(title) or "", items = {}, choices = {}, at = GetTime and GetTime() or 0 }
+    local okN, nR = pcall(function() return GetNumQuestRewards and GetNumQuestRewards() or 0 end)
+    for i = 1, (okN and tonumber(nR) or 0) do
+        local it = P.RewardItem("reward", i)
+        if it then table.insert(snap.items, it) end
+    end
+    local okC, nC = pcall(function() return GetNumQuestChoices and GetNumQuestChoices() or 0 end)
+    snap.numChoices = okC and tonumber(nC) or 0
+    for i = 1, snap.numChoices do snap.choices[i] = P.RewardItem("choice", i) or false end
+    P.questTurnIn = snap
+end
+
+function CFQ.OnQuestRewardChosen(choice)
+    if P.questTurnIn then P.questTurnIn.choice = tonumber(choice) end
+end
+
+function P.MoneyText(c)
+    c = math.floor(tonumber(c) or 0)
+    local parts = {}
+    local g, s, k = math.floor(c / 10000), math.floor(c / 100) % 100, c % 100
+    if g > 0 then parts[#parts + 1] = g .. "g" end
+    if s > 0 then parts[#parts + 1] = s .. "s" end
+    if k > 0 then parts[#parts + 1] = k .. "c" end
+    return table.concat(parts, " ")
+end
+
+function P.JoinAnd(list)
+    if #list == 0 then return "" end
+    if #list == 1 then return list[1] end
+    return table.concat(list, ", ", 1, #list - 1) .. " and " .. list[#list]
+end
+
+function P.RewardText(q)
+    local parts = {}
+    for _, it in ipairs(q.items or {}) do
+        parts[#parts + 1] = ((it.count or 1) > 1) and (it.count .. " " .. it.name) or it.name
+    end
+    if (q.xp or 0) > 0 then parts[#parts + 1] = q.xp .. " xp" end
+    if (q.money or 0) > 0 then parts[#parts + 1] = P.MoneyText(q.money) end
+    return P.JoinAnd(parts)
+end
+
+function P.QuestText(list)
+    if #list == 1 then
+        local q, r = list[1], P.RewardText(list[1])
+        return "Turned in \"" .. q.title .. "\"" .. ((r ~= "") and (" and received " .. r) or "") .. "."
+    end
+    local lines = { "Turned in " .. #list .. " quests:" }
+    for _, q in ipairs(list) do
+        local r = P.RewardText(q)
+        lines[#lines + 1] = "\"" .. q.title .. "\"" .. ((r ~= "") and (": " .. r) or "") .. "."
+    end
+    return table.concat(lines, "\n")
+end
+
+function CFQ.OnQuestTurnedIn(questID, xp, money)
+    local snap = P.questTurnIn
+    P.questTurnIn = nil
+    if not (CFQ.parchmentOpts.forMe and CFQ.parchmentOpts.autoQuests) then return nil end
+    questID = tonumber(questID)
+    if snap then      -- the reward panel read for this very quest (or, without IDs, just now)
+        local same
+        if snap.questID and questID then same = (snap.questID == questID)
+        else same = ((GetTime and GetTime() or 0) - (snap.at or 0)) <= P.TURN_IN_WAIT end
+        if not same then snap = nil end
+    end
+    local title = snap and snap.title or ""
+    if title == "" and questID then
+        local qd = questRewardMap[questID]
+        title = CFQ.CleanName(qd and qd.title)
+        if title == "" and C_QuestLog and C_QuestLog.GetTitleForQuestID then
+            local ok, t = pcall(C_QuestLog.GetTitleForQuestID, questID)
+            title = ok and CFQ.CleanName(t) or ""
+        end
+    end
+    if title == "" then return nil end
+    local q = { id = questID, title = title, xp = tonumber(xp) or 0, money = tonumber(money) or 0, items = {} }
+    if snap then
+        for _, it in ipairs(snap.items) do table.insert(q.items, it) end
+        local c = snap.choice
+        if (not c or c < 1) and snap.numChoices == 1 then c = 1 end      -- one to choose: it's given
+        local pick = c and snap.choices[c]
+        if pick then table.insert(q.items, pick) end
+    end
+    return P.WriteAuto("quest", "quests", q, P.QuestText, function(a, b) return a.id ~= nil and a.id == b.id end)
 end
 
 function P.EntryPlaceName(e)
@@ -6217,6 +6449,24 @@ function P.FlyToJournal(f, text, x, y)
     f.fly = { t = 0, x0 = x or 20, y0 = y or 0 }
 end
 
+-- Something just went into the Journal: its tab gives a little tug (no tabs: the corner flicks)
+function P.TugJournalTab(f)
+    f = f or shoppingListFrame
+    if not (f and f:IsShown()) then return end
+    local T = f.tabs and f.tabs.journal
+    if T and T:IsShown() then
+        T.slide = P.TAB_HOVER * 2
+        P.SlideTab(T, 0)
+    else
+        local c = f.corner
+        if c and c:IsShown() then
+            c.size = (c.target or P.CORNER_REST) + 10
+            c.target = c.target or P.CORNER_REST
+            P.DrawCorner(c)
+        end
+    end
+end
+
 function P.AnimateFly(f, dt)
     local fl = f.fly
     if not fl then return end
@@ -6234,17 +6484,7 @@ function P.AnimateFly(f, dt)
     if fl.t >= 1 then
         f.fly = nil
         fs:Hide()
-        if T and T:IsShown() then
-            T.slide = P.TAB_HOVER * 2             -- the tab gives a little tug as the note lands in it
-            P.SlideTab(T, 0)
-        else
-            local c = f.corner
-            if c and c:IsShown() then            -- no tabs: the corner gives a little flick
-                c.size = (c.target or P.CORNER_REST) + 10
-                c.target = c.target or P.CORNER_REST
-                P.DrawCorner(c)
-            end
-        end
+        P.TugJournalTab(f)                        -- the note lands in the Journal tab
         return
     end
     local e = fl.t * fl.t * (3 - 2 * fl.t)       -- ease in and out
@@ -6311,6 +6551,30 @@ function P.EntryTooltip(row, e)
     GameTooltip:AddLine(P.EntryStamp(e) ~= "" and P.EntryStamp(e) or "Note", 1, 0.82, 0)
     local pl = e.place
     if pl and pl.subzone and pl.zone and pl.subzone ~= pl.zone then GameTooltip:AddLine(pl.zone, 0.7, 0.7, 0.7) end
+    if e.auto == "quest" then
+        GameTooltip:AddLine("Written in for you when you turned it in", 0.55, 0.85, 0.55)
+        for _, q in ipairs(e.quests or {}) do
+            GameTooltip:AddLine(q.title, 1, 1, 1)
+            for _, it in ipairs(q.items or {}) do
+                local qc = it.quality and ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[it.quality]
+                local r, g, b = 0.9, 0.9, 0.9
+                if qc then r, g, b = qc.r or r, qc.g or g, qc.b or b end
+                GameTooltip:AddLine("   " .. (((it.count or 1) > 1) and (it.count .. " ") or "") .. it.name, r, g, b)
+            end
+            local extra = {}
+            if (q.xp or 0) > 0 then extra[#extra + 1] = q.xp .. " xp" end
+            if (q.money or 0) > 0 then extra[#extra + 1] = P.MoneyText(q.money) end
+            if #extra > 0 then GameTooltip:AddLine("   " .. table.concat(extra, ", "), 0.8, 0.8, 0.8) end
+        end
+    end
+    if e.auto == "achievement" then
+        GameTooltip:AddLine("Written in for you when you earned it", 0.55, 0.85, 0.55)
+        for _, a in ipairs(e.achievements or {}) do
+            local info = a.id and CFQ.AchievementInfo(a.id)
+            GameTooltip:AddLine(a.name .. (((a.points or 0) > 0) and ("  (" .. a.points .. ")") or ""), 1, 1, 1)
+            if info and info.description then GameTooltip:AddLine(info.description, 0.8, 0.8, 0.8, true) end
+        end
+    end
     GameTooltip:AddLine("Click: write more  |  Shift-Click: rub it out", 0.65, 0.65, 0.65)
     GameTooltip:Show()
 end
@@ -6380,6 +6644,7 @@ function P.RenderJournal(f, area, contentW, contentH, pageStr)
         local row = P.AcquireJournalRow(f, 1)
         row.stamp:SetText("")
         row.stampBtn:Hide()
+        if row.mark then row.mark:Hide() end
         P.SetInkFont(row.text, "item")
         row.text:SetWidth(textW)
         row.text:ClearAllPoints()
@@ -6411,15 +6676,28 @@ function P.RenderJournal(f, area, contentW, contentH, pageStr)
         row.stampBtn.entry = e
         row.stampBtn:SetSize(math.max(10, math.ceil(row.stamp:GetStringWidth() or 10)), stampH + 2)
         row.stampBtn:SetShown(P.EntryPlaceName(e) ~= nil)
+        if e.auto then
+            -- written by the addon: a small inked star after the stamp
+            if not row.mark then
+                row.mark = CreateFrame("Frame", nil, row)
+                row.mark:SetSize(14, 14)
+            end
+            row.mark:ClearAllPoints()
+            row.mark:SetPoint("TOPLEFT", row, "TOPLEFT", 4 + math.ceil(row.stamp:GetStringWidth() or 0) + 5, 0)
+            P.DrawWriteGlyph(row.mark, "auto", false)
+            row.mark:Show()
+        elseif row.mark then
+            row.mark:Hide()
+        end
         P.SetInkFont(row.text, "item")
         row.text:SetWidth(textW)
         row.text:ClearAllPoints()
         row.text:SetPoint("TOPLEFT", row, "TOPLEFT", 4, -(stampH + 4))
-        local ink = st.name or st.ink
+        local ink = e.auto and st.faded or (st.name or st.ink)      -- auto entries in faded ink: yours stand out
         row.text:SetTextColor(ink[1], ink[2], ink[3], 1)
         local beingEdited = editing and editing.entry == e
         row.text:SetText(beingEdited and "" or e.text)
-        P.SetHalo(row.text, beingEdited and "" or e.text, P.INK)
+        P.SetHalo(row.text, beingEdited and "" or e.text, e.auto and st.faded or P.INK)
         local textH = beingEdited and editH or math.max(14, math.ceil(row.text:GetStringHeight() or 14))
         local rowH = stampH + textH + 10
         if shown > 0 and math.abs(y) + rowH > contentH + 4 then break end
@@ -10793,6 +11071,28 @@ function CFQ.BuildOptionsPanel()
         "Write yourself tasks at the bottom of the Near me page (click \"+ add a task\", or /hanky task <what to do>). Tick them off like quest lines; they're kept between logins. Off: the page is all quest lines again (your tasks are kept).",
         function() return CFQ.parchmentOpts.forMe end,
         function(v) CFQ.parchmentOpts.forMe = v; P.CancelForMeEdit(); P.OnTallyChoiceChanged() end)
+    if CFQ.AchievementsSupported() then
+        CFQ.achievementCheck = Check("...write the achievements you earn into the Journal",
+            "When you earn an achievement, a note goes in your Journal by itself: its name and points, the time and where you were. Several earned within a few minutes in one place share a note. Written in faded ink with a small star, so your own notes stand out.",
+            function() return CFQ.parchmentOpts.autoAchievements end,
+            function(v) CFQ.parchmentOpts.autoAchievements = v end, 24)
+        local achRefresh = CFQ.achievementCheck.Refresh
+        CFQ.achievementCheck.Refresh = function(self)
+            achRefresh(self)
+            self:SetAlpha(CFQ.parchmentOpts.forMe and 1 or 0.45)     -- the Journal is part of "For me"
+        end
+    end
+    if CFQ.questTurnInEvent then
+        CFQ.questCheck = Check("...write the quests you turn in into the Journal",
+            "When you turn in a quest, a note goes in your Journal by itself: the quest, what it gave you (the items, the one you chose, xp and money), the time and where you were. Several turned in within a few minutes in one place share a note. Written in faded ink with a small star, so your own notes stand out.",
+            function() return CFQ.parchmentOpts.autoQuests end,
+            function(v) CFQ.parchmentOpts.autoQuests = v end, 24)
+        local qRefresh = CFQ.questCheck.Refresh
+        CFQ.questCheck.Refresh = function(self)
+            qRefresh(self)
+            self:SetAlpha(CFQ.parchmentOpts.forMe and 1 or 0.45)
+        end
+    end
 
     Check("Pages for other areas",
         "Quests that aren't near you go on more pages in the pile, one per place (see Other pages by). Click the dog-eared corner to turn to the next page (right-click to go back).",
@@ -11366,7 +11666,33 @@ loader:RegisterEvent("PLAYER_TARGET_CHANGED")
 loader:RegisterEvent("PLAYER_REGEN_ENABLED")
 loader:RegisterEvent("BAG_UPDATE_COOLDOWN")
 loader:RegisterEvent("LOOT_OPENED")
-loader:SetScript("OnEvent", function(self, event, arg1)
+-- Events this client may not have (an unknown event can't be registered): true if it took
+function CFQ.TryRegister(frame, event)
+    if C_EventUtils and C_EventUtils.IsEventValid then
+        local ok, v = pcall(C_EventUtils.IsEventValid, event)
+        if not (ok and v) then return false end
+    end
+    return pcall(frame.RegisterEvent, frame, event) and true or false
+end
+-- Achievements: only on a client that has them
+CFQ.achievementEvent = (type(GetAchievementInfo) == "function") and CFQ.TryRegister(loader, "ACHIEVEMENT_EARNED") or false
+-- Quests turned in: the reward panel is read as it opens, the reward taken is seen through GetQuestReward
+CFQ.questTurnInEvent = CFQ.TryRegister(loader, "QUEST_TURNED_IN")
+if CFQ.questTurnInEvent then
+    CFQ.TryRegister(loader, "QUEST_COMPLETE")
+    if type(GetQuestReward) == "function" and hooksecurefunc then
+        pcall(hooksecurefunc, "GetQuestReward", function(choice) pcall(CFQ.OnQuestRewardChosen, choice) end)
+    end
+end
+loader:SetScript("OnEvent", function(self, event, arg1, arg2, arg3)
+    if event == "ACHIEVEMENT_EARNED" or event == "QUEST_COMPLETE" or event == "QUEST_TURNED_IN" then
+        local ok, err
+        if event == "ACHIEVEMENT_EARNED" then ok, err = pcall(CFQ.OnAchievementEarned, arg1)
+        elseif event == "QUEST_COMPLETE" then ok, err = pcall(CFQ.OnQuestComplete)
+        else ok, err = pcall(CFQ.OnQuestTurnedIn, arg1, arg2, arg3) end
+        if not ok then CFQ.ReportError(err) end
+        return
+    end
     if event == "BAG_UPDATE_COOLDOWN" then
         for _, b in ipairs(CFQ.itemButtons) do if b:IsShown() then CFQ.UpdateItemCooldown(b) end end
         return

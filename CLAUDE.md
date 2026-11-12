@@ -287,6 +287,40 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
     (`P.tabBack`). Tooltip names the page (Journal: note count) and what a click does.
   - A note written in "For me" flies into the Journal tab, which gives a little tug as it lands (the
     dog-ear flicks only when the tabs are off).
+- **Auto entries** (built, first part of step 5 of the notes plan): the Journal writes some things down by
+  itself; each trigger is its own switch in the options panel, never on the tally.
+  - **Achievements** (user request, built first): `ACHIEVEMENT_EARNED` → `CFQ.OnAchievementEarned` writes
+    "Earned the achievement "Level 10" (10 points)." via `CFQ.AddEntry` (stamped like the player's own).
+    Only offered on a client that has them: the event is registered only if `GetAchievementInfo` exists and
+    `C_EventUtils.IsEventValid` (when present) says so (`CFQ.achievementEvent`, `CFQ.AchievementsSupported`);
+    otherwise the option isn't built. Check in game that this client has achievements.
+  - Switch: "...write the achievements you earn into the Journal" (`parchmentOpts.autoAchievements`, **off
+    by default** as agreed), indented under "For me", greyed and inert while "For me" is off.
+  - Guild achievements are skipped; colour codes / `|` stripped from names (`CFQ.AchievementInfo`).
+  - Merging: one of the same kind within `P.AUTO_MERGE` (5 min) in the same place joins the last entry
+    ("Earned 2 achievements: "A" and "B" (20 points).") unless the player re-wrote it (`text ~= autoText`);
+    the same achievement twice is written once.
+  - An auto entry has `auto = "achievement"`, `achievements = { { id, name, points } }`, `autoText` (all
+    loaded by `CFQ.LoadNoteFields`). Drawn in the **faded ink** (and faded wet ink) with a **small inked
+    five-pointed star** after its stamp (`P.WRITE_GLYPHS.auto`, `row.mark`), so the player's own writing
+    stands out. Tooltip lists each achievement with its description. Click / shift-click as any entry.
+  - Arriving, the Journal tab tugs (`P.TugJournalTab`, shared with a note flying in).
+  - **Quests turned in, with what they gave** (user request): "Turned in "Recipe of the Kaldorei" and
+    received 2 Linen Cloth, Hunting Bow, 450 xp and 1g 23s 45c." The reward panel is read as it opens
+    (`QUEST_COMPLETE` → `CFQ.OnQuestComplete`: `GetQuestID`, `GetTitleText`, `GetQuestItemInfo` /
+    `GetQuestItemLink` for "reward" and "choice"), the reward taken comes from hooking `GetQuestReward(choice)`
+    (a lone choice is given anyway), and `QUEST_TURNED_IN` (questID, xp, money) writes it
+    (`CFQ.OnQuestTurnedIn`). A panel read for another quest (or, without IDs, over `P.TURN_IN_WAIT` s ago) is
+    never used; no panel (a quest that completes itself) = xp and money only, the name from
+    `questRewardMap` / `C_QuestLog.GetTitleForQuestID`; no name = nothing written. Money here is what the
+    quest gave, not a money trigger. Several merged = "Turned in 2 quests:" and a line each.
+    Saved as `auto = "quest"`, `quests = { { id, title, xp, money, items = { { name, count, quality, id,
+    link } } } }`; the tooltip lists each quest, its items in their quality colour, xp and money.
+    Switch "...write the quests you turn in into the Journal" (`parchmentOpts.autoQuests`, off by default),
+    offered only if `QUEST_TURNED_IN` registers (`CFQ.TryRegister`, `CFQ.questTurnInEvent`).
+    Not built: "only quests that took longer than X days".
+  - Shared: `P.WriteAuto(kind, listKey, thing, textFn, sameFn)` / `P.AutoMergeTarget`; kinds never merge
+    with each other. `CFQ.CleanName` strips colour codes and `|` from game names.
 
 ## Planned: notes and journal (design agreed with the user, Nov 2026)
 Private notes inside the tally. **Steps 1-3 ("For me" tasks + writing line, Journal page + entries +
@@ -354,12 +388,11 @@ threshold set in the **options panel** (never on the tally). Each trigger is its
   - **first time ever looted** (remember every item ID looted; catches odd greys/whites);
   - later extra: **our own observed rate** ("seen in under N% of kills"), counted from loot tries like the
     quest-item counts behind `P.RULE_OUT_LOOTS`; only meaningful after many kills.
-- **Achievements earned** (`ACHIEVEMENT_EARNED`): only offered if this client has achievements — check in
-  game first; hide the option when the API/event is missing.
+- ~~**Achievements earned**~~ (built: see "Auto entries" in "Design rules").
 - **Level ups** (`PLAYER_LEVEL_UP`): every level, or every 5 / 10.
 - **Rare / elite kills** (`UnitClassification`: rare, elite, rareelite, worldboss).
 - **New places**: first time entering a zone / subzone.
-- **Quests turned in**: all, or only those that took longer than X days.
+- ~~**Quests turned in**~~ (built, with their rewards; "only those that took longer than X days" not built).
 - **Deaths** (optional): "Died to Hogger, Elwynn Forest".
 - **No money trigger** (user decision).
 
@@ -369,7 +402,7 @@ items in the Fargodeep Mine"); everything is **off by default except level ups a
 
 **Build order**: ~~"For me" tasks + writing line~~ (done) → ~~Journal page + entries/stamps (+ the task/entry
 switch on the writing line)~~ (done; hover map for entries still to do) → ~~quick tabs~~ (done, cut from the sheet; knots dropped) → "with" + quick-insert
-menu → auto-recording.
+menu → auto-recording (achievements and quests turned in done first, at the user's request; the other triggers still to do).
 
 ## Code conventions
 - Main chunk is near Lua's 200-local limit: put new state/functions in the `CFQ` or `P` (parchment)

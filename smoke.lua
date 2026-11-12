@@ -2014,6 +2014,236 @@ do  -- Tabs: the two quick tabs, cut from the sheet itself (Near me above Journa
     P.selectedKey = P.areas[1].key
     redraw()
 end
+do  -- Auto entries: the Journal writes down the achievements you earn (off by default; only if the client has them)
+    local function redraw() P.OnTallyChoiceChanged() end
+    local fw0, fh0 = f:GetWidth(), f:GetHeight()
+    f:SetSize(320, 420)
+    CFQ.parchmentOpts.forMe = true
+    CFQ.notes = { tasks = {}, journal = {}, forMeFolded = false, writeMode = "task" }
+    P.journalFilter = nil
+    P.selectedKey = P.areas[1].key
+    redraw()
+    check(CFQ.achievementEvent == true and CFQ.AchievementsSupported(), "Achievements: this client has them, the event is registered")
+    check(CFQ.parchmentOpts.autoAchievements == false, "Achievements: off by default")
+    check(CFQ.achievementCheck and CFQ.achievementCheck.label.__text:find("achievements you earn", 1, true), "Achievements: the switch is in the options, under For me")
+
+    -- off: nothing written
+    Fire("ACHIEVEMENT_EARNED", 6, false)
+    check(#CFQ.notes.journal == 0, "Achievements: off writes nothing")
+
+    -- on: one entry, stamped like the player's own, marked as auto
+    CFQ.achievementCheck:SetChecked(true)
+    CFQ.achievementCheck:GetScript("OnClick")(CFQ.achievementCheck)
+    check(CFQ.parchmentOpts.autoAchievements == true and QRF_SavedState.parchmentOpts.autoAchievements == true, "Achievements: the switch turns it on (and saves)")
+    local realTime = GetServerTime
+    local clock = 1794350400
+    GetServerTime = function() return clock end
+    Fire("ACHIEVEMENT_EARNED", 6, false)
+    local e = CFQ.notes.journal[1]
+    check(#CFQ.notes.journal == 1 and e.text == "Earned the achievement \"Level 10\" (10 points)." and e.auto == "achievement",
+        "Achievements: earning one writes it in the Journal (" .. tostring(e and e.text) .. ")")
+    check(type(e.when) == "string" and e.place and e.place.zone and e.owner and e.achievements[1].id == 6, "Achievements: stamped with time, place and who")
+
+    -- within a few minutes, same place: the same entry; told twice: once
+    clock = clock + 120
+    Fire("ACHIEVEMENT_EARNED", 891, false)
+    Fire("ACHIEVEMENT_EARNED", 891, false)
+    check(#CFQ.notes.journal == 1 and e.text == "Earned 2 achievements: \"Level 10\" and \"Giddy Up!\" (20 points).",
+        "Achievements: two close together share a note (" .. tostring(e.text) .. ")")
+    -- guild achievements aren't yours; colour codes are stripped from names
+    Fire("ACHIEVEMENT_EARNED", 5362, false)
+    check(#CFQ.notes.journal == 1 and #e.achievements == 2, "Achievements: a guild's achievement isn't written down")
+    clock = clock + 60
+    Fire("ACHIEVEMENT_EARNED", 42, false)
+    check(not e.text:find("|", 1, true) and e.achievements[3] and e.achievements[3].name == "Pipe Dream"
+        and not e.achievements[3].name:find("|", 1, true), "Achievements: no colour codes in a name (" .. tostring(e.achievements[3].name) .. ")")
+    -- later: a new entry
+    clock = clock + P.AUTO_MERGE + 1
+    Fire("ACHIEVEMENT_EARNED", 503, false)
+    check(#CFQ.notes.journal == 2 and CFQ.notes.journal[2].text == "Earned the achievement \"50 Quests Completed\" (10 points).", "Achievements: minutes later, a note of its own")
+    -- re-written by the player: never added to
+    local e2 = CFQ.notes.journal[2]
+    e2.text = "My fiftieth! Party at the inn."
+    clock = clock + 10
+    Fire("ACHIEVEMENT_EARNED", 891, false)
+    check(#CFQ.notes.journal == 3 and e2.text == "My fiftieth! Party at the inn.", "Achievements: a note you re-wrote is never added to")
+    -- another place: a new entry
+    local zone0 = SUBZONE
+    SUBZONE = "Fargodeep Mine"
+    clock = clock + 10
+    Fire("ACHIEVEMENT_EARNED", 6, false)
+    check(#CFQ.notes.journal == 4 and P.EntryPlaceName(CFQ.notes.journal[4]) == "Fargodeep Mine", "Achievements: somewhere else, a note of its own")
+    SUBZONE = zone0
+    -- an unknown achievement: nothing, no error
+    local n0 = #CFQ.notes.journal
+    Fire("ACHIEVEMENT_EARNED", 99999, false)
+    Fire("ACHIEVEMENT_EARNED", nil)
+    check(#CFQ.notes.journal == n0, "Achievements: an unknown one writes nothing")
+    GetServerTime = realTime
+
+    -- drawn in faded ink with a small star; your own notes in the ink, no star
+    CFQ.AddEntry("Bought a pie.")
+    SlashCmdList["HANDKERQUEST"]("journal")
+    local st = P.GetStyle()
+    local rows = f.journalRows
+    local mine, auto = rows[1], rows[2]
+    check(mine.text.__text == "Bought a pie." and not (mine.mark and mine.mark.__shown), "Achievements: your own note has no star")
+    check(auto.mark and auto.mark.__shown and auto.mark.strokes and #auto.mark.strokes == 5, "Achievements: an auto note has a small inked star")
+    local c = auto.text.__textColor or auto.text.__color
+    check(c and math.abs(c[1] - st.faded[1]) < 1e-6 and math.abs(c[2] - st.faded[2]) < 1e-6, "Achievements: an auto note is in faded ink")
+    -- its tooltip names what was earned
+    local said = {}
+    local realAdd = GameTooltip.AddLine
+    GameTooltip.AddLine = function(self, s, ...) said[#said + 1] = tostring(s); return realAdd(self, s, ...) end
+    rows[3]:GetScript("OnEnter")(rows[3])
+    GameTooltip.AddLine = realAdd
+    local all = table.concat(said, "\n")
+    check(all:find("Giddy Up!", 1, true) and all:find("Learn the riding skill.", 1, true) and all:find("when you earned it", 1, true),
+        "Achievements: the tooltip lists them with what they were for")
+
+    -- it survives a reload, star and all
+    P.ForMeChanged()
+    Fire("ADDON_LOADED", "Handkerquest")
+    local back = CFQ.notes.journal[1]
+    check(back.auto == "achievement" and #back.achievements == 3 and back.achievements[2].name == "Giddy Up!" and back.autoText == back.text,
+        "Achievements: kept between logins")
+    check(CFQ.notes.journal[#CFQ.notes.journal].auto == nil, "Achievements: your own notes stay your own after a reload")
+    check(CFQ.parchmentOpts.autoAchievements == true, "Achievements: the switch is kept between logins")
+
+    -- For me off: nothing written (the Journal is part of it)
+    CFQ.parchmentOpts.forMe = false
+    local n1 = #CFQ.notes.journal
+    Fire("ACHIEVEMENT_EARNED", 503, false)
+    check(#CFQ.notes.journal == n1, "Achievements: nothing written while For me is off")
+
+    -- a client without achievements: not offered
+    local realGet = GetAchievementInfo
+    GetAchievementInfo = nil
+    check(not CFQ.AchievementsSupported(), "Achievements: a client without them doesn't offer it")
+    check(CFQ.OnAchievementEarned(6) == nil, "Achievements: ...and writes nothing, no error")
+    GetAchievementInfo = realGet
+
+    CFQ.parchmentOpts.autoAchievements = false
+    CFQ.parchmentOpts.forMe = false
+    CFQ.notes = { tasks = {}, journal = {}, forMeFolded = false, writeMode = "task" }
+    f:SetSize(fw0, fh0)
+    P.selectedKey = P.areas[1].key
+    redraw()
+end
+do  -- Auto entries: the quests you turn in, and what they gave you
+    local function redraw() P.OnTallyChoiceChanged() end
+    local fw0, fh0 = f:GetWidth(), f:GetHeight()
+    f:SetSize(320, 420)
+    CFQ.parchmentOpts.forMe = true
+    CFQ.notes = { tasks = {}, journal = {}, forMeFolded = false, writeMode = "task" }
+    P.journalFilter = nil
+    P.selectedKey = P.areas[1].key
+    redraw()
+    check(CFQ.questTurnInEvent == true, "Quests: the turn-in event is registered")
+    check(CFQ.parchmentOpts.autoQuests == false, "Quests: off by default")
+    check(CFQ.questCheck and CFQ.questCheck.label.__text:find("quests you turn in", 1, true), "Quests: the switch is in the options, under For me")
+
+    local function turnIn(panel, choice, id, xp, money)
+        QUEST_PANEL = panel
+        if panel then Fire("QUEST_COMPLETE") end
+        if panel then GetQuestReward(choice) end          -- the hooked call the Complete button makes
+        QUEST_PANEL = nil
+        Fire("QUEST_TURNED_IN", id, xp, money)
+    end
+    local panel1 = { id = 101, title = "Recipe of the Kaldorei", rewards = { { "Linen Cloth", 2, 1, 2589 } },
+        choices = { { "Woodland Shield", 1, 2, 5395 }, { "Hunting Bow", 1, 2, 2504 } } }
+
+    -- off: nothing written
+    turnIn(panel1, 2, 101, 450, 150)
+    check(#CFQ.notes.journal == 0, "Quests: off writes nothing")
+
+    CFQ.questCheck:SetChecked(true)
+    CFQ.questCheck:GetScript("OnClick")(CFQ.questCheck)
+    check(CFQ.parchmentOpts.autoQuests == true and QRF_SavedState.parchmentOpts.autoQuests == true, "Quests: the switch turns it on (and saves)")
+    local realTime = GetServerTime
+    local clock = 1794350400
+    GetServerTime = function() return clock end
+
+    -- the items always given, the one chosen, xp and money
+    turnIn(panel1, 2, 101, 450, 12345)
+    local e = CFQ.notes.journal[1]
+    check(#CFQ.notes.journal == 1 and e.auto == "quest"
+        and e.text == "Turned in \"Recipe of the Kaldorei\" and received 2 Linen Cloth, Hunting Bow, 450 xp and 1g 23s 45c.",
+        "Quests: turning one in writes it with what it gave (" .. tostring(e and e.text) .. ")")
+    check(e.quests[1].id == 101 and e.quests[1].items[2].name == "Hunting Bow" and e.quests[1].items[2].link
+        and not e.text:find("Woodland Shield", 1, true), "Quests: only the reward you chose")
+    check(type(e.when) == "string" and e.place and e.owner, "Quests: stamped with time, place and who")
+
+    -- close together: one note, a line each; one to choose from is given without a choice; told twice: once
+    clock = clock + 60
+    turnIn({ id = 102, title = "Webwood Venom", rewards = {}, choices = { { "Webwood Gloves", 1, 2, 9999 } } }, 0, 102, 300, 0)
+    Fire("QUEST_TURNED_IN", 102, 300, 0)
+    check(#CFQ.notes.journal == 1 and e.text == "Turned in 2 quests:\n\"Recipe of the Kaldorei\": 2 Linen Cloth, Hunting Bow, 450 xp and 1g 23s 45c.\n\"Webwood Venom\": Webwood Gloves and 300 xp.",
+        "Quests: two close together share a note, a line each (" .. tostring(e.text) .. ")")
+
+    -- a quest that completes itself (no reward panel): its name from the quest log, xp and money only
+    clock = clock + 60
+    turnIn(nil, nil, 103, 0, 75)
+    check(#e.quests == 3 and e.text:find("\"Denalan's Earth\": 75c.", 1, true), "Quests: no reward panel: xp and money only, name from the log")
+    -- a reward panel read for another quest isn't used
+    clock = clock + 60
+    QUEST_PANEL = { id = 555, title = "Some Other Quest", rewards = { { "Wrong Thing", 1, 1, 1 } }, choices = {} }
+    Fire("QUEST_COMPLETE"); QUEST_PANEL = nil
+    Fire("QUEST_TURNED_IN", 101, 10, 0)
+    check(not e.text:find("Wrong Thing", 1, true) and not e.text:find("Some Other Quest", 1, true), "Quests: another quest's rewards are never written in")
+    -- no name anywhere: nothing written, no error
+    local n0 = #CFQ.notes.journal
+    local q0 = #e.quests
+    Fire("QUEST_TURNED_IN", 424242, 10, 0)
+    Fire("QUEST_TURNED_IN", nil, nil, nil)
+    check(#CFQ.notes.journal == n0 and #e.quests == q0, "Quests: one with no name writes nothing")
+
+    -- later: a note of its own; achievements and quests never share one
+    clock = clock + P.AUTO_MERGE + 1
+    turnIn({ id = 102, title = "Webwood Venom", rewards = {}, choices = {} }, 0, 102, 0, 0)
+    check(#CFQ.notes.journal == 2 and CFQ.notes.journal[2].text == "Turned in \"Webwood Venom\".", "Quests: nothing received: just the quest")
+    CFQ.parchmentOpts.autoAchievements = true
+    clock = clock + 5
+    Fire("ACHIEVEMENT_EARNED", 6, false)
+    check(#CFQ.notes.journal == 3 and CFQ.notes.journal[3].auto == "achievement", "Quests: an achievement gets a note of its own")
+    CFQ.parchmentOpts.autoAchievements = false
+    GetServerTime = realTime
+
+    -- drawn like the achievement notes; the tooltip lists the quests and what each gave
+    SlashCmdList["HANDKERQUEST"]("journal")
+    local rows = f.journalRows
+    local qrow = rows[3]
+    check(qrow.mark and qrow.mark.__shown, "Quests: a quest note has the small star")
+    local said = {}
+    local realAdd = GameTooltip.AddLine
+    GameTooltip.AddLine = function(self, s, ...) said[#said + 1] = tostring(s); return realAdd(self, s, ...) end
+    qrow:GetScript("OnEnter")(qrow)
+    GameTooltip.AddLine = realAdd
+    local all = table.concat(said, "\n")
+    check(all:find("when you turned it in", 1, true) and all:find("Recipe of the Kaldorei", 1, true) and all:find("Hunting Bow", 1, true)
+        and all:find("450 xp, 1g 23s 45c", 1, true), "Quests: the tooltip lists each quest and what it gave")
+
+    -- kept between logins
+    P.ForMeChanged()
+    Fire("ADDON_LOADED", "Handkerquest")
+    local back = CFQ.notes.journal[1]
+    check(back.auto == "quest" and #back.quests == 3 and back.quests[1].items[2].name == "Hunting Bow" and back.quests[1].money == 12345
+        and back.autoText == back.text, "Quests: kept between logins")
+    check(CFQ.parchmentOpts.autoQuests == true, "Quests: the switch is kept between logins")
+
+    -- For me off: nothing written
+    CFQ.parchmentOpts.forMe = false
+    local n1 = #CFQ.notes.journal
+    turnIn(panel1, 1, 101, 1, 1)
+    check(#CFQ.notes.journal == n1, "Quests: nothing written while For me is off")
+    check(P.MoneyText(10000) == "1g" and P.MoneyText(205) == "2s 5c" and P.MoneyText(0) == "", "Quests: money reads as g / s / c")
+
+    CFQ.parchmentOpts.autoQuests = false
+    CFQ.notes = { tasks = {}, journal = {}, forMeFolded = false, writeMode = "task" }
+    f:SetSize(fw0, fh0)
+    P.selectedKey = P.areas[1].key
+    redraw()
+end
 do  -- every look survives a reload (sanctified marble / gilded plate / illuminated vellum used to fall back to the rag)
     local before = CFQ.parchmentStyle
     for _, key in ipairs({ "MARBLE", "GILDED", "VELLUM", "LEATHER" }) do

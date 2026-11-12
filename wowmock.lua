@@ -46,6 +46,7 @@ function methods:SetVertexColor(r, g, b, a) self.__vc = { r, g, b, a or 1 } end
 function methods:SetShadowColor(r, g, b, a) self.__shadow = { r, g, b, a or 1 } end
 function methods:SetShadowOffset(x, y) self.__shadowOff = { x, y } end
 function methods:SetTexCoord(...) self.__tc = { ... } end
+function methods:SetTextColor(r, g, b, a) self.__textColor = { r, g, b, a } end
 function methods:GetEffectiveScale() return 1 end
 function methods:GetScale() return 1 end
 function methods:SetAlpha(a) self.__alpha = a end
@@ -130,7 +131,10 @@ function UnitLevel() return 7 end
 function UnitName() return "Gnarlpine Ambusher" end
 function strtrim(s) return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", "")) end
 function wipe(t) for k in pairs(t) do t[k] = nil end return t end
-function hooksecurefunc(a, b, c) if type(a) == "table" then local old = a[b]; a[b] = function(...) local r = old and old(...); c(...); return r end end end
+function hooksecurefunc(a, b, c)
+    if type(a) == "table" then local old = a[b]; a[b] = function(...) local r = old and old(...); c(...); return r end
+    elseif type(a) == "string" then local old = _G[a]; _G[a] = function(...) local r = old and old(...); b(...); return r end end
+end
 function geterrorhandler() return function(msg) table.insert(ERRORS, msg); print("ERRORHANDLER: " .. tostring(msg)) end end
 function debugstack() return "(stack)" end
 SlashCmdList = {}
@@ -229,3 +233,38 @@ function GetServerTime() return 1794350400 end
 date = date or os.date
 time = time or os.time
 function GetRealmName() return "Forever" end
+
+-- Achievements (retail API): id, name, points, completed, month, day, year, description, flags, icon, rewardText, isGuild
+ACHIEVEMENTS = {
+    [6] = { "Level 10", 10, "Reach level 10." },
+    [891] = { "Giddy Up!", 10, "Learn the riding skill." },
+    [503] = { "50 Quests Completed", 10, "Complete 50 quests." },
+    [5362] = { "Guild Level 5", 0, "Reach guild level 5.", true },
+    [42] = { "Pipe|cFFFF0000 Dream|r", 0, "Odd name." },
+}
+-- The quest reward panel (retail API): set QUEST_PANEL, then fire QUEST_COMPLETE
+QUEST_PANEL = nil   -- { id, title, rewards = { { name, count, quality, itemID } }, choices = { ... } }
+function GetQuestID() return QUEST_PANEL and QUEST_PANEL.id or 0 end
+function GetTitleText() return QUEST_PANEL and QUEST_PANEL.title or "" end
+function GetNumQuestRewards() return QUEST_PANEL and #QUEST_PANEL.rewards or 0 end
+function GetNumQuestChoices() return QUEST_PANEL and #QUEST_PANEL.choices or 0 end
+function GetQuestItemInfo(kind, i)
+    local list = QUEST_PANEL and ((kind == "choice") and QUEST_PANEL.choices or QUEST_PANEL.rewards)
+    local it = list and list[i]
+    if not it then return nil end
+    return it[1], 134400, it[2], it[3], true, it[4]
+end
+function GetQuestItemLink(kind, i)
+    local list = QUEST_PANEL and ((kind == "choice") and QUEST_PANEL.choices or QUEST_PANEL.rewards)
+    local it = list and list[i]
+    return it and ("|cff1eff00|Hitem:" .. it[4] .. "|h[" .. it[1] .. "]|h|r") or nil
+end
+QUEST_REWARD_TAKEN = nil
+function GetQuestReward(choice) QUEST_REWARD_TAKEN = choice end
+ITEM_QUALITY_COLORS = { [1] = { r = 1, g = 1, b = 1 }, [2] = { r = 0.12, g = 1, b = 0 }, [3] = { r = 0, g = 0.44, b = 0.87 } }
+
+function GetAchievementInfo(id)
+    local a = ACHIEVEMENTS[id]
+    if not a then return nil end
+    return id, a[1], a[2], true, 11, 10, 26, a[3], 0, 236, "", a[4] or false
+end
