@@ -86,6 +86,11 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
 - "...only when something is nearby" (`hideWhenNothingNearby`) sits indented right under "Show the parchment
   tally list" (user decision). Switching the tally on while it stays hidden prints why (`P.TurnTallyOn`,
   `P.HiddenReason`). The options panel is a scroll frame (it's taller than the Settings window).
+- **While "For me" is on, the tally is simply on or off** (user decision, Nov 2026: an empty tally hid the
+  writing line and the Journal tab): `P.ShouldHideTally` never puts it away, with no quests, no tasks, on
+  any page, and "...only when something is nearby" is greyed out and doesn't count. With "For me" off the
+  old rules hold (nothing to list anywhere, or nothing near + that option). Switching "For me" off while the
+  tally is on runs `P.TurnTallyOn`, so chat says why if it just went away.
 - Dog-eared bottom-right corner turns pages; resize grip is bottom-left. No ribbons, no Area/Zone/All cycle.
   On texture looks the fold is the material itself (`P.DrawMaterialFold`): the fold square reaches the
   **image's** corner, so the flap is the material's real edge (curved, lobed, torn) mirrored across the fold
@@ -235,8 +240,7 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
     escapes yet; item links come with the quick-insert menu). Also `/hanky task <text>` (keeps capitals).
   - Room: no tasks = heading + writing line; with quest lines on the page "For me" keeps at most
     `P.FORME_SHARE` (half) of it (`P.ForMeReserve`); quest lines scroll as before.
-  - Open tasks keep the tally up when there are no quest lines anywhere; "...only when something is nearby"
-    still puts it away (tasks don't count as nearby). Options: "For me" checkbox (`parchmentOpts.forMe`,
+  - While "For me" is on the tally is never put away (see "simply on or off" above). Options: "For me" checkbox (`parchmentOpts.forMe`,
     default on; off = nothing drawn, no room kept, tasks kept, no Journal page). `smoke.lua` keeps it off
     for the older checks.
   - **Two choices at the bottom** (user decision: a lone box/quill switch read as a plain checkbox and went
@@ -256,8 +260,8 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
 - **Journal** (built, step 2 of the notes plan): the **last page of the pile** while "For me" is on
   (`P.JournalArea`, key `P.JOURNAL_KEY`, appended to `P.areas` in `UpdateShoppingListUI` after
   `P.BuildAreas`, so never merged or counted in `P.MAX_AREAS`). Reached with its quill tab, the dog-ear
-  or `/hanky journal`; `/hanky entry <text>` writes one. While it's the open page the tally stays
-  up even with nothing to gather.
+  or `/hanky journal`; `/hanky entry <text>` writes one. The Journal exists only while "For me" is
+  on, and then the tally always stays up.
   - `CFQ.notes.journal` = entries in written order (`text`, `t`, `when`, `place`, `owner`; loaded by
     `CFQ.LoadNoteFields`, shared with tasks), drawn **newest first** (`P.RenderJournal`, own row pool
     `f.journalRows`): a stamp line in the sub ink ("10 Nov 21:40  ·  Goldshire", `P.EntryStamp`) over the
@@ -373,8 +377,8 @@ the rest is not built yet: build to this, and move each part into "Design rules"
 - Hovering an entry shows `CFQ.ShowMapPreview` with a dot where it was written. Clicking an entry's
   place stamp filters the Journal to that place (click again = all). No filter buttons.
 - Tasks: **Open** — "everywhere" (suggested default) or "here" (shows in "For me" only near where it was
-  written); right-click switches (built: everywhere only). Built: tasks don't count as nearby for
-  `hideWhenNothingNearby` (**Open** to revisit).
+  written); right-click switches (built: everywhere only). (`hideWhenNothingNearby` no longer applies
+  while "For me" is on: decided.)
 - ~~Ticked tasks~~ (decided and built: ticking moves the task to the Journal as "Done: ...", always; see
   "Design rules"). Right-click a task → "Move to journal" without ticking (needs the step-4 menu;
   right-click currently re-writes).

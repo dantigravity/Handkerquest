@@ -2,7 +2,7 @@
 ## Title: HandkerSheaf
 ## Notes: Never set off without it. Sort your Objective Tracker by level or distance, stack nearby (?) and (•••) quests into card decks, filter by rewards or levels, and keep a handwritten Field Tally of the quest items left to gather and tasks left to do (hover for map reference), and enter your own tasks and notes with a dedicated journal page that you can record your journey in. /hanky
 ## Author: Dantigravity
-## Version: 2.7.1
+## Version: 2.7.2
 ## SavedVariables: QRF_SavedState
 ## IconTexture: Interface\AddOns\Handkerquest\textures\icon
 ## Category-enUS: Quests

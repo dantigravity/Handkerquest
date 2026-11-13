@@ -1668,17 +1668,20 @@ do  -- "For me": your own tasks at the bottom of the "Near me" page
         "For me: when they don't all fit, the newest stays in sight (" .. tostring(lastShown and lastShown.itemText.__text) .. ")")
     check(f.forMeHead.__py <= -P.FORME_GAP and f.forMeHead.__py >= -ContentH(), "For me: the heading stays on the page")
 
-    -- open tasks keep the tally up with no quest lines anywhere; "hide when nothing is nearby" still puts it away
+    -- while "For me" is on the tally is simply on or off: never put away, with or without tasks or quests,
+    -- and "only when something is nearby" doesn't count
     local empty = { { items = {} } }
-    check(not P.ShouldHideTally(empty), "For me: open tasks keep the tally up with no quests")
+    check(not P.ShouldHideTally(empty), "For me on: the tally stays up with no quests")
+    local keptTasks = CFQ.notes.tasks
+    CFQ.notes.tasks = {}
+    check(not P.ShouldHideTally(empty), "For me on: ...and with no tasks either")
+    CFQ.notes.tasks = keptTasks
     CFQ.parchmentOpts.hideWhenNothingNearby = true
-    check(P.ShouldHideTally(empty), "For me: ...but 'only when something is nearby' still hides it")
-    CFQ.parchmentOpts.hideWhenNothingNearby = false
-    for _, t in ipairs(CFQ.notes.tasks) do t.done = true end
-    check(P.ShouldHideTally(empty), "For me: only open tasks count (all ticked: hidden as before)")
-    for _, t in ipairs(CFQ.notes.tasks) do t.done = false end
+    check(not P.ShouldHideTally(empty), "For me on: ...even with 'only when something is nearby'")
     CFQ.parchmentOpts.forMe = false
-    check(P.ShouldHideTally(empty), "For me switched off: tasks don't hold the tally up")
+    check(P.ShouldHideTally(empty), "For me off: 'only when something is nearby' puts it away again")
+    CFQ.parchmentOpts.hideWhenNothingNearby = false
+    check(P.ShouldHideTally(empty), "For me off: nothing to list puts it away (tasks don't hold it up)")
     check(P.ForMeReserve(f, 200, 120, true) == 0, "For me switched off: no room kept")
     redraw()
     check(not f.forMeWrite.__shown and not f.forMeHead.__shown, "For me switched off: nothing drawn")
@@ -1876,14 +1879,19 @@ do  -- Journal: longer entries, newest first, on the last page of the pile
         check(#CFQ.notes.journal == nJ and said and said:find("/hanky note <text>", 1, true), "bare /hanky note explains itself (" .. tostring(said) .. ")")
     end
 
-    -- the tally stays up while you read the Journal, even with nothing to gather anywhere
-    local realHide = P.ShouldHideUnfiltered
-    P.ShouldHideUnfiltered = function() return true end
+    -- with "For me" (and so the Journal) on, the tally stays up with nothing to gather anywhere, on any page
+    local realBuild = P.BuildAreas
+    P.BuildAreas = function() return { { key = "near", title = "Near me", isCurrent = true, items = {} } } end
     redraw()
-    check(f:IsShown() and P.selectedKey == P.JOURNAL_KEY, "Journal: the tally stays up while it's open")
+    check(f:IsShown() and P.selectedKey == P.JOURNAL_KEY, "Journal: the tally stays up while it's open, nothing to gather")
     P.SelectArea(P.areas[1].key)
-    check(not f:IsShown(), "Journal: ...but Near me with nothing on it is put away as before")
-    P.ShouldHideUnfiltered = realHide
+    check(f:IsShown() and P.selectedKey == P.areas[1].key, "Journal: ...and on an empty Near me too (For me is on)")
+    CFQ.parchmentOpts.forMe = false
+    redraw()
+    check(not f:IsShown(), "For me off: an empty tally is put away as before")
+    CFQ.parchmentOpts.forMe = true
+    P.BuildAreas = realBuild
+    redraw()
     P.selectedKey = P.JOURNAL_KEY
     redraw()
 

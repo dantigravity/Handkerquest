@@ -4704,15 +4704,17 @@ function P.HideKindHeadings(f, from)
     end
 end
 
--- Would the tally be put away with these pages? (no lines anywhere, or nothing near you and either no
--- other pages or "hide when nothing is nearby")
+-- Would the tally be put away with these pages? While "For me" is on, never (user decision): it's simply on
+-- or off, since your tasks, the writing line and the Journal tab are on it. Otherwise: no lines anywhere, or
+-- nothing near you and "hide when nothing is nearby".
 function P.ShouldHideTally(areas)
+    if CFQ.parchmentOpts.forMe then return false end
     local current = areas[1]
     local anyItems = false
     for _, a in ipairs(areas) do
         if #a.items > 0 then anyItems = true break end
     end
-    if not anyItems and not CFQ.HasOpenTasks() then return true end
+    if not anyItems then return true end
     return #current.items == 0 and CFQ.parchmentOpts.hideWhenNothingNearby and true or false
 end
 
@@ -5269,8 +5271,9 @@ UpdateShoppingListUI = function()
     end
 
     -- whether to put the tally away is judged on everything it could list, so filtering it down to
-    -- nothing (even with "hide when nothing is nearby") never takes its buttons away
-    if P.ShouldHideUnfiltered(areas) and P.selectedKey ~= P.JOURNAL_KEY then
+    -- nothing (even with "hide when nothing is nearby") never takes its buttons away. With "For me" on
+    -- (and so the Journal) it's never put away.
+    if P.ShouldHideUnfiltered(areas) then
         f:Hide()
         return
     end
@@ -5466,14 +5469,6 @@ function CFQ.AddTask(text)
     local task = { text = text, done = false, t = t, when = when, place = CFQ.HerePlace(), owner = CFQ.NoteOwner() }
     table.insert(CFQ.notes.tasks, task)
     return task
-end
-
-function CFQ.HasOpenTasks()
-    if not CFQ.parchmentOpts.forMe then return false end
-    for _, t in ipairs(CFQ.notes.tasks) do
-        if not t.done then return true end
-    end
-    return false
 end
 
 -- After any change to the tasks: save and redraw (the tally may need to come up or go away)
@@ -7043,7 +7038,7 @@ function P.HiddenReason()
     o.tallyLoot, o.tallyTasks = a, b
     if not ok or type(eligible) ~= "table" then return nil end
     if #eligible == 0 then
-        return "the Field Tally is on, but there's nothing to list yet: it appears when a tracked quest has items to gather or tasks to do."
+        return "the Field Tally is on, but there's nothing to list yet: it appears when a tracked quest has items to gather or tasks to do. (Switch on \"For me\" in the options to keep it up with your own tasks and Journal.)"
     elseif o.hideWhenNothingNearby then
         return "the Field Tally is on, but hidden until something is nearby (Options: \"...only when something is nearby\")."
     end
@@ -11008,9 +11003,10 @@ function CFQ.BuildOptionsPanel()
         "The handwritten checklist of quest items to gather and tasks to do around you.",
         function() return showShoppingList end,
         function(v) if v then P.TurnTallyOn() else showShoppingList = false; RefreshParchment() end end)
-    -- right under it (it decides whether the tally is up at all), greyed out while the tally is off
+    -- right under it (it decides whether the tally is up at all), greyed out while the tally is off, and
+    -- while "For me" is on (then the tally is never put away: P.ShouldHideTally)
     local hideCb = Check("...only when something is nearby",
-        "On: the tally only appears when the area you're in has something to gather or do, and puts itself away when it doesn't. Off: the pile stays up so you can leaf through other areas.",
+        "On: the tally only appears when the area you're in has something to gather or do, and puts itself away when it doesn't. Off: the pile stays up so you can leaf through other areas.\n\nWhile \"For me\" is on, the tally stays up whenever it's switched on (your tasks and Journal are on it), so this only counts with \"For me\" off.",
         function() return CFQ.parchmentOpts.hideWhenNothingNearby end,
         function(v)
             CFQ.parchmentOpts.hideWhenNothingNearby = v
@@ -11019,7 +11015,7 @@ function CFQ.BuildOptionsPanel()
     local hideRefresh = hideCb.Refresh
     hideCb.Refresh = function(self)
         hideRefresh(self)
-        self:SetAlpha(showShoppingList and 1 or 0.45)
+        self:SetAlpha((showShoppingList and not CFQ.parchmentOpts.forMe) and 1 or 0.45)
     end
     -- Slider row: label, slider (1-50% unless lo/hi are given), value, hint. get() returns the value; set(v) applies it.
     local function RadiusSlider(labelText, tipTitle, tipBody, get, set, hintFn, enabledFn, lo, hi)
@@ -11114,9 +11110,12 @@ function CFQ.BuildOptionsPanel()
         function() return CFQ.parchmentOpts.tallySeparate end,
         function(v) CFQ.parchmentOpts.tallySeparate = v; P.OnTallyChoiceChanged() end)
     Check("\"For me\": your own tasks on the Near me page",
-        "Write yourself tasks at the bottom of the Near me page (click \"+ add a task\", or /hanky task <what to do>). Tick them off like quest lines; they're kept between logins. Off: the page is all quest lines again (your tasks are kept).",
+        "Write yourself tasks at the bottom of the Near me page (click \"+ add a task\", or /hanky task <what to do>). Tick one off and it goes to your Journal, stamped with the time. While this is on, the tally stays up whenever it's switched on, even with no quests. Off: the page is all quest lines again and the tally puts itself away when there's nothing to list (your tasks and Journal are kept).",
         function() return CFQ.parchmentOpts.forMe end,
-        function(v) CFQ.parchmentOpts.forMe = v; P.CancelForMeEdit(); P.OnTallyChoiceChanged() end)
+        function(v)
+            CFQ.parchmentOpts.forMe = v; P.CancelForMeEdit(); P.OnTallyChoiceChanged()
+            if showShoppingList and not v then P.TurnTallyOn() end    -- says so in chat if this just put it away
+        end)
     if CFQ.AchievementsSupported() then
         CFQ.achievementCheck = Check("...write the achievements you earn into the Journal",
             "When you earn an achievement, a note goes in your Journal by itself: its name and points, the time and where you were. Several earned within a few minutes in one place share a note. Written in faded ink with a small star, so your own notes stand out.",
