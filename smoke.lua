@@ -1507,7 +1507,7 @@ do  -- "For me": your own tasks at the bottom of the "Near me" page
     local fw0, fh0 = f:GetWidth(), f:GetHeight()
     f:SetSize(320, 420)          -- room for a few tasks under the quest lines
     CFQ.parchmentOpts.forMe = true
-    CFQ.notes = { tasks = {}, forMeFolded = false }
+    CFQ.notes = { tasks = {}, journal = {}, forMeFolded = false }
     P.selectedKey = P.areas[1].key            -- on "Near me"
     redraw()
     check(f:IsShown() and f.forMeWrite and f.forMeWrite.__shown, "For me: the writing line is on Near me")
@@ -1574,12 +1574,25 @@ do  -- "For me": your own tasks at the bottom of the "Near me" page
     check(r1.seed ~= (shoppingListRowPool and shoppingListRowPool[1] and shoppingListRowPool[1].seed), "For me rows have their own wobble")
     check(QRF_SavedState.notes and QRF_SavedState.notes.tasks[1].text == "Buy bigger bags", "For me: saved straight away")
 
-    -- tick it off, and back
+    -- tick it off: it leaves "For me" and goes to the Journal, stamped; right-click there brings it back
+    local nJournal = #CFQ.notes.journal
+    f.fly = nil
     r1:GetScript("OnClick")(r1, "LeftButton")
-    check(CFQ.notes.tasks[1].done and r1.strikes[1] and r1.strikes[1].main.__shown, "For me: click ticks it off and strikes it through")
-    check(r1.box.tick[1].main.__shown, "For me: ...with the quill tick")
-    r1:GetScript("OnClick")(r1, "LeftButton")
-    check(not CFQ.notes.tasks[1].done and not r1.strikes[1].main.__shown, "For me: click again: not done after all")
+    local done = CFQ.notes.journal[#CFQ.notes.journal]
+    check(#CFQ.notes.tasks == 0 and not r1.__shown, "For me: a ticked task leaves Near me")
+    check(#CFQ.notes.journal == nJournal + 1 and done.text == "Done: Buy bigger bags", "For me: ...and goes to the Journal as \"Done: ...\" (" .. tostring(done and done.text) .. ")")
+    check(type(done.when) == "string" and done.when:find("%d+ %a%a%a %d%d:%d%d") and type(done.t) == "number" and done.place and done.place.zone ~= nil,
+        "For me: ...stamped with the time and place it was done")
+    check(done.doneTask and done.doneTask.text == "Buy bigger bags" and done.doneTask.when == t1.when and done.doneTask.place == t1.place,
+        "For me: ...keeping the task as it was written")
+    check(f.fly ~= nil and f.flyFS and f.flyFS.__text == "Done: Buy bigger bags", "For me: ...its words fly off to the Journal tab")
+    check(QRF_SavedState.notes.journal[#QRF_SavedState.notes.journal].text == "Done: Buy bigger bags" and #QRF_SavedState.notes.tasks == 0, "For me: ticking is saved straight away")
+    P.TaskBackFromJournal(done)
+    check(#CFQ.notes.tasks == 1 and CFQ.notes.tasks[1].text == "Buy bigger bags" and not CFQ.notes.tasks[1].done
+        and CFQ.notes.tasks[1].when == t1.when and #CFQ.notes.journal == nJournal, "For me: right-click the Done entry: back to For me, as written")
+    r1 = f.forMeRows[1]
+    check(r1.__shown and r1.itemText.__text == "Buy bigger bags", "For me: ...and on the page again")
+    f.fly = nil
 
     -- Escape: nothing written
     f.forMeWrite:GetScript("OnClick")(f.forMeWrite, "LeftButton")
@@ -1634,10 +1647,9 @@ do  -- "For me": your own tasks at the bottom of the "Near me" page
         "For me: clicking the heading folds it to For me · 2")
     f.forMeHead:GetScript("OnClick")(f.forMeHead, "LeftButton")
     check(not CFQ.notes.forMeFolded and f.forMeRows[1].__shown and f.forMeWrite.__shown, "For me: ...and open again")
-    -- right-click the heading rubs out the ticked ones
-    CFQ.notes.tasks[1].done = true
-    f.forMeHead:GetScript("OnClick")(f.forMeHead, "RightButton")
-    check(#CFQ.notes.tasks == 1 and CFQ.notes.tasks[1].text == "Train cooking", "For me: right-click the heading rubs out ticked tasks")
+    -- tick one more off, so the rest of these checks start from one task
+    f.forMeRows[1]:GetScript("OnClick")(f.forMeRows[1], "LeftButton")
+    check(#CFQ.notes.tasks == 1 and CFQ.notes.tasks[1].text == "Train cooking", "For me: the first task ticked off, the other stays")
 
     -- only on "Near me"
     P.RenderForMe(f, { isCurrent = false }, 0, 200, 120)
@@ -1679,19 +1691,27 @@ do  -- "For me": your own tasks at the bottom of the "Near me" page
     local row3 = f.forMeRows[3]
     table.remove(CFQ.notes.tasks, 1)            -- (as a re-write to nothing would, a frame before the redraw)
     row3:GetScript("OnClick")(row3, "LeftButton")
-    check(CFQ.notes.tasks[2].text == "Three" and CFQ.notes.tasks[2].done and not CFQ.notes.tasks[1].done,
+    check(#CFQ.notes.tasks == 1 and CFQ.notes.tasks[1].text == "Two" and CFQ.notes.journal[#CFQ.notes.journal].text == "Done: Three",
         "For me: a row ticks its own task after the list shifted")
-    for _, t in ipairs(CFQ.notes.tasks) do t.done = false end
+    CFQ.AddTask("Four"); CFQ.AddTask("Five")
 
-    -- saved and loaded back (reload)
-    local n, firstText = #CFQ.notes.tasks, CFQ.notes.tasks[1].text
+    -- saved and loaded back (reload); a task ticked under the old rule (stayed struck) moves to the Journal
+    local nJ = #CFQ.notes.journal
     CFQ.notes.tasks[1].done = true
     CFQ.notes.forMeFolded = true
     P.ForMeChanged()
     Fire("ADDON_LOADED", "Handkerquest")
-    check(#CFQ.notes.tasks == n and CFQ.notes.tasks[1].done and CFQ.notes.tasks[1].text == firstText and CFQ.notes.forMeFolded,
-        "For me: tasks, ticks and the fold survive a reload")
+    check(#CFQ.notes.tasks == 2 and CFQ.notes.tasks[1].text == "Four" and not CFQ.notes.tasks[1].done and CFQ.notes.forMeFolded,
+        "For me: tasks and the fold survive a reload")
     check(CFQ.notes.tasks[1].place and CFQ.notes.tasks[1].place.zone ~= nil, "For me: ...with where they were written")
+    local moved
+    for _, e in ipairs(CFQ.notes.journal) do if e.text == "Done: Two" then moved = e end end
+    check(#CFQ.notes.journal == nJ + 1 and moved and moved.doneTask and moved.doneTask.text == "Two" and moved.when ~= nil,
+        "For me: an old ticked task moves to the Journal on loading")
+    local back
+    for _, e in ipairs(CFQ.notes.journal) do if e.text == "Done: Three" then back = e end end
+    check(back and back.doneTask and back.doneTask.text == "Three" and back.doneTask.place and back.doneTask.place.zone ~= nil,
+        "For me: a Done entry keeps its task through a reload")
     -- a broken save loads what it can
     QRF_SavedState.notes = { tasks = { "junk", { text = 5 }, { text = "" }, { text = "Keep me", done = "yes", place = "here" } }, forMeFolded = "no" }
     Fire("ADDON_LOADED", "Handkerquest")
@@ -1704,6 +1724,33 @@ do  -- "For me": your own tasks at the bottom of the "Near me" page
     CFQ.parchmentOpts.forMe = false
     f:SetSize(fw0, fh0)
     redraw()
+end
+do  -- a task ticked off, in the Journal: "Done: ..." with a ticked box after its stamp; right-click = back to For me
+    local fw0, fh0 = f:GetWidth(), f:GetHeight()
+    f:SetSize(320, 420)
+    CFQ.parchmentOpts.forMe = true
+    CFQ.notes = { tasks = {}, journal = {}, forMeFolded = false, writeMode = "task" }
+    P.journalFilter = nil
+    CFQ.AddEntry("An older note")
+    CFQ.AddTask("Sell the wolf pelts")
+    check(CFQ.CompleteTask(1) ~= nil and #CFQ.notes.tasks == 0, "Done task: CompleteTask takes it off For me")
+    SlashCmdList["HANDKERQUEST"]("journal")
+    local row = f.journalRows[1]
+    check(row.__shown and row.text.__text == "Done: Sell the wolf pelts" and row.stamp.__text == P.EntryStamp(CFQ.notes.journal[2]),
+        "Done task: newest in the Journal, stamped (" .. tostring(row.stamp.__text) .. ")")
+    check(row.mark and row.mark.__shown and row.mark.glyphKind == "done", "Done task: a ticked box after its stamp")
+    check(not (f.journalRows[2].mark and f.journalRows[2].mark.__shown), "Done task: ...your own notes get no mark")
+    row:GetScript("OnClick")(row, "RightButton")
+    check(#CFQ.notes.tasks == 1 and CFQ.notes.tasks[1].text == "Sell the wolf pelts" and #CFQ.notes.journal == 1,
+        "Done task: right-click in the Journal puts it back on For me")
+    f.journalRows[1]:GetScript("OnClick")(f.journalRows[1], "RightButton")
+    check(P.journalEditing and P.journalEditing.entry == CFQ.notes.journal[1], "Done task: right-click on an ordinary note still opens it for writing")
+    P.CancelJournalEdit()
+    CFQ.notes = { tasks = {}, journal = {}, forMeFolded = false, writeMode = "task" }
+    CFQ.parchmentOpts.forMe = false
+    P.selectedKey = P.areas[1] and P.areas[1].key
+    f:SetSize(fw0, fh0)
+    P.OnTallyChoiceChanged()
 end
 do  -- Journal: longer entries, newest first, on the last page of the pile
     local function redraw() P.OnTallyChoiceChanged() end

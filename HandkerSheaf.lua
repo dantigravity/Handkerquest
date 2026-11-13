@@ -5288,10 +5288,13 @@ end
 -- "FOR ME": the player's own tasks, written at the bottom of the "Near me" page
 -- ----------------------------------------------------------------------------
 -- CFQ.notes (saved as QRF_SavedState.notes, account-wide):
---   tasks = { { text, done, t (server time), when ("10 Nov 21:40"), place = { mapID, x, y, zone, subzone },
---               owner ("Name-Realm") }, ... }   in the order written
+--   tasks = { { text, t (server time), when ("10 Nov 21:40"), place = { mapID, x, y, zone, subzone },
+--               owner ("Name-Realm") }, ... }   in the order written, all still to do
+--   journal = { entries, see "the Journal" below }: a task ticked off becomes a "Done: ..." entry there,
+--               with doneTask = the task as written (P.TickTask). A saved task with done = true (the old
+--               rule: it stayed struck) moves there on loading (CFQ.MoveTickedToJournal).
 --   forMeFolded = true while the section is folded to its heading
--- Drawn like tally lines (inked box, quill tick, strike), from their own row pool (f.forMeRows).
+-- Drawn like tally lines (inked box, wet ink, ink drops), from their own row pool (f.forMeRows).
 CFQ.notes = CFQ.notes or { tasks = {}, journal = {}, forMeFolded = false, writeMode = "task" }
 P.NOTE_MAX_LETTERS = 200
 P.NOTE_MAX_TASKS = 200
@@ -5343,7 +5346,26 @@ function CFQ.LoadNoteFields(t)
             subzone = (type(pl.subzone) == "string") and pl.subzone or nil,
         }
     end
+    -- a ticked-off task's entry: the task as it was written (so it can go back to "For me")
+    if type(t.doneTask) == "table" and type(t.doneTask.text) == "string" and t.doneTask.text ~= "" then
+        local dt = CFQ.LoadNoteFields(t.doneTask)
+        out.doneTask = { text = dt.text, t = dt.t, when = dt.when, place = dt.place, owner = dt.owner }
+    end
     return out
+end
+
+-- A task ticked under the old rule (it stayed struck in "For me"): into the Journal, among the entries by
+-- its own time (when it was done is unknown, so its stamp is when it was written)
+function CFQ.MoveTickedToJournal(notes, task)
+    local e = { text = P.DoneEntryText(task.text), t = task.t, when = task.when, place = task.place, owner = task.owner,
+        doneTask = { text = task.text, t = task.t, when = task.when, place = task.place, owner = task.owner } }
+    local at = #notes.journal + 1
+    if task.t then
+        for i, x in ipairs(notes.journal) do
+            if x.t and x.t > task.t then at = i break end
+        end
+    end
+    table.insert(notes.journal, at, e)
 end
 
 -- Saved notes, checked field by field (a broken save never stops the addon loading)
@@ -5362,8 +5384,13 @@ function CFQ.LoadNotes(saved)
         end
         if type(saved.tasks) == "table" then
             for _, t in ipairs(saved.tasks) do
-                if type(t) == "table" and type(t.text) == "string" and t.text ~= "" and #notes.tasks < P.NOTE_MAX_TASKS then
-                    table.insert(notes.tasks, CFQ.LoadNoteFields(t))
+                if type(t) == "table" and type(t.text) == "string" and t.text ~= "" then
+                    local task = CFQ.LoadNoteFields(t)
+                    if task.done then
+                        if #notes.journal < (P.NOTE_MAX_ENTRIES or 1000) then CFQ.MoveTickedToJournal(notes, task) end
+                    elseif #notes.tasks < P.NOTE_MAX_TASKS then
+                        table.insert(notes.tasks, task)
+                    end
                 end
             end
         end
@@ -5455,28 +5482,48 @@ function P.ForMeChanged()
     UpdateShoppingListUI()
 end
 
-function P.ToggleTask(i)
+-- A task ticked off leaves "For me" and goes to the Journal: "Done: ..." stamped with the time and place it
+-- was done; doneTask keeps the task as it was written (its own time and place), so it can go back.
+function P.DoneEntryText(text)
+    return "Done: " .. (text or "")
+end
+
+function CFQ.CompleteTask(i)
     local task = CFQ.notes.tasks[i]
-    if not task then return end
-    task.done = not task.done
+    if not task then return nil end
+    local e = CFQ.AddEntry(P.DoneEntryText(task.text))
+    if not e then return nil end
+    table.remove(CFQ.notes.tasks, i)
+    e.doneTask = { text = task.text, t = task.t, when = task.when, place = task.place, owner = task.owner }
+    return e
+end
+
+-- Click on a task: ticked off, it flies from its line into the Journal tab (y = the line's place on the page)
+function P.TickTask(i, y)
+    local e = CFQ.CompleteTask(i)
+    if not e then return end
+    local f = shoppingListFrame
+    if f then P.FlyToJournal(f, e.text, 20, y or (f.forMeWriteY or 0)) end
     P.ForMeChanged()
+end
+
+-- Right-click a "Done: ..." entry: not done after all, back to "For me" as it was written
+function P.TaskBackFromJournal(e)
+    local dt = e and e.doneTask
+    if not dt or #CFQ.notes.tasks >= P.NOTE_MAX_TASKS then return nil end
+    for i, x in ipairs(CFQ.notes.journal) do
+        if x == e then table.remove(CFQ.notes.journal, i) break end
+    end
+    local task = { text = dt.text, done = false, t = dt.t, when = dt.when, place = dt.place, owner = dt.owner }
+    table.insert(CFQ.notes.tasks, task)
+    P.ForMeChanged()
+    return task
 end
 
 function P.RubOutTask(i)
     if not CFQ.notes.tasks[i] then return end
     table.remove(CFQ.notes.tasks, i)
     P.ForMeChanged()
-end
-
-function P.RubOutTickedTasks()
-    local kept = {}
-    for _, t in ipairs(CFQ.notes.tasks) do
-        if not t.done then table.insert(kept, t) end
-    end
-    local gone = #CFQ.notes.tasks - #kept
-    CFQ.notes.tasks = kept
-    P.ForMeChanged()
-    return gone
 end
 
 function P.ToggleForMeFold()
@@ -5600,7 +5647,7 @@ function P.ModeTooltip(b)
         GameTooltip:AddLine("Stamped with the time and place, then kept in your Journal (the quill tab on the right).", 0.9, 0.9, 0.9, true)
     else
         GameTooltip:AddLine("Writing: a task", 1, 0.82, 0)
-        GameTooltip:AddLine("Stays here in For me until you tick it off.", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine("Stays here in For me until you tick it off; then it goes to your Journal, stamped with the time.", 0.9, 0.9, 0.9, true)
     end
     GameTooltip:AddLine("Click: make it " .. ((P.WriteMode() == "entry") and "a task" or "a note"), 0.65, 0.65, 0.65)
     GameTooltip:Show()
@@ -5684,7 +5731,7 @@ function P.DrawForMeHeading(f, y, w, st, hiddenCount)
     local h = f.forMeHead
     if not h then
         h = CreateFrame("Button", nil, f.content)
-        h:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+        h:RegisterForClicks("LeftButtonUp")
         h.fs = h:CreateFontString(nil, "OVERLAY")
         h.fs:SetJustifyH("LEFT")
         h.fs:SetWordWrap(false)
@@ -5694,9 +5741,7 @@ function P.DrawForMeHeading(f, y, w, st, hiddenCount)
         h.fs:SetPoint("RIGHT", h, "RIGHT", -2, 0)
         h.rule = P.NewStroke(h, "ARTWORK", 4)
         h.rule2 = P.NewStroke(h, "ARTWORK", 4)
-        h:SetScript("OnClick", function(_, button)
-            if button == "RightButton" then P.RubOutTickedTasks() else P.ToggleForMeFold() end
-        end)
+        h:SetScript("OnClick", function() P.ToggleForMeFold() end)
         h:SetScript("OnEnter", function(self)
             P.PlaceTooltip(self)
             GameTooltip:AddLine("For me", 1, 0.82, 0)
@@ -5704,8 +5749,8 @@ function P.DrawForMeHeading(f, y, w, st, hiddenCount)
             if (self.hiddenCount or 0) > 0 then
                 GameTooltip:AddLine(string.format("%d older task%s don't fit: make the tally taller to see them.", self.hiddenCount, self.hiddenCount == 1 and "" or "s"), 0.9, 0.75, 0.4, true)
             end
-            GameTooltip:AddLine((CFQ.notes.forMeFolded and "Left-Click: open" or "Left-Click: fold away")
-                .. "  |  Right-Click: rub out ticked tasks", 0.65, 0.65, 0.65)
+            GameTooltip:AddLine("Ticked off, a task goes to your Journal, stamped with the time.", 0.9, 0.9, 0.9, true)
+            GameTooltip:AddLine(CFQ.notes.forMeFolded and "Left-Click: open" or "Left-Click: fold away", 0.65, 0.65, 0.65)
             GameTooltip:Show()
         end)
         h:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -5741,7 +5786,8 @@ function P.DrawForMeHeading(f, y, w, st, hiddenCount)
     h:Show()
 end
 
--- One task, inked like a tally line: open = full ink, done = ticked, faded and struck through
+-- One task, inked like a tally line (an empty box, full ink). Never drawn ticked: a task ticked off goes
+-- to the Journal (P.TickTask).
 function P.InkTaskRow(f, row, task, textW, st)
     P.StyleRow(row)
     P.SetRowFX(row, nil)
@@ -5753,31 +5799,15 @@ function P.InkTaskRow(f, row, task, textW, st)
     row.itemText:SetWidth(textW)
     local wa = st.wash
     row.box.wash:SetColorTexture(wa[1], wa[2], wa[3], wa[4])
-    local ink, strH, lines, widths
-    if task.done then
-        P.ShowTick(row.box, row.seed)
-        lines, widths = P.WrapLines(f.measureFS, task.text, textW)
-        row.itemText:SetTextColor(st.faded[1], st.faded[2], st.faded[3], 1)
-        row.itemText:SetText(table.concat(lines, "\n"))
-        strH = math.max(14, math.ceil(row.itemText:GetStringHeight() or 14))
-        local lineH = strH / #lines
-        for k, lw in ipairs(widths) do
-            local tilt = (P.Hash01(row.seed, k, 5) - 0.5) * 1.8
-            local y = -(k - 0.5) * lineH + 0.5
-            P.DrawStroke(P.GetStrike(row, k), row.itemText, -2, y + tilt * 0.5, lw + 2, y - tilt * 0.5, 1.3, 0.82)
-        end
-        ink = st.faded
-    else
-        P.HideTick(row.box)
-        local nameInk = st.name or st.ink
-        row.itemText:SetTextColor(nameInk[1], nameInk[2], nameInk[3], 1)
-        row.itemText:SetText(task.text)
-        strH = math.max(14, math.ceil(row.itemText:GetStringHeight() or 14))
-        ink = P.INK
-    end
+    P.HideTick(row.box)
+    local nameInk = st.name or st.ink
+    row.itemText:SetTextColor(nameInk[1], nameInk[2], nameInk[3], 1)
+    row.itemText:SetText(task.text)
+    local strH = math.max(14, math.ceil(row.itemText:GetStringHeight() or 14))
+    local ink = P.INK
     P.SetHalo(row.itemText, row.itemText:GetText(), ink)
     if P.EffectiveFont().drops then
-        if not lines then lines, widths = P.WrapLines(f.measureFS, task.text, textW) end
+        local lines, widths = P.WrapLines(f.measureFS, task.text, textW)
         P.SetInkDrops(row, { key = "forme" .. tostring(task.t or 0) .. task.text, lastW = widths[#widths] or 0,
             textH = strH, lines = #lines, textW = textW, ink = ink })
     else
@@ -5788,15 +5818,14 @@ end
 
 function P.TaskTooltip(row, task)
     P.PlaceTooltip(row)
-    GameTooltip:AddLine(task.done and "Done" or "To do", 1, 0.82, 0)
+    GameTooltip:AddLine("To do", 1, 0.82, 0)
     GameTooltip:AddLine(task.text, 0.95, 0.95, 0.95, true)
     local pl = task.place
     local where = pl and (pl.subzone or pl.zone)
     if task.when or where then
         GameTooltip:AddLine("Written " .. (task.when or "") .. ((task.when and where) and " · " or "") .. (where or ""), 0.7, 0.7, 0.7)
     end
-    GameTooltip:AddLine((task.done and "Left-Click: not done after all" or "Left-Click: tick it off")
-        .. "  |  Right-Click: re-write", 0.65, 0.65, 0.65)
+    GameTooltip:AddLine("Left-Click: done (it goes to your Journal)  |  Right-Click: re-write", 0.65, 0.65, 0.65, true)
     GameTooltip:AddLine("Shift-Click: rub it out", 0.65, 0.65, 0.65)
     GameTooltip:Show()
 end
@@ -5852,6 +5881,7 @@ function P.RenderForMe(f, area, y, contentW, contentH)
         row:SetPoint("TOPLEFT", f.content, "TOPLEFT", 0, y)
         row:SetPoint("TOPRIGHT", f.content, "TOPRIGHT", 0, y)
         row:SetHeight(rowH)
+        row.taskY = y - 2
         row:SetScript("OnClick", function(_, button)
             local idx = P.TaskIndex(task)
             if not idx then return end
@@ -5860,7 +5890,7 @@ function P.RenderForMe(f, area, y, contentW, contentH)
             elseif IsShiftKeyDown and IsShiftKeyDown() then
                 P.RubOutTask(idx)
             else
-                P.ToggleTask(idx)
+                P.TickTask(idx, row.taskY)
             end
         end)
         row:SetScript("OnEnter", function(self) P.TaskTooltip(self, task) end)
@@ -5914,7 +5944,7 @@ function P.RenderForMe(f, area, y, contentW, contentH)
         wl:SetScript("OnEnter", function(self)
             P.PlaceTooltip(self)
             GameTooltip:AddLine("Add a task", 1, 0.82, 0)
-            GameTooltip:AddLine("Stays here in For me until you tick it off.", 0.9, 0.9, 0.9, true)
+            GameTooltip:AddLine("Stays here in For me until you tick it off; then it goes to your Journal, stamped with the time.", 0.9, 0.9, 0.9, true)
             GameTooltip:AddLine("Enter: keep it  |  Escape: never mind  |  Also: /hanky task <what to do>", 0.65, 0.65, 0.65, true)
             GameTooltip:Show()
         end)
@@ -6025,6 +6055,10 @@ P.FLY_DUR = 0.7                   -- an entry written in "For me" flies off to t
 P.WRITE_GLYPHS = {
     task = {       -- an empty hand-inked box, like a task line's
         { 2, -2.5, 11.5, -2, 1.05 }, { 11.5, -2, 11.8, -11.5, 1.05 }, { 11.8, -11.5, 2.2, -11.8, 1.05 }, { 2.2, -11.8, 2, -2.5, 1.05 },
+    },
+    done = {       -- the box ticked: after a "Done: ..." entry's stamp (a task ticked off in "For me")
+        { 2, -2.5, 11.5, -2, 1.05 }, { 11.5, -2, 11.8, -11.5, 1.05 }, { 11.8, -11.5, 2.2, -11.8, 1.05 }, { 2.2, -11.8, 2, -2.5, 1.05 },
+        { 3.8, -7.2, 6.4, -10.2, 1.3 }, { 6.4, -10.2, 13.8, -0.6, 1.2 },
     },
     entry = {      -- a quill: shaft from the nib (bottom-left) up to the right, vanes along it
         { 1.5, -13.5, 12.5, -2, 1.1 },                                     -- shaft
@@ -6575,7 +6609,16 @@ function P.EntryTooltip(row, e)
             if info and info.description then GameTooltip:AddLine(info.description, 0.8, 0.8, 0.8, true) end
         end
     end
+    local dt = e.doneTask
+    if dt then
+        GameTooltip:AddLine("A task from For me, ticked off", 0.55, 0.85, 0.55)
+        local where = dt.place and (dt.place.subzone or dt.place.zone)
+        if dt.when or where then
+            GameTooltip:AddLine("Written " .. (dt.when or "") .. ((dt.when and where) and " · " or "") .. (where or ""), 0.7, 0.7, 0.7)
+        end
+    end
     GameTooltip:AddLine("Click: write more  |  Shift-Click: rub it out", 0.65, 0.65, 0.65)
+    if dt then GameTooltip:AddLine("Right-Click: not done after all (back to For me)", 0.65, 0.65, 0.65) end
     GameTooltip:Show()
 end
 
@@ -6676,15 +6719,16 @@ function P.RenderJournal(f, area, contentW, contentH, pageStr)
         row.stampBtn.entry = e
         row.stampBtn:SetSize(math.max(10, math.ceil(row.stamp:GetStringWidth() or 10)), stampH + 2)
         row.stampBtn:SetShown(P.EntryPlaceName(e) ~= nil)
-        if e.auto then
-            -- written by the addon: a small inked star after the stamp
+        local markKind = (e.auto and "auto") or (e.doneTask and "done") or nil
+        if markKind then
+            -- written by the addon: a small inked star after the stamp; a task ticked off: a ticked box
             if not row.mark then
                 row.mark = CreateFrame("Frame", nil, row)
                 row.mark:SetSize(14, 14)
             end
             row.mark:ClearAllPoints()
             row.mark:SetPoint("TOPLEFT", row, "TOPLEFT", 4 + math.ceil(row.stamp:GetStringWidth() or 0) + 5, 0)
-            P.DrawWriteGlyph(row.mark, "auto", false)
+            P.DrawWriteGlyph(row.mark, markKind, false)
             row.mark:Show()
         elseif row.mark then
             row.mark:Hide()
@@ -6710,7 +6754,9 @@ function P.RenderJournal(f, area, contentW, contentH, pageStr)
         row:SetPoint("TOPRIGHT", f.content, "TOPRIGHT", 0, y)
         row:SetHeight(rowH)
         row:SetScript("OnClick", function(_, button)
-            if IsShiftKeyDown and IsShiftKeyDown() and button == "LeftButton" then P.RubOutEntry(e) else P.BeginJournalEdit(e) end
+            if IsShiftKeyDown and IsShiftKeyDown() and button == "LeftButton" then P.RubOutEntry(e)
+            elseif button == "RightButton" and e.doneTask then P.TaskBackFromJournal(e)
+            else P.BeginJournalEdit(e) end
         end)
         row:SetScript("OnEnter", function(self) P.EntryTooltip(self, e) end)
         row:SetScript("OnLeave", function() GameTooltip:Hide() end)

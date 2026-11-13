@@ -204,14 +204,23 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
   `CFQ.NoteTime`), `place` (`CFQ.HerePlace`: mapID, x, y, zone, subzone), `owner` ("Name-Realm"); account-wide,
   every character sees every task (whether to split by character is still **Open**).
   - Rows come from their own pool (`f.forMeRows`, `P.AcquireRow(i, parent, pool)`), inked by `P.InkTaskRow`
-    exactly like tally lines (box, tick, strike, halo, ink drops). A row's click finds its task by identity
+    like tally lines (box, halo, ink drops; never ticked on the page). A row's click finds its task by identity
     (`P.TaskIndex`), never by a position that may have shifted.
-  - Click = tick / untick; right-click = re-write in place (empty = rubbed out); shift-click = rub out.
+  - **Click = done: the task leaves "For me" and goes to the Journal** (user decision, Nov 2026; replaced
+    "stays struck until rubbed out"): `P.TickTask` → `CFQ.CompleteTask` writes "Done: <task>" via
+    `CFQ.AddEntry` (stamped with the time and place it was **done**), keeps the task as written in
+    `entry.doneTask` (text, t, when, place, owner), and the words fly into the Journal tab (`P.FlyToJournal`
+    from the row's `taskY`). In the Journal such an entry is in the player's own ink with a **ticked box**
+    after its stamp (`P.WRITE_GLYPHS.done`); its tooltip says when/where the task was written; **right-click
+    = not done after all** (`P.TaskBackFromJournal`: back to "For me" as written). Tasks saved ticked under the
+    old rule move to the Journal on loading (`CFQ.MoveTickedToJournal`, stamped with when they were written,
+    placed among the entries by time).
+    Right-click a task = re-write in place (empty = rubbed out); shift-click = rub out (no Journal entry).
     Its own heading, always shown, **written like the page heading "Near me"** (user decision: title
     writing and ink, gilded first letter on vellum, wet ink, the same double quill underline sized to the
     words; `P.DrawForMeHeading`, height `P.ForMeHeadHeight`). A note after it in the sub ink, as
-    "· Dolanaar": "· 3" folded, "· +2" = older tasks that don't fit. Click folds, right-click rubs out the
-    ticked ones. Ticked tasks stay struck until rubbed out.
+    "· Dolanaar": "· 3" folded, "· +2" = older tasks that don't fit. Click folds (nothing on right-click:
+    there are no ticked tasks left to rub out).
   - **Stands on the page bottom and rises** (user decision: not tucked under the quest lines): writing
     line at the very bottom, tasks above it in written order, heading on top; each new task lifts the
     heading a line. Never rises above where the quest lines end. Not all fit → the **newest** stay (the one
@@ -330,7 +339,7 @@ the rest is not built yet: build to this, and move each part into "Design rules"
 
 **One stack, no separate window** (user decision). Two kinds of writing:
 - **"For me" section** at the bottom of the "Near me" page: the player's own **tasks**. Drawn like tally
-  rows (hand-inked box, quill tick, strike-through), so reuse the row code. Its heading folds the section
+  rows (hand-inked box), so reuse the row code; ticked off, a task goes to the Journal. Its heading folds the section
   ("For me (3)") instead of adding a new button (keeps "Keep the tally's controls simple").
 - **Journal page**: longer **entries**, newest first, a page in the same pile (not an area page: never
   merged, never counted in `P.MAX_AREAS`). An entry can be opened and written longer (multi-line EditBox
@@ -366,8 +375,8 @@ the rest is not built yet: build to this, and move each part into "Design rules"
 - Tasks: **Open** — "everywhere" (suggested default) or "here" (shows in "For me" only near where it was
   written); right-click switches (built: everywhere only). Built: tasks don't count as nearby for
   `hideWhenNothingNearby` (**Open** to revisit).
-- Ticked tasks: built as "stay struck until rubbed out" (**Open** to revisit). Optional: ticking logs
-  "Done: ..." to the Journal (off by default). Right-click a task → "Move to journal" (needs the step-4 menu;
+- ~~Ticked tasks~~ (decided and built: ticking moves the task to the Journal as "Done: ...", always; see
+  "Design rules"). Right-click a task → "Move to journal" without ticking (needs the step-4 menu;
   right-click currently re-writes).
 
 **Quick tabs** (built; see "Design rules"). Knots (a knot tied in the corner, dangling on hover) were the
