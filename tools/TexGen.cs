@@ -1420,6 +1420,228 @@ public static class TexGen
         Save(img, tga, png);
     }
 
+    // ---------------------------------------------------------------- courier dispatch
+    // A message torn off a field-message pad and carried folded in a courier's pouch: cheap wartime buff
+    // paper (flecks, foxing, edges toned darker), torn off along the pad's perforation at the top, folded in
+    // four (worn creases), a printed form (FROM / TO fields, a red serial number, a double rule, a red margin
+    // rule, TIME / SIGNED fields at the foot), a tea ring and a grimy thumbprint. The red
+    // PASSED stamp is drawn in game from DispatchStamp, lettered with the player's guild (none without a guild).
+    // Generic: no real army's form, number or insignia. The writing (copying pencil) is drawn in game.
+    static readonly System.Collections.Generic.Dictionary<char, string[]> Font35 = new System.Collections.Generic.Dictionary<char, string[]>
+    {
+        { 'A', new[] { ".#.", "#.#", "###", "#.#", "#.#" } }, { 'D', new[] { "##.", "#.#", "#.#", "#.#", "##." } },
+        { 'E', new[] { "###", "#..", "##.", "#..", "###" } }, { 'F', new[] { "###", "#..", "##.", "#..", "#.." } },
+        { 'G', new[] { ".##", "#..", "#.#", "#.#", ".##" } }, { 'I', new[] { "###", ".#.", ".#.", ".#.", "###" } },
+        { 'M', new[] { "#...#", "##.##", "#.#.#", "#...#", "#...#" } }, { 'N', new[] { "#..#", "##.#", "#.##", "#..#", "#..#" } },
+        { 'O', new[] { ".#.", "#.#", "#.#", "#.#", ".#." } }, { 'P', new[] { "##.", "#.#", "##.", "#..", "#.." } },
+        { 'R', new[] { "##.", "#.#", "##.", "#.#", "#.#" } }, { 'S', new[] { ".##", "#..", ".#.", "..#", "##." } },
+        { 'T', new[] { "###", ".#.", ".#.", ".#.", ".#." } }, { '0', new[] { "###", "#.#", "#.#", "#.#", "###" } },
+        { '1', new[] { ".#.", "##.", ".#.", ".#.", "###" } }, { '4', new[] { "#.#", "#.#", "###", "..#", "..#" } },
+        { '7', new[] { "###", "..#", ".#.", ".#.", ".#." } }, { '.', new[] { ".", ".", ".", ".", "#" } },
+        { ' ', new[] { "..", "..", "..", "..", ".." } },
+    };
+    // ink of a line of 3x5 block capitals (top-left at 0, 0; one font pixel = px) at (u, v)
+    static bool TextInk(string text, double u, double v, double px)
+    {
+        if (u < 0 || v < 0) return false;
+        int row = (int)Math.Floor(v / px);
+        if (row > 4) return false;
+        int col = (int)Math.Floor(u / px);
+        foreach (char ch in text)
+        {
+            string[] g = Font35[ch];
+            int w = g[0].Length;
+            if (col < w) return g[row][col] == '#';
+            col -= w + 1;
+            if (col < 0) return false;
+        }
+        return false;
+    }
+    static double TextWidth(string text, double px)
+    {
+        int n = 0;
+        foreach (char ch in text) n += Font35[ch][0].Length + 1;
+        return (n - 1) * px;
+    }
+    // coverage of a printed rule: distance d from its middle, half its thickness, S = image px per unit
+    static double Rule(double d, double half, double S) { return Clamp((half - Math.Abs(d)) * S + 0.5, 0, 1); }
+
+    public static void Dispatch(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        int SS = 2, W = size * SS, H = size * SS;          // drawn at twice the size, then averaged down
+        double S = W / 512.0;                               // everything below is laid out on a 512 grid
+        double L = 20, R = 492, B = 489, T = 30, pitch = 9.0, hole = 2.3, rc = 6;
+        double vx0 = 257.5, hy0 = 261;                      // the creases (folded in four)
+        var dist = new double[W, H];
+        var hgt = new double[W, H];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double u = (x + 0.5) / S, v = (y + 0.5) / S;
+                // three guillotine-cut sides, a little out of true
+                double dL = u - L + (Fbm(v / 60.0, 1.5, 2, 201) - 0.5) * 2.5;
+                double dR = R - u + (Fbm(v / 60.0, 2.5, 2, 202) - 0.5) * 2.5;
+                double dB = B - v + (Fbm(u / 60.0, 3.5, 2, 203) - 0.5) * 2.5;
+                // the top: torn off the pad along its perforation, half a punched hole in every step, fibres between
+                double hc = (Math.Floor(u / pitch) + 0.5) * pitch;
+                double hd = Math.Sqrt((u - hc) * (u - hc) + (v - T) * (v - T)) - hole;
+                double jag = (Value(u * 0.9, 7.5, 204) - 0.5) * 1.6 + (Fbm(u / 40.0, 0.5, 2, 205) - 0.5) * 1.8;
+                double dT = Math.Min(v - T + jag, hd);
+                double d = Math.Min(Math.Min(dL, dR), Math.Min(dB, dT));
+                // corners worn round in the pouch
+                double qx = Math.Max(Math.Max(L + rc - u, u - (R - rc)), 0), qy = Math.Max(Math.Max(T + rc - v, v - (B - rc)), 0);
+                if (qx > 0 && qy > 0) d = Math.Min(d, rc - Math.Sqrt(qx * qx + qy * qy));
+                // a few small nicks in the edges
+                d -= Clamp(Fbm(u / 10.0, v / 10.0, 3, 206) - 0.74, 0, 1) * 14;
+                dist[x, y] = d;
+                // the creases: a valley down the middle, a ridge across, bending out flat; soft cockling
+                double dv = u - (vx0 + (v - 256) * 0.010), dh = v - (hy0 - (u - 256) * 0.008);
+                double h = -2.6 * (1 - Math.Exp(-Math.Abs(dv) / 26.0)) + 2.2 * (1 - Math.Exp(-Math.Abs(dh) / 26.0));
+                h += (Fbm(u / 90.0, v / 90.0, 3, 207) - 0.5) * 0.9;
+                hgt[x, y] = h;
+            }
+
+        double lx = -0.55, ly = -0.60, lz = 0.58;
+        double ll = Math.Sqrt(lx * lx + ly * ly + lz * lz); lx /= ll; ly /= ll; lz /= ll;
+        double labelPx = 2.3, serialPx = 2.6;
+        double teaX = 150, teaY = 332, teaR = 58;
+        double fpX = 34, fpY = 300, fpA = 13, fpB = 18, fpRot = 0.35;
+        var big = new double[W, H, 4];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double u = (x + 0.5) / S, v = (y + 0.5) / S;
+                double d = dist[x, y];
+                // buff wartime paper: mottled, short fibres, dark flecks of whatever was pulped into it
+                double mott = (Fbm(u / 45.0, v / 45.0, 4, 210) - 0.5) * 0.06;
+                double fib = (Value(u * 0.45, v * 0.12, 211) - 0.5) * 0.035 + (Value(u * 1.6, v * 1.6, 212) - 0.5) * 0.025;
+                double r = 0.885 + mott + fib, g = 0.845 + mott + fib, b = 0.720 + mott * 1.3 + fib;
+                if (Value(u / 1.7, v / 1.7, 213) > 0.988) { r -= 0.28; g -= 0.27; b -= 0.24; }
+                else if (Value(u / 2.3, v / 1.1, 214) > 0.992) { r -= 0.12; g -= 0.14; b -= 0.06; }    // a bluish rag fibre
+                // foxing: rust-brown spots in clusters
+                double fox = Clamp((Fbm(u / 16.0, v / 16.0, 3, 215) - 0.66) * 6, 0, 1) * Clamp((Fbm(u / 110.0, v / 110.0, 2, 216) - 0.45) * 4, 0, 1);
+                r -= fox * 0.10; g -= fox * 0.16; b -= fox * 0.20;
+                // a tea ring where a mug stood on it, broken where the rim lifted
+                double tr = Math.Sqrt((u - teaX) * (u - teaX) + (v - teaY) * (v - teaY));
+                double tAng = Math.Atan2(v - teaY, u - teaX);
+                double teaArc = Clamp(0.45 + 0.75 * Math.Sin(tAng + 0.9) + (Fbm(tAng * 3, 0.5, 2, 217) - 0.5) * 1.2, 0, 1);
+                double tea = (Math.Exp(-Math.Pow((tr - teaR) / 1.8, 2)) * 0.9 + (tr < teaR ? 0.18 : 0) * Clamp((teaR - tr) / 6, 0, 1)) * teaArc;
+                tea += Math.Exp(-Math.Pow((tr - teaR - 4.5) / 1.2, 2)) * 0.35 * teaArc * Clamp(Math.Sin(tAng * 2 + 1) , 0, 1);
+                r -= tea * 0.10; g -= tea * 0.16; b -= tea * 0.21;
+
+                // the printed form, in a dull grey-black printing ink, slightly uneven
+                double print = 0, red = 0;
+                bool inRow = u > L + 8 && u < R - 8;
+                if (inRow)
+                {
+                    print = Math.Max(print, Rule(v - 66, 1.0, S));                                    // double rule under the header
+                    print = Math.Max(print, Rule(v - 70.5, 0.5, S));
+                    print = Math.Max(print, Rule(v - 452, 0.8, S));                                    // rule over the foot
+                }
+                if (TextInk("FROM", u - 30, v - 41, labelPx)) print = 1;
+                if (u > 73 && u < 205) print = Math.Max(print, Rule(v - 53.5, 0.5, S));
+                if (TextInk("TO", u - 222, v - 41, labelPx)) print = 1;
+                if (u > 242 && u < 352) print = Math.Max(print, Rule(v - 53.5, 0.5, S));
+                if (TextInk("TIME", u - 30, v - 461, labelPx)) print = 1;
+                if (u > 73 && u < 205) print = Math.Max(print, Rule(v - 473.5, 0.5, S));
+                if (TextInk("SIGNED", u - 222, v - 461, labelPx)) print = 1;
+                if (u > 281 && u < 470) print = Math.Max(print, Rule(v - 473.5, 0.5, S));
+                // red: the pad's serial number and the margin rule
+                if (TextInk("NO. 0417", u - 372, v - 40, serialPx)) red = 1;
+                if (v > 71 && v < 452) red = Math.Max(red, Rule(u - 50, 0.7, S));
+                double press = 0.72 + 0.28 * Value(u * 0.8, v * 0.8, 218);
+                print *= press * (Fbm(u / 30.0, v / 30.0, 2, 219) > 0.22 ? 1 : 0.6);
+                red *= press;
+                r += (0.20 - r) * print * 0.85; g += (0.20 - g) * print * 0.85; b += (0.22 - b) * print * 0.85;
+                r += (0.72 - r) * red * 0.70; g += (0.20 - g) * red * 0.70; b += (0.17 - b) * red * 0.70;
+
+                // a grimy thumbprint on the margin
+                double fu = (u - fpX) * Math.Cos(fpRot) + (v - fpY) * Math.Sin(fpRot), fv = -(u - fpX) * Math.Sin(fpRot) + (v - fpY) * Math.Cos(fpRot);
+                double fq = Math.Sqrt(fu * fu / (fpA * fpA) + fv * fv / (fpB * fpB));
+                if (fq < 1.1)
+                {
+                    double ridge = 0.5 + 0.5 * Math.Sin(fq * fpA / 2.2 * 2 * Math.PI + (Fbm(u / 8.0, v / 8.0, 2, 221) - 0.5) * 5);
+                    double fpk = Clamp((1.05 - fq) * 4, 0, 1) * Clamp((Fbm(u / 7.0, v / 7.0, 2, 222) - 0.25) * 2, 0, 1) * Math.Pow(ridge, 2) * 0.32;
+                    r += (0.30 - r) * fpk; g += (0.26 - g) * fpk; b += (0.22 - b) * fpk;
+                }
+
+                // light over the creases and cockling
+                double nX, nY, nZ; Normal(hgt, x, y, S, out nX, out nY, out nZ);
+                double diff = Clamp(nX * lx + nY * ly + nZ * lz, 0, 1);
+                double light = 0.80 + 0.30 * diff;
+                // the creases themselves: a fine dark line and the fibres worn pale round it, rubbed hardest where they cross
+                double dv = u - (vx0 + (v - 256) * 0.010), dh = v - (hy0 - (u - 256) * 0.008);
+                double wearV = 0.5 + Fbm(v / 25.0, 0.5, 2, 223), wearH = 0.5 + Fbm(u / 25.0, 1.5, 2, 224);
+                double line = Math.Max(Math.Exp(-dv * dv / 0.5) * wearV, Math.Exp(-dh * dh / 0.5) * wearH);
+                double worn = Math.Max(Math.Exp(-dv * dv / 6.0) * wearV, Math.Exp(-dh * dh / 6.0) * wearH);
+                worn += Math.Exp(-(dv * dv + dh * dh) / 40.0) * 0.8;
+                r = r * light + worn * 0.035 - line * 0.13; g = g * light + worn * 0.035 - line * 0.13; b = b * light + worn * 0.030 - line * 0.12;
+                // edges toned darker and handled
+                double tone = Math.Pow(Clamp(1 - d / 22.0, 0, 1), 1.6);
+                r -= tone * 0.10; g -= tone * 0.14; b -= tone * 0.17;
+                big[x, y, 0] = r; big[x, y, 1] = g; big[x, y, 2] = b;
+                big[x, y, 3] = Clamp(d * S / 1.4 + 0.5, 0, 1);
+            }
+        var img = new double[size, size, 4];
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                double sr = 0, sg = 0, sb = 0, sa = 0;
+                for (int j = 0; j < SS; j++)
+                    for (int i = 0; i < SS; i++)
+                    {
+                        double aa = big[x * SS + i, y * SS + j, 3];
+                        sr += big[x * SS + i, y * SS + j, 0] * aa; sg += big[x * SS + i, y * SS + j, 1] * aa;
+                        sb += big[x * SS + i, y * SS + j, 2] * aa; sa += aa;
+                    }
+                img[x, y, 3] = sa / (SS * SS);
+                if (sa > 0) { img[x, y, 0] = sr / sa; img[x, y, 1] = sg / sa; img[x, y, 2] = sb / sa; }
+            }
+        Save(img, tga, png);
+    }
+
+    // ---------------------------------------------------------------- the dispatch's rubber stamp
+    // White on alpha (tinted red and rotated in game): a thick outer ring, a thin inner ring, two bars with
+    // PASSED between them, all inked unevenly (the stamp pressed harder on one side, the ink patchy). The band
+    // between the rings is left empty: the player's guild is lettered round it in game (P.LayoutStamp).
+    // Laid out on a 256 grid: centre 128, outer ring r 116, inner ring r 86, the band r 89.6-112.8.
+    public static void DispatchStamp(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        int SS = 2, W = size * SS, H = size * SS;
+        double S = W / 256.0;
+        double passedPx = 4.0, passedW = TextWidth("PASSED", passedPx);
+        var big = new double[W, H, 4];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double u = (x + 0.5) / S - 128, v = (y + 0.5) / S - 128;
+                double r = Math.Sqrt(u * u + v * v);
+                double cov = Math.Max(Rule(r - 116, 3.2, S), Rule(r - 86, 1.6, S));
+                double chord = Math.Sqrt(Math.Max(0, 84 * 84 - 22 * 22)) - 6;
+                if (Math.Abs(u) < chord) cov = Math.Max(cov, Math.Max(Rule(v + 22, 1.6, S), Rule(v - 22, 1.6, S)));
+                if (TextInk("PASSED", u + passedW / 2, v + 2.5 * passedPx, passedPx)) cov = 1;
+                // patchy ink, pressed harder on the left, a few specks where the rubber missed
+                double ink = Clamp(0.40 + (Fbm(u / 14.0 + 9, v / 14.0 + 9, 3, 230) - 0.35) * 1.7, 0.15, 1)
+                             * (0.62 + 0.38 * Clamp(0.5 - u / 256.0, 0, 1));
+                if (Value(u / 1.8 + 50, v / 1.8 + 50, 231) > 0.93) ink *= 0.3;
+                big[x, y, 0] = 1; big[x, y, 1] = 1; big[x, y, 2] = 1;
+                big[x, y, 3] = cov * ink;
+            }
+        var img = new double[size, size, 4];
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                double sa = 0;
+                for (int j = 0; j < SS; j++)
+                    for (int i = 0; i < SS; i++) sa += big[x * SS + i, y * SS + j, 3];
+                img[x, y, 0] = 1; img[x, y, 1] = 1; img[x, y, 2] = 1;
+                img[x, y, 3] = sa / (SS * SS);
+            }
+        Save(img, tga, png);
+    }
+
     // ---------------------------------------------------------------- sheet edges (the quick tabs)
     static double[,,] LoadTga(string path)
     {

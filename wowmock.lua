@@ -199,8 +199,15 @@ function GetNumQuestLogChoices() return 0 end
 
 Settings = {
     RegisterCanvasLayoutCategory = function(panel, name) return { GetID = function() return 99 end, panel = panel } end,
+    RegisterCanvasLayoutSubcategory = function(parent, panel, name)
+        SETTINGS_SUB = { GetID = function() return 100 end, panel = panel, parent = parent, name = name }
+        return SETTINGS_SUB
+    end,
     RegisterAddOnCategory = function(cat) SETTINGS_CAT = cat end,
-    OpenToCategory = function(id) OPENED_SETTINGS = id; SETTINGS_CAT.panel:Show() end,
+    OpenToCategory = function(id)
+        OPENED_SETTINGS = id
+        if SETTINGS_SUB and id == 100 then SETTINGS_SUB.panel:Show() else SETTINGS_CAT.panel:Show() end
+    end,
 }
 
 -- WoW's colour picker (retail API): remembers the last request; tests set __rgb and call info.swatchFunc
@@ -233,6 +240,8 @@ function GetServerTime() return 1794350400 end
 date = date or os.date
 time = time or os.time
 function GetRealmName() return "Forever" end
+GUILD_NAME = nil                       -- set by tests: the player's guild
+function GetGuildInfo(unit) if unit == "player" and GUILD_NAME then return GUILD_NAME, "Member", 5 end return nil end
 
 -- Achievements (retail API): id, name, points, completed, month, day, year, description, flags, icon, rewardText, isGuild
 ACHIEVEMENTS = {

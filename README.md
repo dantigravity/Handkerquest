@@ -4,10 +4,10 @@ Runs the addon outside WoW against a mocked WoW API (`wowmock.lua`) and checks t
 parchment rows (items, plus tasks, one-step quests included; no redundant "/N", strike only through the
 item text, quill ticks), the items / tasks / tasks-apart toggles, the "Near me" page and area pages
 (map areas / zones / distance, same names merged), the dog-eared page-turn corner, area-change page
-return, handwriting cycle (including Blotted scrawl's soaked-in blots and bolder letters), text size, lvl/dist sort cycling, menu Reset,
-stacking toggles never changing the watch list, options panel (Look drop-down, colours), slash commands, `/hanky debug`,
-every look (rag, crumpled paper, slate, bark, leaf, leather, marble, gilded plate, vellum, arcane script,
-handkerchief, parchment, window: margins, folds, wet ink, the arcane circle and motes) and its texture file, hunting-spot &
+return, handwriting (drop-down; Blotted scrawl's soaked-in blots and bolder letters; the shipped Typewriter font and its fallback), text size, lvl/dist sort cycling, menu Reset,
+stacking toggles never changing the watch list, options panel (Appearance subcategory, Look drop-down, colours), tasks and Journal per character or shared, slash commands, `/hanky debug`,
+every look (rag, crumpled paper, slate, bark, leaf, leather, marble, gilded plate, vellum, courier dispatch, arcane script,
+handkerchief, parchment, window: margins, folds, wet ink, the arcane circle and motes, the dispatch's guild stamp) and its texture file, hunting-spot &
 dropper learning, glow / fire ink, item click super-tracking, loot-window dropper evidence, hover map
 preview placement, minimap pins, default position margins.
 

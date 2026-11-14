@@ -30,6 +30,7 @@
 local CONFIG = {
     ADDON_NAME          = "Handkerquest",   -- internal: folder / .toc / ADDON_LOADED. Never change (players' settings)
     DISPLAY_NAME        = "HandkerSheaf",   -- the name players see (options panel, Settings list, chat)
+    FEEDBACK_URL        = "https://github.com/dantigravity/Handkerquest/issues",   -- bugs, ideas, requests
     REWARD_BTN_ALL      = "Rewards: All",
     LEVEL_BTN_ALL       = "Levels: All",
     TRACKER_BTN_ALL     = "Filter: All",
@@ -68,9 +69,11 @@ local CFQ = {
         forMe = true,                   -- "For me": your own tasks at the bottom of the "Near me" page
         autoAchievements = false,       -- the Journal writes down the achievements you earn (only if this client has them)
         autoQuests = false,             -- the Journal writes down the quests you turn in, and what they gave you
+        shareTasks = false,             -- "For me" tasks shared by every character on the account (off: each its own)
+        shareJournal = false,           -- the Journal shared by every character on the account (off: each its own)
     },
     parchmentFont = "QUILL",            -- handwriting on the parchment: "QUILL", "SCRAWL", "PLAIN" or "BLOTTED" (P.FONT_STYLES)
-    parchmentStyle = "RAG",             -- the tally's look: "RAG", "CRUMPLED", "STONE", "BARK", "LEAF", "LEATHER", "ARCANE", "HANDKERCHIEF", "PARCHMENT" or "NATIVE"
+    parchmentStyle = "RAG",             -- the tally's look: "RAG", "CRUMPLED", "STONE", "BARK", "LEAF", "LEATHER", "MARBLE", "GILDED", "VELLUM", "DISPATCH", "ARCANE", "HANDKERCHIEF", "PARCHMENT" or "NATIVE"
     huntSpots = {},                     -- [progKey] = { { m = mapID, x, y, a = subzone }, ... } where the item was looted
     learnedDroppers = {},               -- ["npc:ID"] = { label = name, loots = n, tries = {}, [progKey] = times the item dropped }
     pageRadiusPercent = 16,             -- "Clusters" pages: own cluster size (% of the zone map) when not following the tracker
@@ -391,7 +394,7 @@ local function SaveState()
     QRF_SavedState.parchmentStyle = CFQ.parchmentStyle
     QRF_SavedState.huntSpots = CFQ.huntSpots
     QRF_SavedState.learnedDroppers = CFQ.learnedDroppers
-    QRF_SavedState.notes = CFQ.notes
+    CFQ.LinkSavedNotes()                    -- the Journal per character (QRF_CharState), the rest account-wide
 end
 
 -- A saved { r, g, b } (each 0-1), or nil if it's missing or broken
@@ -503,7 +506,7 @@ local function LoadState()
         for _, look in ipairs((CFQ.P and CFQ.P.STYLES) or {}) do     -- any look in the Look list (marble, gilded, vellum too)
             if look.key == ps then CFQ.parchmentStyle = ps break end
         end
-        CFQ.LoadNotes(QRF_SavedState.notes)
+        CFQ.LoadNotes(QRF_SavedState.notes, QRF_CharState)     -- tasks and the Journal: per character unless shared
         if type(QRF_SavedState.huntSpots) == "table" then
             CFQ.huntSpots = QRF_SavedState.huntSpots
         end
@@ -2317,7 +2320,7 @@ CFQ.ResetShoppingListPosition = ResetShoppingListPosition
 -- ----------------------------------------------------------------------------
 -- INK & QUILL HELPERS
 -- ----------------------------------------------------------------------------
--- Handwriting faces built into the client (no font files shipped with the addon).
+-- Handwriting faces: built into the client, except the typewriter (fonts/SpecialElite-Regular.ttf).
 -- Morpheus is the calligraphic face Blizzard uses for books & letters.
 -- EDIT: item / title / small are font sizes for the list rows, the page heading and the footer.
 P.FONT_STYLES = {
@@ -2329,6 +2332,11 @@ P.FONT_STYLES = {
     -- haloScale = wet ink spreads less round them (a tight bleed, not a blur)
     { key = "BLOTTED", label = "Blotted scrawl", path = "Fonts\\SKURRI.TTF", item = 12, title = 14, small = 10, drops = true,
       bold = 0.8, haloScale = 0.55 },
+    -- a worn typewriter (user request, for the courier dispatch): Special Elite by Astigmatic, Apache 2.0
+    -- (fonts\LICENSE-SpecialElite.txt), the one font shipped with the addon. If the client won't load it,
+    -- P.SetInkFont falls back to plain print.
+    { key = "TYPEWRITER", label = "Typewriter", path = "Interface\\AddOns\\Handkerquest\\fonts\\SpecialElite-Regular.ttf",
+      item = 12, title = 14, small = 10 },
 }
 
 -- The handwriting actually used: carved bark brings its own lettering (style.font)
@@ -2561,7 +2569,8 @@ function P.SetInkDrops(row, d)
 end
 
 -- ----------------------------------------------------------------------------
--- LOOKS: a torn rag (default), crumpled paper, chalked stone, carved bark, a pipe-weed leaf, etched leather, arcane
+-- LOOKS: a torn rag (default), crumpled paper, chalked stone, carved bark, a pipe-weed leaf, etched leather, the
+-- paladin looks (marble, gilded plate, illuminated vellum), a courier's dispatch, arcane
 -- script (glowing mage writing in the air), handkerchief notes, the parchment pile, or a
 -- see-through WoW window
 -- Every colour the tally draws with comes from here.
@@ -2832,6 +2841,32 @@ P.STYLES = {
         halo = { alpha = 0.10, radius = 0.6 }, bleedWidth = 1.4, bleedAlpha = 0.22,   -- iron-gall barely bites into skin
         corner = { u1 = { 0.70, 0.66, 0.56 }, u2 = { 0.90, 0.87, 0.78 }, tip = { 0.97, 0.94, 0.86 },
                    crease = { 0.80, 0.76, 0.66 }, edge = { 0.55, 0.48, 0.36, 0.70 }, cut = { 0.65, 0.58, 0.45, 0.60 },
+                   shadow = { 0.10, 0.08, 0.05 } },
+    },
+    {
+        -- a courier's dispatch: a sheet torn off a field-message pad along its perforation, carried folded in
+        -- four in a pouch. Cheap buff paper, a printed form (FROM / TO, a red serial number and margin rule,
+        -- TIME / SIGNED at the foot), a faded red PASSED stamp, a tea ring, a thumbprint. Written in copying
+        -- pencil (violet-grey, dry: no wet ink). Paper bends: a real fold.
+        key = "DISPATCH", label = "Courier dispatch",
+        image = "Interface\\AddOns\\Handkerquest\\textures\\courier_dispatch",
+        paper = { 1, 1, 1, 1 }, depth = 1,
+        back = { { 0.93, 0.91, 0.86, 1 }, { 0.87, 0.85, 0.79, 1 }, { 0.81, 0.78, 0.72, 1 } },
+        imageCorner = { 0.042, 0.047 },        -- the sheet's own (worn round) corner
+        shadowAlpha = 0.33, pile = true,
+        ink = { 0.27, 0.22, 0.38 }, inkRed = { 0.66, 0.16, 0.12 }, inkGreen = { 0.20, 0.38, 0.22 },
+        title = { 0.24, 0.19, 0.36 }, faded = { 0.52, 0.49, 0.50 }, footer = { 0.36, 0.32, 0.40 },
+        sub = { 0.44, 0.40, 0.46 }, close = { 0.32, 0.28, 0.36 }, gear = { 0.32, 0.28, 0.36 },
+        wash = { 0.40, 0.36, 0.25, 0.06 }, washFlash = { 0.95, 0.72, 0.20, 0.45 },
+        divider = { 0.30, 0.28, 0.30, 0.14 }, highlight = { 0.40, 0.35, 0.20, 0.08 },
+        grip = { 0.40, 0.36, 0.40, 0.85 }, pad = 8,
+        inset = { 0.115, 0.150, 0.060, 0.125 },  -- right of the red margin rule, between the printed header and foot
+        -- the red PASSED stamp, only while you're in a guild, its name round the ring (P.LayoutStamp):
+        -- x, y = its middle (fractions of the sheet from the top-left), size = of the sheet's smaller side
+        stamp = { image = "Interface\\AddOns\\Handkerquest\\textures\\dispatch_stamp", x = 0.72, y = 0.70, size = 0.34,
+                  rot = -0.24, color = { 0.70, 0.16, 0.15 }, alpha = 0.62, font = "Fonts\\ARIALN.TTF" },
+        corner = { u1 = { 0.52, 0.48, 0.38 }, u2 = { 0.84, 0.80, 0.68 }, tip = { 0.92, 0.88, 0.76 },
+                   crease = { 0.74, 0.70, 0.58 }, edge = { 0.45, 0.40, 0.30, 0.70 }, cut = { 0.55, 0.50, 0.40, 0.60 },
                    shadow = { 0.10, 0.08, 0.05 } },
     },
     {
@@ -3119,6 +3154,7 @@ function P.ApplyStyle(f)
     P.LayoutInkGrain(f)
     P.LayoutArcane(f)
     P.LayoutSheen(f)
+    P.LayoutStamp(f)
     if f.corner then f.corner.drawnKey = nil; P.DrawCorner(f.corner) end
     P.ApplyStackLayout(f)
 end
@@ -3262,6 +3298,103 @@ function P.LayoutSheen(f)
     ApplyHorizontalGradient(f.sheen.a, c[1], c[2], c[3], 0, 1)
     ApplyHorizontalGradient(f.sheen.b, c[1], c[2], c[3], 1, 0)
     f.sheenOn = true
+end
+
+-- The player's guild, or nil
+function CFQ.GuildName()
+    if type(GetGuildInfo) ~= "function" then return nil end
+    local ok, name = pcall(GetGuildInfo, "player")
+    if ok and type(name) == "string" and name ~= "" then return name end
+    return nil
+end
+
+-- The courier dispatch's rubber stamp (style.stamp, user request): drawn on the top sheet only while you're
+-- in a guild, with the guild's name lettered round the ring between its two rings (textures/dispatch_stamp
+-- leaves that band empty). One FontString per letter, turned along the ring where the client can turn text,
+-- each inked a little differently (a hash of the name and the letter's place, so it never changes between
+-- redraws). Kept round when the window is stretched. No guild = no stamp.
+P.STAMP_MAX_LETTERS = 32
+P.STAMP_BAND = 101 / 128            -- the band's middle, as a fraction of the stamp's radius (dispatch_stamp)
+P.STAMP_BAND_W = 23 / 128           -- its width
+function P.LayoutStamp(f)
+    if not f or not f.topSheet then return end
+    local sp = P.GetStyle().stamp
+    local guild = sp and CFQ.GuildName()
+    local S = f.stamp
+    if not guild then
+        if S then
+            S.ring:Hide()
+            for _, l in ipairs(S.letters) do l:Hide() end
+        end
+        f.stampKey, f.stampOn = nil, false
+        return
+    end
+    local w, h = f:GetWidth() or 230, f:GetHeight() or 175
+    local size = math.max(24, math.floor(math.min(w, h) * sp.size + 0.5))
+    local key = guild .. ":" .. size .. ":" .. math.floor(w) .. ":" .. math.floor(h)
+    f.stampOn = true
+    if S and f.stampKey == key and S.ring:IsShown() then return end
+    f.stampKey = key
+    if not S then
+        S = { letters = {} }
+        S.ring = f.topSheet:CreateTexture(nil, "BORDER")         -- on the paper, under the writing
+        f.stamp = S
+    end
+    local c = sp.color
+    local cx, cy = w * sp.x, -h * sp.y
+    S.ring:SetTexture(sp.image)
+    S.ring:SetVertexColor(c[1], c[2], c[3], sp.alpha)
+    S.ring:SetSize(size, size)
+    S.ring:ClearAllPoints()
+    S.ring:SetPoint("CENTER", f.topSheet, "TOPLEFT", cx, cy)
+    if S.ring.SetRotation then pcall(S.ring.SetRotation, S.ring, sp.rot) end
+    S.ring:Show()
+
+    -- the name in capitals, one letter at a time (UTF-8 aware), centred on the top of the ring
+    local chars = {}
+    for ch in string.upper(guild):gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+        chars[#chars + 1] = ch
+        if #chars >= P.STAMP_MAX_LETTERS then break end
+    end
+    local rb = size * 0.5 * P.STAMP_BAND
+    local fontSize = math.max(5, math.floor(size * 0.5 * P.STAMP_BAND_W * 0.95))
+    local widths, total
+    -- smaller letters until the name fits in 300 degrees of the ring (never under 5px)
+    while true do
+        widths, total = {}, 0
+        for i, ch in ipairs(chars) do
+            local fs = S.letters[i]
+            if not fs then
+                fs = f.topSheet:CreateFontString(nil, "BORDER")
+                S.letters[i] = fs
+            end
+            fs:SetFont(sp.font, fontSize, "")
+            fs:SetText(ch)
+            local lw = (ch == " ") and fontSize * 0.35 or (fs:GetStringWidth() or 0)
+            if lw <= 0 then lw = fontSize * 0.6 end
+            widths[i] = lw
+            total = total + lw + ((i > 1) and fontSize * 0.12 or 0)
+        end
+        if total <= rb * math.rad(300) or fontSize <= 5 then break end
+        fontSize = fontSize - 1
+    end
+    local seed = 0
+    for i = 1, #guild do seed = (seed * 31 + string.byte(guild, i)) % 100003 end
+    local s = 0
+    for i, ch in ipairs(chars) do
+        local fs = S.letters[i]
+        local mid = s + widths[i] / 2
+        s = s + widths[i] + fontSize * 0.12
+        local th = math.pi / 2 + (total / 2 - mid) / rb + sp.rot      -- left to right across the top
+        fs:ClearAllPoints()
+        fs:SetPoint("CENTER", f.topSheet, "TOPLEFT", cx + rb * math.cos(th), cy + rb * math.sin(th))
+        if fs.SetRotation then pcall(fs.SetRotation, fs, th - math.pi / 2) end
+        local ink = 0.68 + 0.32 * (((seed + i * 7919) % 97) / 96)              -- each letter inked its own way
+        ink = ink * (0.82 + 0.18 * math.max(0, -math.cos(th)))                 -- pressed harder on the left
+        fs:SetTextColor(c[1], c[2], c[3], math.min(1, sp.alpha * ink * 1.15))
+        fs:SetShown(ch ~= " ")
+    end
+    for i = #chars + 1, #S.letters do S.letters[i]:Hide() end
 end
 
 function P.AnimateSheen(f, now)
@@ -4404,6 +4537,7 @@ local function EnsureShoppingListFrame()
         P.LayoutPads(self)
         P.LayoutInkGrain(self)
         P.LayoutArcane(self)
+        P.LayoutStamp(self)
         P.ApplyStackLayout(self)
     end)
     f:SetScript("OnHide", function(self)
@@ -5290,7 +5424,7 @@ end
 -- ----------------------------------------------------------------------------
 -- "FOR ME": the player's own tasks, written at the bottom of the "Near me" page
 -- ----------------------------------------------------------------------------
--- CFQ.notes (saved as QRF_SavedState.notes, account-wide):
+-- CFQ.notes (tasks and journal saved per character unless shared: see CFQ.LoadNotes):
 --   tasks = { { text, t (server time), when ("10 Nov 21:40"), place = { mapID, x, y, zone, subzone },
 --               owner ("Name-Realm") }, ... }   in the order written, all still to do
 --   journal = { entries, see "the Journal" below }: a task ticked off becomes a "Done: ..." entry there,
@@ -5371,34 +5505,146 @@ function CFQ.MoveTickedToJournal(notes, task)
     table.insert(notes.journal, at, e)
 end
 
--- Saved notes, checked field by field (a broken save never stops the addon loading)
-function CFQ.LoadNotes(saved)
+-- Where notes are saved (user decision, Nov 2026): "For me" tasks and the Journal are each character's own
+-- (QRF_CharState.tasks / .journal, the per-character saved file) unless the options share them with every
+-- character on the account (parchmentOpts.shareTasks / shareJournal): then the list lives in the account
+-- file (QRF_SavedState.notes.tasks / .journal). A character can't read another's file, so the account file
+-- is the only place they meet:
+--  * private: the account's list holds entries waiting for other characters (written before the split, or
+--    while shared); each character takes its own (by owner; no owner = whoever comes first), leaves the rest
+--  * shared: each character pours its own file's list into the account's and keeps nothing apart
+-- Switching sharing off sorts the shared list back out by owner the same way.
+-- While playing, QRF_SavedState.notes is CFQ.notes itself (live); on logout (CFQ.SaveNotesForLogout) each list
+-- goes where it belongs, with CFQ.notesWaiting[key] (other characters' own entries) back in the account file.
+P.NOTE_LISTS = { "journal", "tasks" }        -- the Journal first: a ticked task from an old save moves into it
+function CFQ.NotesShared(key)
+    local po = CFQ.parchmentOpts or {}
+    if key == "tasks" then return po.shareTasks == true end
+    return po.shareJournal == true
+end
+
+function CFQ.LinkSavedNotes()
+    QRF_SavedState = QRF_SavedState or {}
+    QRF_SavedState.notes = CFQ.notes
+    if type(QRF_CharState) ~= "table" then QRF_CharState = {} end
+    for _, key in ipairs(P.NOTE_LISTS) do
+        QRF_CharState[key] = CFQ.NotesShared(key) and {} or CFQ.notes[key]
+    end
+end
+
+function CFQ.SaveNotesForLogout()
+    local n = CFQ.notes
+    local acct = { forMeFolded = n.forMeFolded, writeMode = n.writeMode }
+    if type(QRF_CharState) ~= "table" then QRF_CharState = {} end
+    for _, key in ipairs(P.NOTE_LISTS) do
+        if CFQ.NotesShared(key) then
+            acct[key] = n[key]
+            QRF_CharState[key] = {}
+        else
+            acct[key] = (CFQ.notesWaiting and CFQ.notesWaiting[key]) or {}
+            QRF_CharState[key] = n[key]
+        end
+    end
+    QRF_SavedState = QRF_SavedState or {}
+    QRF_SavedState.notes = acct
+end
+
+-- Saved notes, checked field by field (a broken save never stops the addon loading).
+-- saved = the account's notes (QRF_SavedState.notes), charState = this character's (QRF_CharState).
+-- Called again with saved = CFQ.notes (live) on a mid-session reload and when a sharing switch changes.
+function CFQ.LoadNotes(saved, charState)
     local notes = { tasks = {}, journal = {}, forMeFolded = false, writeMode = "task" }
+    local live = type(saved) == "table" and saved == CFQ.notes
+    if type(charState) ~= "table" then charState = {} end
+    local me = CFQ.NoteOwner()
+    local waiting, sharedAt = {}, {}
+    local function Valid(e) return type(e) == "table" and type(e.text) == "string" and e.text ~= "" end
+    for _, key in ipairs(P.NOTE_LISTS) do
+        local shared = CFQ.NotesShared(key)
+        sharedAt[key] = shared
+        local max = (key == "tasks") and P.NOTE_MAX_TASKS or (P.NOTE_MAX_ENTRIES or 1000)
+        local list, seen, rest = {}, {}, {}
+        waiting[key] = rest
+        -- mine = this character's own list (trusted as it is: a renamed character keeps its notes);
+        -- pool = the account's list, sorted by owner unless shared
+        local mine, pool
+        if live then
+            if CFQ.notesSharedAt and CFQ.notesSharedAt[key] then
+                pool = saved[key]                     -- leaving (or still in) sharing: the shared list is the pool
+            else
+                mine, pool = saved[key], CFQ.notesWaiting and CFQ.notesWaiting[key]
+            end
+        else
+            mine, pool = charState[key], (type(saved) == "table") and saved[key] or nil
+        end
+        local function Add(e, byTime)
+            local k = tostring(e.t) .. "\1" .. e.text
+            if seen[k] then return end                 -- never taken twice
+            local x = CFQ.LoadNoteFields(e)
+            x.owner = x.owner or me
+            if key == "tasks" and x.done then          -- ticked under the old rule: into the Journal
+                if #notes.journal < (P.NOTE_MAX_ENTRIES or 1000) then CFQ.MoveTickedToJournal(notes, x) end
+                seen[k] = true
+                return
+            end
+            if #list >= max then return end
+            seen[k] = true
+            local at = #list + 1
+            if byTime and x.t and list[#list] and list[#list].t and list[#list].t > x.t then
+                for i, y in ipairs(list) do
+                    if y.t and y.t > x.t then at = i break end
+                end
+            end
+            table.insert(list, at, x)
+        end
+        if type(mine) == "table" then
+            for _, e in ipairs(mine) do if Valid(e) then Add(e, false) end end
+        end
+        if type(pool) == "table" then
+            for _, e in ipairs(pool) do
+                if Valid(e) then
+                    -- no name yet: take nothing (it all keeps waiting)
+                    if shared or (me and (e.owner == me or type(e.owner) ~= "string")) then Add(e, true)
+                    else table.insert(rest, e) end
+                end
+            end
+        end
+        notes[key] = list
+    end
     if type(saved) == "table" then
         notes.forMeFolded = (saved.forMeFolded == true)
         if saved.writeMode == "entry" then notes.writeMode = "entry" end
-        if type(saved.journal) == "table" then
-            for _, e in ipairs(saved.journal) do
-                if type(e) == "table" and type(e.text) == "string" and e.text ~= "" and #notes.journal < (P.NOTE_MAX_ENTRIES or 1000) then
-                    local entry = CFQ.LoadNoteFields(e)
-                    table.insert(notes.journal, entry)
-                end
-            end
-        end
-        if type(saved.tasks) == "table" then
-            for _, t in ipairs(saved.tasks) do
-                if type(t) == "table" and type(t.text) == "string" and t.text ~= "" then
-                    local task = CFQ.LoadNoteFields(t)
-                    if task.done then
-                        if #notes.journal < (P.NOTE_MAX_ENTRIES or 1000) then CFQ.MoveTickedToJournal(notes, task) end
-                    elseif #notes.tasks < P.NOTE_MAX_TASKS then
-                        table.insert(notes.tasks, task)
-                    end
-                end
-            end
-        end
     end
     CFQ.notes = notes
+    CFQ.notesWaiting, CFQ.notesSharedAt = waiting, sharedAt
+    CFQ.LinkSavedNotes()
+end
+
+-- A sharing switch in the options: the list moves to the account file (on) or back to each character (off)
+function CFQ.SetNotesShared(key, on)
+    CFQ.parchmentOpts[(key == "tasks") and "shareTasks" or "shareJournal"] = on and true or false
+    if P.CancelForMeEdit then P.CancelForMeEdit() end
+    if P.CancelJournalEdit then P.CancelJournalEdit() end
+    CFQ.LoadNotes(CFQ.notes, QRF_CharState)
+    P.ForMeChanged()
+end
+
+-- A character's name as written on a shared note: "Bob" on your own realm, "Bob-Realm" elsewhere
+function CFQ.OwnerName(owner)
+    if type(owner) ~= "string" then return nil end
+    local realm = GetRealmName and GetRealmName() or nil
+    if realm and realm ~= "" then
+        local name = owner:match("^(.-)%-" .. realm:gsub("%p", "%%%0") .. "$")
+        if name and name ~= "" then return name end
+    end
+    return owner
+end
+
+-- Whose it is, when the list is shared and it isn't this character's (nil otherwise)
+function CFQ.OtherOwner(key, x)
+    if not (x and CFQ.NotesShared(key)) then return nil end
+    if not x.owner or x.owner == CFQ.NoteOwner() then return nil end
+    return CFQ.OwnerName(x.owner)
 end
 
 -- What the player typed, made safe to draw: trimmed, one line, no "|" (WoW's colour/link escapes)
@@ -5820,6 +6066,8 @@ function P.TaskTooltip(row, task)
     if task.when or where then
         GameTooltip:AddLine("Written " .. (task.when or "") .. ((task.when and where) and " · " or "") .. (where or ""), 0.7, 0.7, 0.7)
     end
+    local by = CFQ.OtherOwner("tasks", task)        -- shared tasks: who wrote it
+    if by then GameTooltip:AddLine("Written by " .. by, 0.7, 0.7, 0.7) end
     GameTooltip:AddLine("Left-Click: done (it goes to your Journal)  |  Right-Click: re-write", 0.65, 0.65, 0.65, true)
     GameTooltip:AddLine("Shift-Click: rub it out", 0.65, 0.65, 0.65)
     GameTooltip:Show()
@@ -6296,8 +6544,10 @@ end
 
 function P.EntryStamp(e)
     local where = P.EntryPlaceName(e)
-    if e.when and where then return e.when .. "  ·  " .. where end
-    return e.when or where or ""
+    local s = (e.when and where) and (e.when .. "  ·  " .. where) or (e.when or where or "")
+    local by = CFQ.OtherOwner("journal", e)          -- a shared Journal: whose note it is
+    if by then s = (s ~= "") and (s .. "  ·  " .. by) or by end
+    return s
 end
 
 function P.WriteMode()
@@ -6825,6 +7075,7 @@ P.SHEET_EDGES = {
     MARBLE = { b = { 0.998, 0.998, 0.045, 0.047, 0.047, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.047, 0.045, 0.047, 0.045, 0.998, 0.998 }, r = { 0.998, 0.451, 0.277, 0.195, 0.141, 0.098, 0.064, 0.066, 0.064, 0.066, 0.064, 0.070, 0.064, 0.064, 0.066, 0.066, 0.064, 0.064, 0.064, 0.066, 0.998 } },
     GILDED = { b = { 0.998, 0.998, 0.066, 0.061, 0.063, 0.063, 0.063, 0.063, 0.063, 0.061, 0.061, 0.061, 0.057, 0.059, 0.059, 0.061, 0.061, 0.059, 0.063, 0.998, 0.998 }, r = { 0.998, 0.998, 0.068, 0.063, 0.063, 0.061, 0.063, 0.063, 0.061, 0.061, 0.061, 0.059, 0.061, 0.063, 0.063, 0.061, 0.059, 0.059, 0.063, 0.998, 0.998 } },
     VELLUM = { b = { 0.998, 0.086, 0.049, 0.049, 0.049, 0.051, 0.051, 0.051, 0.051, 0.051, 0.053, 0.053, 0.053, 0.053, 0.053, 0.053, 0.053, 0.051, 0.051, 0.242, 0.998 }, r = { 0.998, 0.051, 0.051, 0.051, 0.051, 0.051, 0.053, 0.055, 0.053, 0.051, 0.053, 0.053, 0.051, 0.049, 0.051, 0.051, 0.053, 0.053, 0.053, 0.055, 0.998 } },
+    DISPATCH = { b = { 0.998, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.047, 0.045, 0.045, 0.998 }, r = { 0.998, 0.998, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.041, 0.998 } },
 }
 
 -- The material's edge at frac (0-1) along a profile, from the nearest measured samples that have material
@@ -10903,28 +11154,32 @@ function CFQ.BuildOptionsPanel()
 
     -- The panel scrolls: it's taller than the Settings window. Everything below is built on the scroll
     -- child (p); the registered panel is the outer frame.
-    local outer = CreateFrame("Frame", "QRF_OptionsPanel")
-    outer.name = CONFIG.DISPLAY_NAME
-    outer:Hide()
-    local okS, scroll = pcall(CreateFrame, "ScrollFrame", nil, outer, "UIPanelScrollFrameTemplate")
-    if not okS or not scroll then scroll = CreateFrame("ScrollFrame", nil, outer) end
-    scroll:SetPoint("TOPLEFT", outer, "TOPLEFT", 0, -4)
-    scroll:SetPoint("BOTTOMRIGHT", outer, "BOTTOMRIGHT", -28, 4)
-    scroll:EnableMouseWheel(true)
-    if not scroll.ScrollBar then
-        scroll:SetScript("OnMouseWheel", function(self, delta)
-            local max = math.max(0, (self:GetScrollChild() and self:GetScrollChild():GetHeight() or 0) - (self:GetHeight() or 0))
-            self:SetVerticalScroll(math.max(0, math.min(max, (self:GetVerticalScroll() or 0) - delta * 40)))
-        end)
+    local function NewPage(frameName, name)
+        local outer = CreateFrame("Frame", frameName)
+        outer.name = name
+        outer:Hide()
+        local okS, scroll = pcall(CreateFrame, "ScrollFrame", nil, outer, "UIPanelScrollFrameTemplate")
+        if not okS or not scroll then scroll = CreateFrame("ScrollFrame", nil, outer) end
+        scroll:SetPoint("TOPLEFT", outer, "TOPLEFT", 0, -4)
+        scroll:SetPoint("BOTTOMRIGHT", outer, "BOTTOMRIGHT", -28, 4)
+        scroll:EnableMouseWheel(true)
+        if not scroll.ScrollBar then
+            scroll:SetScript("OnMouseWheel", function(self, delta)
+                local max = math.max(0, (self:GetScrollChild() and self:GetScrollChild():GetHeight() or 0) - (self:GetHeight() or 0))
+                self:SetVerticalScroll(math.max(0, math.min(max, (self:GetVerticalScroll() or 0) - delta * 40)))
+            end)
+        end
+        local page = CreateFrame("Frame", nil, scroll)
+        page:SetSize(560, 900)
+        scroll:SetScrollChild(page)
+        local function Fit()
+            local w = scroll:GetWidth()
+            if w and w > 100 then page:SetWidth(w) end
+        end
+        outer:SetScript("OnSizeChanged", Fit)
+        return outer, page, Fit
     end
-    local p = CreateFrame("Frame", nil, scroll)
-    p:SetSize(560, 900)
-    scroll:SetScrollChild(p)
-    local function FitWidth()
-        local w = scroll:GetWidth()
-        if w and w > 100 then p:SetWidth(w) end
-    end
-    outer:SetScript("OnSizeChanged", FitWidth)
+    local outer, p, FitWidth = NewPage("QRF_OptionsPanel", CONFIG.DISPLAY_NAME)
     local y = -16
 
     local title = p:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
@@ -10936,7 +11191,7 @@ function CFQ.BuildOptionsPanel()
     local sub = p:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
     sub:SetPoint("TOPLEFT", p, "TOPLEFT", 16, y)
     sub:SetText("Quest reward & level filters, tracker stacks, and the Field Tally parchment.")
-    y = y - 26
+    y = y - 20
 
     local function Section(text)
         local fs = p:CreateFontString(nil, "ARTWORK", "GameFontNormal")
@@ -10950,7 +11205,8 @@ function CFQ.BuildOptionsPanel()
         y = y - 22
     end
 
-    local function Check(label, tip, getFn, setFn, indent)
+    -- inline = the next widget goes on the same row (indent sets the column)
+    local function Check(label, tip, getFn, setFn, indent, inline)
         local cb = CreateFrame("CheckButton", nil, p, "UICheckButtonTemplate")
         cb:SetSize(24, 24)
         cb:SetPoint("TOPLEFT", p, "TOPLEFT", 20 + (indent or 0), y)
@@ -10973,7 +11229,7 @@ function CFQ.BuildOptionsPanel()
         end
         cb.Refresh = function(self) self:SetChecked(getFn() and true or false) end
         table.insert(CFQ.optionWidgets, cb)
-        y = y - 26
+        if not inline then y = y - 26 end
         return cb
     end
 
@@ -10997,32 +11253,12 @@ function CFQ.BuildOptionsPanel()
         if UpdateShoppingListUI then UpdateShoppingListUI() end
     end
 
-    -- Field Tally parchment ---------------------------------------------------
-    Section("Field Tally Parchment")
-    Check("Show the parchment tally list",
-        "The handwritten checklist of quest items to gather and tasks to do around you.",
-        function() return showShoppingList end,
-        function(v) if v then P.TurnTallyOn() else showShoppingList = false; RefreshParchment() end end)
-    -- right under it (it decides whether the tally is up at all), greyed out while the tally is off, and
-    -- while "For me" is on (then the tally is never put away: P.ShouldHideTally)
-    local hideCb = Check("...only when something is nearby",
-        "On: the tally only appears when the area you're in has something to gather or do, and puts itself away when it doesn't. Off: the pile stays up so you can leaf through other areas.\n\nWhile \"For me\" is on, the tally stays up whenever it's switched on (your tasks and Journal are on it), so this only counts with \"For me\" off.",
-        function() return CFQ.parchmentOpts.hideWhenNothingNearby end,
-        function(v)
-            CFQ.parchmentOpts.hideWhenNothingNearby = v
-            if showShoppingList then P.TurnTallyOn() end      -- says so in chat if this just put it away
-        end, 24)
-    local hideRefresh = hideCb.Refresh
-    hideCb.Refresh = function(self)
-        hideRefresh(self)
-        self:SetAlpha((showShoppingList and not CFQ.parchmentOpts.forMe) and 1 or 0.45)
-    end
     -- Slider row: label, slider (1-50% unless lo/hi are given), value, hint. get() returns the value; set(v) applies it.
-    local function RadiusSlider(labelText, tipTitle, tipBody, get, set, hintFn, enabledFn, lo, hi)
+    local function RadiusSlider(labelText, tipTitle, tipBody, get, set, hintFn, enabledFn, lo, hi, x)
         lo, hi = lo or 1, hi or 50
         local row = CreateFrame("Frame", nil, p)
         row:SetSize(440, 26)
-        row:SetPoint("TOPLEFT", p, "TOPLEFT", 48, y)
+        row:SetPoint("TOPLEFT", p, "TOPLEFT", x or 48, y)
         local label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         label:SetPoint("LEFT", row, "LEFT", 0, 0)
         label:SetText(labelText)
@@ -11090,135 +11326,6 @@ function CFQ.BuildOptionsPanel()
         return row
     end
 
-    -- "Near me" (page 1): how close you must be to a quest's objective area
-    CFQ.nearRadiusRow = RadiusSlider("Near me distance", "Near me distance",
-        "Page 1 lists quest items and tasks within this distance of where you're standing (as % of the zone map), plus anything you've progressed in the last few minutes.",
-        function() return P.GetNearRadius() end,
-        function(v) CFQ.nearRadiusPercent = v; SaveState(); RefreshParchment() end)
-
-    -- What the tally lists (same as the toggles beside its gear; one of items / tasks always stays on)
-    Check("List quest items",
-        "Quest items to loot or gather.",
-        function() return CFQ.parchmentOpts.tallyLoot end,
-        function(v) P.SetTallyShows("items", v); P.OnTallyChoiceChanged() end)
-    Check("List tasks",
-        "Enemies to slay and other quest steps. Each gets its own box to tick; a line to slay catches fire while your target is one of them.",
-        function() return CFQ.parchmentOpts.tallyTasks end,
-        function(v) P.SetTallyShows("tasks", v); P.OnTallyChoiceChanged() end)
-    Check("Tasks apart from items",
-        "Items first, then the tasks under their own heading. Off: items and tasks together, in the tracker's quest order.",
-        function() return CFQ.parchmentOpts.tallySeparate end,
-        function(v) CFQ.parchmentOpts.tallySeparate = v; P.OnTallyChoiceChanged() end)
-    Check("\"For me\": your own tasks on the Near me page",
-        "Write yourself tasks at the bottom of the Near me page (click \"+ add a task\", or /hanky task <what to do>). Tick one off and it goes to your Journal, stamped with the time. While this is on, the tally stays up whenever it's switched on, even with no quests. Off: the page is all quest lines again and the tally puts itself away when there's nothing to list (your tasks and Journal are kept).",
-        function() return CFQ.parchmentOpts.forMe end,
-        function(v)
-            CFQ.parchmentOpts.forMe = v; P.CancelForMeEdit(); P.OnTallyChoiceChanged()
-            if showShoppingList and not v then P.TurnTallyOn() end    -- says so in chat if this just put it away
-        end)
-    if CFQ.AchievementsSupported() then
-        CFQ.achievementCheck = Check("...write the achievements you earn into the Journal",
-            "When you earn an achievement, a note goes in your Journal by itself: its name and points, the time and where you were. Several earned within a few minutes in one place share a note. Written in faded ink with a small star, so your own notes stand out.",
-            function() return CFQ.parchmentOpts.autoAchievements end,
-            function(v) CFQ.parchmentOpts.autoAchievements = v end, 24)
-        local achRefresh = CFQ.achievementCheck.Refresh
-        CFQ.achievementCheck.Refresh = function(self)
-            achRefresh(self)
-            self:SetAlpha(CFQ.parchmentOpts.forMe and 1 or 0.45)     -- the Journal is part of "For me"
-        end
-    end
-    if CFQ.questTurnInEvent then
-        CFQ.questCheck = Check("...write the quests you turn in into the Journal",
-            "When you turn in a quest, a note goes in your Journal by itself: the quest, what it gave you (the items, the one you chose, xp and money), the time and where you were. Several turned in within a few minutes in one place share a note. Written in faded ink with a small star, so your own notes stand out.",
-            function() return CFQ.parchmentOpts.autoQuests end,
-            function(v) CFQ.parchmentOpts.autoQuests = v end, 24)
-        local qRefresh = CFQ.questCheck.Refresh
-        CFQ.questCheck.Refresh = function(self)
-            qRefresh(self)
-            self:SetAlpha(CFQ.parchmentOpts.forMe and 1 or 0.45)
-        end
-    end
-
-    Check("Pages for other areas",
-        "Quests that aren't near you go on more pages in the pile, one per place (see Other pages by). Click the dog-eared corner to turn to the next page (right-click to go back).",
-        function() return CFQ.parchmentOpts.showTabs end,
-        function(v) CFQ.parchmentOpts.showTabs = v; RefreshParchment() end)
-
-    -- How area pages (page 2+) are divided up
-    local groupBtn = Button("Other pages by: Map areas", 230, 48, function()
-        P.CycleGrouping()
-        shoppingScrollOffset = 0
-        SaveState()
-        RefreshParchment()
-    end, function(self)
-        self:SetText("Other pages by: " .. P.GetGrouping().label)
-        self:SetAlpha(CFQ.parchmentOpts.showTabs and 1 or 0.45)
-    end)
-    groupBtn:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:AddLine("Other pages by", 1, 0.82, 0)
-        GameTooltip:AddLine("How the quests that aren't near you are split into pages (page 1 is always Near me).", 0.9, 0.9, 0.9, true)
-        GameTooltip:AddLine("Map areas: one page per explored subzone the quest is in (the names on your world map).", 0.9, 0.9, 0.9, true)
-        GameTooltip:AddLine("Zones: one page per zone.", 0.9, 0.9, 0.9, true)
-        GameTooltip:AddLine("Clusters: quests close together share a page, named after the place. How close is the Cluster size below.", 0.9, 0.9, 0.9, true)
-        GameTooltip:AddLine("Pages with the same name are always merged.", 0.55, 0.85, 0.55, true)
-        GameTooltip:Show()
-    end)
-    groupBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-    y = y - 30
-
-    local function DistanceMode() return CFQ.parchmentOpts.showTabs and P.GetGrouping().key == "RADIUS" end
-    local followCb = Check("Cluster size follows the tracker's (•••) stacking slider",
-        "Clusters only. On: quests that would share a (•••) stack in the Objective Tracker share a page. Off: set the cluster size yourself below.",
-        function() return CFQ.parchmentOpts.pagesFollowTracker end,
-        function(v) CFQ.parchmentOpts.pagesFollowTracker = v; RefreshParchment() end)
-    local baseRefresh = followCb.Refresh
-    followCb.Refresh = function(self)
-        baseRefresh(self)
-        self:SetAlpha(DistanceMode() and 1 or 0.45)
-    end
-
-
-    -- Clusters (page 2+): how far apart quests can be and still share a page
-    CFQ.pageRadiusRow = RadiusSlider("Cluster size", "Cluster size",
-        "Clusters only. Quests within this distance of each other (as % of the zone map) share a page. Smaller = more, tighter pages.",
-        function() return P.GetPageRadius() end,
-        function(v)
-            if CFQ.parchmentOpts.pagesFollowTracker then
-                -- linked: this slider *is* the tracker's (•••) slider
-                incompleteRadiusPercent = v
-                ApplyFilterChanges()
-            else
-                CFQ.pageRadiusPercent = v
-                SaveState()
-                RefreshParchment()
-            end
-        end,
-        function() return CFQ.parchmentOpts.pagesFollowTracker and "(linked to •••)" or "" end,
-        DistanceMode)
-    Check("Turn back to \"Near me\" when you arrive somewhere new",
-        "When you enter a new area, the pile turns back to the Near me page and its heading is written in fresh red ink.",
-        function() return CFQ.parchmentOpts.autoFrontOnAreaChange end,
-        function(v) CFQ.parchmentOpts.autoFrontOnAreaChange = v end)
-
-    Check("Mark the tracked quest's item spots on the minimap",
-        "Amber pips on the minimap where you've looted the items of the quest you're tracking (click an item on the tally to track its quest). Pips beyond the minimap's edge sit on the rim, pointing the way.",
-        function() return CFQ.parchmentOpts.minimapPins end,
-        function(v) CFQ.parchmentOpts.minimapPins = v; CFQ.UpdateMinimapPins() end)
-    Check("Little map when you hover an item",
-        "Shows a small map under the item's tooltip: the quest's objective area, the spots you've looted it in, and where you are.",
-        function() return CFQ.parchmentOpts.mapPreview end,
-        function(v) CFQ.parchmentOpts.mapPreview = v; if not v then CFQ.HideMapPreview() end end)
-    Check("Glowing & burning ink",
-        "An item's line glows when you walk into its hunting grounds, and catches fire while your target is a mob that may drop it.",
-        function() return CFQ.parchmentOpts.inkEffects end,
-        function(v) CFQ.parchmentOpts.inkEffects = v; RefreshParchment() end)
-    CFQ.textSizeRow = RadiusSlider("Text size", "Text size",
-        "How big the tally's writing is, as % of the usual size. The page heading grows by half as much.",
-        function() return CFQ.tallyTextScale or 100 end,
-        function(v) CFQ.tallyTextScale = v; SaveState(); RefreshParchment() end,
-        nil, nil, P.TEXT_SCALE_MIN, P.TEXT_SCALE_MAX)
-
     -- Colour swatches (+ Custom... = WoW's colour picker). which = "rune" (Arcane script's rune circle,
     -- beside the Look button, only while that look is chosen) or "ink" (the writing, every look; each
     -- look remembers its own). The first swatch is always the look's own colour.
@@ -11250,7 +11357,7 @@ function CFQ.BuildOptionsPanel()
             end
         end)
     end
-    local function ColorRow(x, rowY, labelText, labelW, which, presets, tipBody, shownFn)
+    local function ColorRow(x, rowY, labelText, labelW, which, presets, tipBody, shownFn, enabledFn)
         local row = CreateFrame("Frame", nil, p)
         row:SetSize(labelW + #presets * 22 + 82, 22)
         row:SetPoint("TOPLEFT", p, "TOPLEFT", x, rowY - 1)
@@ -11314,14 +11421,12 @@ function CFQ.BuildOptionsPanel()
             end
             if self.customBtn then self.customBtn:SetText(any and "Custom..." or "Custom •") end
             self:SetShown(not shownFn or shownFn())
+            self:SetAlpha((not enabledFn or enabledFn()) and 1 or 0.45)
         end
         table.insert(CFQ.optionWidgets, row)
         return row
     end
 
-    y = y - 4
-    -- Look: a drop-down list of every look (a little swatch of each, the current one ticked; hover one
-    -- to read about it). Clicking outside the list, or the button again, closes it.
     local LOOK_BLURBS = {
         HANDKERCHIEF = "Scribbled on a hemmed, folded handkerchief.",
         PARCHMENT = "A pile of torn parchment pages.",
@@ -11334,179 +11439,392 @@ function CFQ.BuildOptionsPanel()
         MARBLE = "A white marble tablet, the list cut in and gilded, glowing with holy light.",
         GILDED = "A plate of beaten gold, the list engraved; light glints across it now and then.",
         VELLUM = "A page of a holy book with a gold-leaf border, the heading in red.",
+        DISPATCH = "A courier's message torn off a field pad, folded in four, in copying pencil; stamped with your guild's name if you have one.",
         ARCANE = "A mage's words of light hanging in the air, a rune circle turning behind them.",
         NATIVE = "A see-through WoW-style panel, in the handwriting you pick.",
     }
-    local lookBtn = Button("Look: Torn rag", 210, 24, function(self)
-        if self.list:IsShown() then self.list:Hide() else self.list:Show() end
-    end, function(self)
-        self:SetText("Look: " .. P.GetStyle().label)
-        if self.list and self.list:IsShown() then self.list:Refresh() end
-    end)
-    lookBtn.arrow = lookBtn:CreateTexture(nil, "OVERLAY")
-    lookBtn.arrow:SetSize(16, 16)
-    lookBtn.arrow:SetPoint("RIGHT", lookBtn, "RIGHT", -4, 0)
-    lookBtn.arrow:SetTexture("Interface\\ChatFrame\\UI-ChatIcon-ScrollDown-Up")
-    lookBtn:SetScript("OnEnter", function(self)
-        if self.list:IsShown() then return end
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:AddLine("Look of the Field Tally", 1, 0.82, 0)
-        GameTooltip:AddLine("Click to pick one from the list.", 0.9, 0.9, 0.9, true)
-        GameTooltip:Show()
-    end)
-    lookBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    -- Font sample and blurb for the handwriting list
+    local FONT_BLURBS = {
+        QUILL = "Blizzard's calligraphic book hand.",
+        SCRAWL = "A rough, angular scrawl.",
+        PLAIN = "The game's plain interface print.",
+        BLOTTED = "A rough hand, drops of ink shaken off the quill here and there.",
+        TYPEWRITER = "Typed on a worn field typewriter: uneven, inky keys. Made for the courier dispatch.",
+    }
 
-    local ROW_H = 20
+    -- A drop-down list under a button: one row per entry (the current one ticked, an optional swatch, the
+    -- label in the entry's own font if it has one), a blurb on hover; a click outside closes it.
     -- Layers: the list sits above everything (FULLSCREEN_DIALOG), the click-catcher just under it (DIALOG,
     -- still above the Settings window). Set again every time the list opens: when Settings shows our panel
     -- it re-parents it, which pulls the list back down to the window's layer, under the catcher, and every
-    -- click on a look then only closed the list.
-    local list = CreateFrame("Frame", nil, lookBtn)
-    list:SetFrameStrata("FULLSCREEN_DIALOG")
-    list:SetToplevel(true)
-    list:EnableMouse(true)
-    list:SetPoint("TOPLEFT", lookBtn, "BOTTOMLEFT", 0, -2)
-    list:SetSize(230, #P.STYLES * ROW_H + 10)
-    list.bg = list:CreateTexture(nil, "BACKGROUND")
-    list.bg:SetAllPoints()
-    list.bg:SetColorTexture(0.06, 0.05, 0.04, 0.96)
-    for _, edge in ipairs({ { "TOPLEFT", "TOPRIGHT", 0, 1 }, { "BOTTOMLEFT", "BOTTOMRIGHT", 0, 1 },
-                            { "TOPLEFT", "BOTTOMLEFT", 1, 0 }, { "TOPRIGHT", "BOTTOMRIGHT", 1, 0 } }) do
-        local t = list:CreateTexture(nil, "BORDER")
-        t:SetColorTexture(0.6, 0.5, 0.2, 0.8)
-        t:SetPoint(edge[1], list, edge[1], 0, 0)
-        t:SetPoint(edge[2], list, edge[2], 0, 0)
-        if edge[3] == 1 then t:SetWidth(1) else t:SetHeight(1) end
-    end
-    list:Hide()
-    -- a click anywhere else closes the list
-    local catcher = CreateFrame("Button", nil, UIParent)
-    catcher:SetAllPoints(UIParent)
-    catcher:SetFrameStrata("DIALOG")
-    catcher:SetFrameLevel(1)
-    catcher:RegisterForClicks("AnyUp")
-    catcher:SetScript("OnClick", function()
-        -- if a click still lands here over a look (layers changed under us), pick that look
-        for _, row in ipairs(list.rows or {}) do
-            if row:IsShown() and row:IsMouseOver() then row:GetScript("OnClick")(row); return end
+    -- click on a row then only closed the list.
+    local function DropList(btn, entries, width, getCur, onPick, tipTitle, host)
+        local ROW_H = 20
+        btn.arrow = btn:CreateTexture(nil, "OVERLAY")
+        btn.arrow:SetSize(16, 16)
+        btn.arrow:SetPoint("RIGHT", btn, "RIGHT", -4, 0)
+        btn.arrow:SetTexture("Interface\\ChatFrame\\UI-ChatIcon-ScrollDown-Up")
+        btn:SetScript("OnEnter", function(self)
+            if self.list:IsShown() then return end
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:AddLine(tipTitle, 1, 0.82, 0)
+            GameTooltip:AddLine("Click to pick one from the list.", 0.9, 0.9, 0.9, true)
+            GameTooltip:Show()
+        end)
+        btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        local list = CreateFrame("Frame", nil, btn)
+        list:SetFrameStrata("FULLSCREEN_DIALOG")
+        list:SetToplevel(true)
+        list:EnableMouse(true)
+        list:SetPoint("TOPLEFT", btn, "BOTTOMLEFT", 0, -2)
+        list:SetSize(width, #entries * ROW_H + 10)
+        list.bg = list:CreateTexture(nil, "BACKGROUND")
+        list.bg:SetAllPoints()
+        list.bg:SetColorTexture(0.06, 0.05, 0.04, 0.96)
+        for _, edge in ipairs({ { "TOPLEFT", "TOPRIGHT", 0, 1 }, { "BOTTOMLEFT", "BOTTOMRIGHT", 0, 1 },
+                                { "TOPLEFT", "BOTTOMLEFT", 1, 0 }, { "TOPRIGHT", "BOTTOMRIGHT", 1, 0 } }) do
+            local t = list:CreateTexture(nil, "BORDER")
+            t:SetColorTexture(0.6, 0.5, 0.2, 0.8)
+            t:SetPoint(edge[1], list, edge[1], 0, 0)
+            t:SetPoint(edge[2], list, edge[2], 0, 0)
+            if edge[3] == 1 then t:SetWidth(1) else t:SetHeight(1) end
         end
         list:Hide()
-    end)
-    catcher:Hide()
-    list:SetFrameLevel(catcher:GetFrameLevel() + 5)
-    list.rows = {}
-    for k, st in ipairs(P.STYLES) do
-        local row = CreateFrame("Button", nil, list)
-        row:SetSize(222, ROW_H)
-        row:SetPoint("TOPLEFT", list, "TOPLEFT", 4, -5 - (k - 1) * ROW_H)
-        row.hl = row:CreateTexture(nil, "HIGHLIGHT")
-        row.hl:SetAllPoints()
-        row.hl:SetColorTexture(1, 0.82, 0, 0.15)
-        row.tick = row:CreateTexture(nil, "ARTWORK")
-        row.tick:SetSize(14, 14)
-        row.tick:SetPoint("LEFT", row, "LEFT", 2, 0)
-        row.tick:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
-        row.swatch = row:CreateTexture(nil, "ARTWORK")
-        row.swatch:SetSize(16, 16)
-        row.swatch:SetPoint("LEFT", row, "LEFT", 20, 0)
-        if st.image then
-            row.swatch:SetTexture(st.image)
-            row.swatch:SetTexCoord(0.25, 0.75, 0.25, 0.75)          -- the middle of the material
-        else
-            local c = st.paper
-            row.swatch:SetColorTexture(c[1], c[2], c[3], math.max(c[4] or 1, 0.6))
-        end
-        row.label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        row.label:SetPoint("LEFT", row.swatch, "RIGHT", 6, 0)
-        row.label:SetText(st.label)
-        row.key = st.key
-        row:SetScript("OnClick", function(self)
-            CFQ.parchmentStyle = self.key
+        -- a click anywhere else closes the list
+        local catcher = CreateFrame("Button", nil, UIParent)
+        catcher:SetAllPoints(UIParent)
+        catcher:SetFrameStrata("DIALOG")
+        catcher:SetFrameLevel(1)
+        catcher:RegisterForClicks("AnyUp")
+        catcher:SetScript("OnClick", function()
+            -- if a click still lands here over a row (layers changed under us), pick that row
+            for _, row in ipairs(list.rows or {}) do
+                if row:IsShown() and row:IsMouseOver() then row:GetScript("OnClick")(row); return end
+            end
             list:Hide()
+        end)
+        catcher:Hide()
+        list:SetFrameLevel(catcher:GetFrameLevel() + 5)
+        list.rows = {}
+        for k, en in ipairs(entries) do
+            local row = CreateFrame("Button", nil, list)
+            row:SetSize(width - 8, ROW_H)
+            row:SetPoint("TOPLEFT", list, "TOPLEFT", 4, -5 - (k - 1) * ROW_H)
+            row.hl = row:CreateTexture(nil, "HIGHLIGHT")
+            row.hl:SetAllPoints()
+            row.hl:SetColorTexture(1, 0.82, 0, 0.15)
+            row.tick = row:CreateTexture(nil, "ARTWORK")
+            row.tick:SetSize(14, 14)
+            row.tick:SetPoint("LEFT", row, "LEFT", 2, 0)
+            row.tick:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+            local labelAt = 20
+            if en.image or en.color then
+                row.swatch = row:CreateTexture(nil, "ARTWORK")
+                row.swatch:SetSize(16, 16)
+                row.swatch:SetPoint("LEFT", row, "LEFT", 20, 0)
+                if en.image then
+                    row.swatch:SetTexture(en.image)
+                    row.swatch:SetTexCoord(0.25, 0.75, 0.25, 0.75)          -- the middle of the material
+                else
+                    local c = en.color
+                    row.swatch:SetColorTexture(c[1], c[2], c[3], math.max(c[4] or 1, 0.6))
+                end
+                labelAt = 42
+            end
+            row.label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+            row.label:SetPoint("LEFT", row, "LEFT", labelAt, 0)
+            if en.font then pcall(row.label.SetFont, row.label, en.font, en.fontSize or 14, "") end   -- a sample of the hand
+            row.label:SetText(en.label)
+            row.key = en.key
+            row:SetScript("OnClick", function(self)
+                list:Hide()
+                onPick(self.key)
+                CFQ.RefreshOptionsPanel()
+            end)
+            row:SetScript("OnEnter", function(self)
+                GameTooltip:SetOwner(list, "ANCHOR_RIGHT")
+                GameTooltip:AddLine(en.label, 1, 0.82, 0)
+                if en.blurb then GameTooltip:AddLine(en.blurb, 0.9, 0.9, 0.9, true) end
+                GameTooltip:Show()
+            end)
+            row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+            list.rows[k] = row
+        end
+        list.Refresh = function(self)
+            local cur = getCur()
+            for _, row in ipairs(self.rows) do
+                row.tick:SetShown(row.key == cur)
+                row.label:SetTextColor(1, row.key == cur and 0.82 or 1, row.key == cur and 0 or 1)
+            end
+        end
+        list:SetScript("OnShow", function(self)
+            catcher:SetFrameStrata("DIALOG")
+            catcher:Show()
+            self:SetFrameStrata("FULLSCREEN_DIALOG")
+            self:Raise()
+            self:Refresh()
+            GameTooltip:Hide()
+        end)
+        list:SetScript("OnHide", function() catcher:Hide() end)
+        btn.list = list
+        list.catcher = catcher
+        host:HookScript("OnHide", function() list:Hide() end)
+        return list
+    end
+    local function ToggleList(self) if self.list:IsShown() then self.list:Hide() else self.list:Show() end end
+
+    -- The tally's look, handwriting, colours and size: first on the main page (seen without scrolling) and
+    -- again on the Appearance page (its own subcategory). One function builds both on whatever page p / y
+    -- point at; host = that page's outer frame (hiding it closes the lists). Returns the widgets.
+    local function BuildAppearance(host)
+        local W = {}
+        Section("Appearance")
+        local lookEntries = {}
+        for _, st in ipairs(P.STYLES) do
+            table.insert(lookEntries, { key = st.key, label = st.label, image = st.image, color = (not st.image) and st.paper or nil,
+                blurb = LOOK_BLURBS[st.key] })
+        end
+        W.lookBtn = Button("Look: Torn rag", 210, 24, ToggleList, function(self)
+            self:SetText("Look: " .. P.GetStyle().label)
+            if self.list and self.list:IsShown() then self.list:Refresh() end
+        end)
+        W.lookList = DropList(W.lookBtn, lookEntries, 230, function() return P.GetStyle().key end, function(key)
+            CFQ.parchmentStyle = key
             SaveState()
             P.ApplyStyle()
             RefreshParchment()
-            CFQ.RefreshOptionsPanel()
-        end)
-        row:SetScript("OnEnter", function(self)
-            GameTooltip:SetOwner(list, "ANCHOR_RIGHT")
-            GameTooltip:AddLine(st.label, 1, 0.82, 0)
-            if LOOK_BLURBS[st.key] then GameTooltip:AddLine(LOOK_BLURBS[st.key], 0.9, 0.9, 0.9, true) end
-            GameTooltip:Show()
-        end)
-        row:SetScript("OnLeave", function() GameTooltip:Hide() end)
-        list.rows[k] = row
-    end
-    list.Refresh = function(self)
-        local cur = P.GetStyle().key
-        for _, row in ipairs(self.rows) do
-            row.tick:SetShown(row.key == cur)
-            row.label:SetTextColor(1, row.key == cur and 0.82 or 1, row.key == cur and 0 or 1)
+        end, "Look of the Field Tally", host)
+        local fontEntries = {}
+        for _, fst in ipairs(P.FONT_STYLES) do
+            table.insert(fontEntries, { key = fst.key, label = fst.label, font = fst.path or STANDARD_TEXT_FONT,
+                fontSize = (fst.item or 12) + 2, blurb = FONT_BLURBS[fst.key] or fst.blurb })
         end
+        W.fontBtn = Button("Handwriting: Quill script", 240, 244, ToggleList, function(self)
+            -- some looks bring their own lettering (carved bark: knife-cut letters)
+            local forced = P.GetStyle().font
+            local label = P.GetFontStyle().label
+            if forced then
+                for _, fst in ipairs(P.FONT_STYLES) do if fst.key == forced then label = fst.label .. " (set by the look)" end end
+            end
+            self:SetText("Handwriting: " .. label)
+            self:SetAlpha(forced and 0.45 or 1)
+            if self.list and self.list:IsShown() then self.list:Refresh() end
+        end)
+        W.fontList = DropList(W.fontBtn, fontEntries, 230, function() return P.GetFontStyle().key end, function(key)
+            CFQ.parchmentFont = key
+            SaveState()
+            RefreshParchment()
+        end, "Handwriting", host)
+        y = y - 30
+        -- every look; each look remembers its own
+        W.ink = ColorRow(24, y, "Writing colour", 110, "ink", P.INK_COLORS,
+            "The colour of the tally's writing: the lines, heading and footer. Each look remembers its own; the first swatch is the look's own ink.")
+        y = y - 26
+        -- always there (so nothing jumps about), greyed unless Arcane script is the look
+        W.runes = ColorRow(24, y, "Rune colour", 110, "rune", P.ARCANE_RUNE_COLORS,
+            "Arcane script only: the colour of the rune circle and its light (the glow round the words, the motes, ticks and strikes, the corner mark).",
+            nil, IsArcane)
+        y = y - 28
+        W.size = RadiusSlider("Text size", "Text size",
+            "How big the tally's writing is, as % of the usual size. The page heading grows by half as much.",
+            function() return CFQ.tallyTextScale or 100 end,
+            function(v) CFQ.tallyTextScale = v; SaveState(); RefreshParchment() end,
+            nil, nil, P.TEXT_SCALE_MIN, P.TEXT_SCALE_MAX, 24)
+        y = y - 4
+        return W
     end
-    list:SetScript("OnShow", function(self)
-        catcher:SetFrameStrata("DIALOG")
-        catcher:Show()
-        self:SetFrameStrata("FULLSCREEN_DIALOG")
-        self:Raise()
-        self:Refresh()
-        GameTooltip:Hide()
-    end)
-    list:SetScript("OnHide", function() catcher:Hide() end)
-    lookBtn.list = list
-    list.catcher = catcher
-    CFQ.lookDropDown = list
-    outer:HookScript("OnHide", function() list:Hide() end)
-    -- beside the Look button, only while Arcane script is the look
-    CFQ.runeColorRow = ColorRow(244, y, "Runes", 42, "rune", P.ARCANE_RUNE_COLORS,
-        "Arcane script: the colour of the rune circle and its light (the glow round the words, the motes, ticks and strikes, the corner mark).",
-        IsArcane)
-    y = y - 28
-    Button("Handwriting: Quill script", 190, 24, function()
-        P.CycleFontStyle()
-        SaveState()
-        RefreshParchment()
-    end, function(self)
-        -- some looks bring their own lettering (carved bark: knife-cut letters)
-        local forced = P.GetStyle().font
-        local label = P.GetFontStyle().label
-        if forced then
-            for _, fst in ipairs(P.FONT_STYLES) do if fst.key == forced then label = fst.label .. " (set by the look)" end end
-        end
-        self:SetText("Handwriting: " .. label)
-        self:SetAlpha(forced and 0.45 or 1)
-    end)
-    Button("Reset Position & Size", 160, 220, function()
+
+    -- Appearance first: what most people come here to change, seen without scrolling
+    local mainAp = BuildAppearance(outer)
+    CFQ.lookDropDown, CFQ.fontDropDown = mainAp.lookList, mainAp.fontList
+    CFQ.inkColorRow, CFQ.runeColorRow, CFQ.textSizeRow = mainAp.ink, mainAp.runes, mainAp.size
+
+    -- The tally ---------------------------------------------------------------
+    Section("Field Tally")
+    Check("Show the tally",
+        "The handwritten checklist of quest items to gather and tasks to do around you.",
+        function() return showShoppingList end,
+        function(v) if v then P.TurnTallyOn() else showShoppingList = false; RefreshParchment() end end, 0, true)
+    Button("Reset position & size", 170, 300, function()
         ResetShoppingListPosition()
         P.TurnTallyOn()
     end)
+    y = y - 26
+    -- right under it (it decides whether the tally is up at all), greyed out while the tally is off, and
+    -- while "For me" is on (then the tally is never put away: P.ShouldHideTally)
+    local hideCb = Check("...only when something is nearby",
+        "On: the tally only appears when the area you're in has something to gather or do, and puts itself away when it doesn't. Off: the pile stays up so you can leaf through other areas.\n\nWhile \"For me\" is on, the tally stays up whenever it's switched on (your tasks and Journal are on it), so this only counts with \"For me\" off.",
+        function() return CFQ.parchmentOpts.hideWhenNothingNearby end,
+        function(v)
+            CFQ.parchmentOpts.hideWhenNothingNearby = v
+            if showShoppingList then P.TurnTallyOn() end      -- says so in chat if this just put it away
+        end, 24)
+    local hideRefresh = hideCb.Refresh
+    hideCb.Refresh = function(self)
+        hideRefresh(self)
+        self:SetAlpha((showShoppingList and not CFQ.parchmentOpts.forMe) and 1 or 0.45)
+    end
+    -- what it lists, on one row (same as the toggles beside its gear; one of items / tasks always stays on)
+    local listsLabel = p:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    listsLabel:SetPoint("TOPLEFT", p, "TOPLEFT", 48, y - 5)
+    listsLabel:SetText("Lists:")
+    Check("Quest items",
+        "Quest items to loot or gather.",
+        function() return CFQ.parchmentOpts.tallyLoot end,
+        function(v) P.SetTallyShows("items", v); P.OnTallyChoiceChanged() end, 66, true)
+    Check("Tasks",
+        "Enemies to slay and other quest steps. Each gets its own box to tick; a line to slay catches fire while your target is one of them.",
+        function() return CFQ.parchmentOpts.tallyTasks end,
+        function(v) P.SetTallyShows("tasks", v); P.OnTallyChoiceChanged() end, 180, true)
+    Check("Tasks apart",
+        "Items first, then the tasks under their own heading. Off: items and tasks together, in the tracker's quest order.",
+        function() return CFQ.parchmentOpts.tallySeparate end,
+        function(v) CFQ.parchmentOpts.tallySeparate = v; P.OnTallyChoiceChanged() end, 280)
+    -- "Near me" (page 1): how close you must be to a quest's objective area
+    CFQ.nearRadiusRow = RadiusSlider("Near me distance", "Near me distance",
+        "Page 1 lists quest items and tasks within this distance of where you're standing (as % of the zone map), plus anything you've progressed in the last few minutes.",
+        function() return P.GetNearRadius() end,
+        function(v) CFQ.nearRadiusPercent = v; SaveState(); RefreshParchment() end)
+
+    Check("Glowing & burning ink",
+        "An item's line glows when you walk into its hunting grounds, and catches fire while your target is a mob that may drop it.",
+        function() return CFQ.parchmentOpts.inkEffects end,
+        function(v) CFQ.parchmentOpts.inkEffects = v; RefreshParchment() end, 0, true)
+    Check("Little map on hover",
+        "Hovering an item shows a small map under its tooltip: the quest's objective area, the spots you've looted it in, and where you are.",
+        function() return CFQ.parchmentOpts.mapPreview end,
+        function(v) CFQ.parchmentOpts.mapPreview = v; if not v then CFQ.HideMapPreview() end end, 280)
+    Check("Item spots on the minimap",
+        "Amber pips on the minimap where you've looted the items of the quest you're tracking (click an item on the tally to track its quest). Pips beyond the minimap's edge sit on the rim, pointing the way.",
+        function() return CFQ.parchmentOpts.minimapPins end,
+        function(v) CFQ.parchmentOpts.minimapPins = v; CFQ.UpdateMinimapPins() end, 0, true)
+    Check("Back to \"Near me\" in a new area",
+        "When you enter a new area, the pile turns back to the Near me page and its heading is written in fresh red ink.",
+        function() return CFQ.parchmentOpts.autoFrontOnAreaChange end,
+        function(v) CFQ.parchmentOpts.autoFrontOnAreaChange = v end, 280)
+    y = y - 4
+
+    -- "For me" & the Journal -----------------------------------------------------
+    Section("For Me & Journal")
+    Check("\"For me\": your own tasks, and the Journal",
+        "Write yourself tasks at the bottom of the Near me page (click \"+ add a task\", or /hanky task <what to do>). Tick one off and it goes to your Journal, stamped with the time. While this is on, the tally stays up whenever it's switched on, even with no quests. Off: the page is all quest lines again and the tally puts itself away when there's nothing to list (your tasks and Journal are kept).",
+        function() return CFQ.parchmentOpts.forMe end,
+        function(v)
+            CFQ.parchmentOpts.forMe = v; P.CancelForMeEdit(); P.OnTallyChoiceChanged()
+            if showShoppingList and not v then P.TurnTallyOn() end    -- says so in chat if this just put it away
+        end)
+    local hasAch, hasQuest = CFQ.AchievementsSupported(), CFQ.questTurnInEvent and true or false
+    if hasAch then
+        CFQ.achievementCheck = Check("...note achievements you earn",
+            "When you earn an achievement, a note goes in your Journal by itself: its name and points, the time and where you were. Several earned within a few minutes in one place share a note. Written in faded ink with a small star, so your own notes stand out.",
+            function() return CFQ.parchmentOpts.autoAchievements end,
+            function(v) CFQ.parchmentOpts.autoAchievements = v end, 24, hasQuest)
+    end
+    if hasQuest then
+        CFQ.questCheck = Check("...note quests you turn in",
+            "When you turn in a quest, a note goes in your Journal by itself: the quest, what it gave you (the items, the one you chose, xp and money), the time and where you were. Several turned in within a few minutes in one place share a note. Written in faded ink with a small star, so your own notes stand out.",
+            function() return CFQ.parchmentOpts.autoQuests end,
+            function(v) CFQ.parchmentOpts.autoQuests = v end, hasAch and 280 or 24)
+    end
+    -- per character by default; shared = the list lives in the account's saved file
+    CFQ.shareTasksCheck = Check("...share tasks with all characters",
+        "Off: each character has its own \"For me\" tasks. On: every character on this account sees and ticks off the same tasks (each shows who wrote it). Switching off gives each character back the tasks it wrote; ones written by a character you haven't logged into since wait until you do.",
+        function() return CFQ.parchmentOpts.shareTasks end,
+        function(v) CFQ.SetNotesShared("tasks", v) end, 24, true)
+    CFQ.shareJournalCheck = Check("...share the Journal with all characters",
+        "Off: each character keeps its own Journal. On: one Journal for every character on this account, notes from all of them by time, each stamped with who wrote it. A character's own notes join it the next time you log into that character. Switching off gives each character back the notes it wrote.",
+        function() return CFQ.parchmentOpts.shareJournal end,
+        function(v) CFQ.SetNotesShared("journal", v) end, 280)
+    for _, cb in ipairs({ CFQ.achievementCheck, CFQ.questCheck, CFQ.shareTasksCheck, CFQ.shareJournalCheck }) do
+        local base = cb.Refresh
+        cb.Refresh = function(self)
+            base(self)
+            self:SetAlpha(CFQ.parchmentOpts.forMe and 1 or 0.45)     -- all part of "For me"
+        end
+    end
+    y = y - 4
+
+    -- Pages ------------------------------------------------------------------
+    Section("Pages")
+    Check("Pages for other areas",
+        "Quests that aren't near you go on more pages in the pile, one per place (see Other pages by). Click the dog-eared corner to turn to the next page (right-click to go back).",
+        function() return CFQ.parchmentOpts.showTabs end,
+        function(v) CFQ.parchmentOpts.showTabs = v; RefreshParchment() end, 0, true)
+
+    -- How area pages (page 2+) are divided up
+    local groupBtn = Button("Other pages by: Map areas", 220, 300, function()
+        P.CycleGrouping()
+        shoppingScrollOffset = 0
+        SaveState()
+        RefreshParchment()
+    end, function(self)
+        self:SetText("Other pages by: " .. P.GetGrouping().label)
+        self:SetAlpha(CFQ.parchmentOpts.showTabs and 1 or 0.45)
+    end)
+    groupBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Other pages by", 1, 0.82, 0)
+        GameTooltip:AddLine("How the quests that aren't near you are split into pages (page 1 is always Near me).", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine("Map areas: one page per explored subzone the quest is in (the names on your world map).", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine("Zones: one page per zone.", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine("Clusters: quests close together share a page, named after the place. How close is the Cluster size below.", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine("Pages with the same name are always merged.", 0.55, 0.85, 0.55, true)
+        GameTooltip:Show()
+    end)
+    groupBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
     y = y - 30
 
-    -- every look; each look remembers its own
-    CFQ.inkColorRow = ColorRow(24, y, "Writing colour", 128, "ink", P.INK_COLORS,
-        "The colour of the tally's writing: the lines, heading and footer. Each look remembers its own; the first swatch is the look's own ink.")
-    y = y - 34
+    local function DistanceMode() return CFQ.parchmentOpts.showTabs and P.GetGrouping().key == "RADIUS" end
+    local followCb = Check("Cluster size follows the tracker's (•••) slider",
+        "Clusters only. On: quests that would share a (•••) stack in the Objective Tracker share a page. Off: set the cluster size yourself below.",
+        function() return CFQ.parchmentOpts.pagesFollowTracker end,
+        function(v) CFQ.parchmentOpts.pagesFollowTracker = v; RefreshParchment() end, 24)
+    local baseRefresh = followCb.Refresh
+    followCb.Refresh = function(self)
+        baseRefresh(self)
+        self:SetAlpha(DistanceMode() and 1 or 0.45)
+    end
+
+
+    -- Clusters (page 2+): how far apart quests can be and still share a page
+    CFQ.pageRadiusRow = RadiusSlider("Cluster size", "Cluster size",
+        "Clusters only. Quests within this distance of each other (as % of the zone map) share a page. Smaller = more, tighter pages.",
+        function() return P.GetPageRadius() end,
+        function(v)
+            if CFQ.parchmentOpts.pagesFollowTracker then
+                -- linked: this slider *is* the tracker's (•••) slider
+                incompleteRadiusPercent = v
+                ApplyFilterChanges()
+            else
+                CFQ.pageRadiusPercent = v
+                SaveState()
+                RefreshParchment()
+            end
+        end,
+        function() return CFQ.parchmentOpts.pagesFollowTracker and "(linked to •••)" or "" end,
+        DistanceMode)
+    y = y - 4
 
     -- Tracker & map -----------------------------------------------------------
     Section("Tracker & Map")
-    Check("Quick Options gear above the tracker",
+    Check("Options gear above the tracker",
         "The small gear just above \"All Objectives\" that opens this panel.",
         function() return CFQ.parchmentOpts.showTrackerOptionsButton end,
-        function(v) CFQ.parchmentOpts.showTrackerOptionsButton = v; CFQ.UpdateTrackerOptionsButton() end)
-    Check("Auto-untrack quests that don't match the filter",
-        nil,
+        function(v) CFQ.parchmentOpts.showTrackerOptionsButton = v; CFQ.UpdateTrackerOptionsButton() end, 0, true)
+    Check("Auto-untrack non-matching quests",
+        "Quests that don't match the filter are taken off the tracker.",
         function() return autoUntrack end,
-        function(v) autoUntrack = v; ApplyFilterChanges() end)
+        function(v) autoUntrack = v; ApplyFilterChanges() end, 280)
     Check("Filter zone map pins",
         "Dim (or hide) world map quest pins that don't match the active filter.",
         function() return filterMapPins end,
-        function(v) filterMapPins = v; UpdateWorldMapPins() end)
-    Check("Show level & reward icons under map pins",
+        function(v) filterMapPins = v; UpdateWorldMapPins() end, 0, true)
+    Check("Level & reward icons under pins",
         "Off: they only show in the pin's tooltip.",
         function() return showMapBadges end,
-        function(v) showMapBadges = v; UpdateWorldMapPins() end)
+        function(v) showMapBadges = v; UpdateWorldMapPins() end, 280)
     y = y + 2
-    Button("Non-matching pins: Dim", 180, 24, function()
+    Button("Non-matching pins: Dim", 180, 48, function()
         mapFilterHideMode = not mapFilterHideMode
         SaveState()
         UpdateWorldMapPins()
@@ -11535,10 +11853,68 @@ function CFQ.BuildOptionsPanel()
     hint:SetJustifyH("LEFT")
     hint:SetText("Slash: /hanky (filter menu), /hanky options, /hanky lvl, /hanky dist, /hanky list, /hanky look, /hanky resetlist, /hanky items, /hanky reset")
 
+    y = y - 30
+    y = y - 6
+    -- Feedback link: addons can't open a browser, so the URL sits in a read-only box, selected on click
+    -- for Ctrl+C. Typing can't change it (any edit puts the URL back).
+    local fbLabel = p:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    fbLabel:SetPoint("TOPLEFT", p, "TOPLEFT", 16, y - 4)
+    fbLabel:SetText("Bugs, ideas, requests:")
+    local fb = CreateFrame("EditBox", nil, p, "InputBoxTemplate")
+    fb:SetSize(330, 20)
+    fb:SetPoint("LEFT", fbLabel, "RIGHT", 10, 0)
+    fb:SetAutoFocus(false)
+    fb:SetText(CONFIG.FEEDBACK_URL)
+    fb:SetCursorPosition(0)
+    fb:SetScript("OnEditFocusGained", function(self) self:HighlightText() end)
+    fb:SetScript("OnMouseUp", function(self) self:SetFocus(); self:HighlightText() end)
+    fb:SetScript("OnTextChanged", function(self, userInput)
+        if userInput and self:GetText() ~= CONFIG.FEEDBACK_URL then
+            self:SetText(CONFIG.FEEDBACK_URL); self:HighlightText()
+        end
+    end)
+    fb:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    fb:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    fb:SetScript("OnEditFocusLost", function(self) self:HighlightText(0, 0); self:SetCursorPosition(0) end)
+    fb:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Feedback", 1, 0.82, 0)
+        GameTooltip:AddLine("Click, then Ctrl+C to copy the link and paste it in your browser. " ..
+            "Open an issue there for bugs, ideas or requests, or comment on the CurseForge page.", 0.9, 0.9, 0.9, true)
+        GameTooltip:Show()
+    end)
+    fb:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    CFQ.feedbackBox = fb
+    y = y - 30
+
     p:SetHeight(math.abs(y) + 40)
-    outer:SetScript("OnShow", function() FitWidth(); CFQ.RefreshOptionsPanel() end)
+    local mainFit = FitWidth                   -- (FitWidth is pointed at the Appearance page below)
+    outer:SetScript("OnShow", function() mainFit(); CFQ.RefreshOptionsPanel() end)
     CFQ.optionsPanel = outer
     CFQ.optionsPanelHeight = math.abs(y) + 30
+
+    -- ---------------------------------------------------------------- the Appearance page (subcategory)
+    -- The same controls on a page of their own: the helpers draw on whatever p / y are.
+    local apOuter
+    apOuter, p, FitWidth = NewPage("QRF_AppearancePanel", "Appearance")
+    y = -16
+    local apTitle = p:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+    apTitle:SetPoint("TOPLEFT", p, "TOPLEFT", 16, y)
+    apTitle:SetText(CONFIG.DISPLAY_NAME .. ": Appearance")
+    local backBtn = Button("< Main options", 120, 0, function() CFQ.OpenOptions() end)
+    backBtn:ClearAllPoints()
+    backBtn:SetPoint("TOPRIGHT", p, "TOPRIGHT", -24, y + 2)
+    y = y - 22
+    local apSub = p:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    apSub:SetPoint("TOPLEFT", p, "TOPLEFT", 16, y)
+    apSub:SetText("How the Field Tally looks: the material, the handwriting, its colour and size.")
+    y = y - 26
+    CFQ.appearancePageWidgets = BuildAppearance(apOuter)
+    p:SetHeight(math.abs(y) + 40)
+    local apFit = FitWidth
+    apOuter:SetScript("OnShow", function() apFit(); CFQ.RefreshOptionsPanel() end)
+    CFQ.appearancePanel = apOuter
+    CFQ.appearancePanelHeight = math.abs(y) + 30
     return outer
 end
 
@@ -11549,6 +11925,11 @@ function CFQ.RegisterOptions()
     if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOnCategory then
         local ok, category = pcall(Settings.RegisterCanvasLayoutCategory, p, CONFIG.DISPLAY_NAME)
         if ok and category then
+            -- the Appearance page: a subcategory under ours in the Settings list
+            if Settings.RegisterCanvasLayoutSubcategory and CFQ.appearancePanel then
+                local okSub, sub = pcall(Settings.RegisterCanvasLayoutSubcategory, category, CFQ.appearancePanel, "Appearance")
+                if okSub and sub then CFQ.appearanceCategory = sub end
+            end
             pcall(Settings.RegisterAddOnCategory, category)
             CFQ.optionsCategory = category
             return
@@ -11556,11 +11937,48 @@ function CFQ.RegisterOptions()
     end
     if InterfaceOptions_AddCategory then
         pcall(InterfaceOptions_AddCategory, p)
+        if CFQ.appearancePanel then
+            CFQ.appearancePanel.parent = CONFIG.DISPLAY_NAME            -- listed under ours
+            pcall(InterfaceOptions_AddCategory, CFQ.appearancePanel)
+        end
         CFQ.optionsLegacy = true
     end
 end
 
-function CFQ.ShowStandaloneOptions()
+-- Opens the Appearance page: its subcategory in Settings, the old Interface Options, or our own window
+function CFQ.OpenAppearance()
+    CFQ.RegisterOptions()
+    local sub = CFQ.appearanceCategory
+    if sub and Settings and Settings.OpenToCategory then
+        if InCombatLockdown() then
+            print("|cFFFFD100" .. CONFIG.DISPLAY_NAME .. ":|r options will open after combat.")
+            CFQ.openOptionsAfterCombat = true
+            return
+        end
+        local id = (sub.GetID and sub:GetID()) or sub.ID
+        local ok = pcall(Settings.OpenToCategory, id)
+        -- some clients only open top-level categories by ID: then pick the subcategory in the open window
+        if SettingsPanel and SettingsPanel.SelectCategory and SettingsPanel.GetCurrentCategory then
+            local okCur, cur = pcall(SettingsPanel.GetCurrentCategory, SettingsPanel)
+            if not (okCur and cur == sub) then
+                if not ok and CFQ.optionsCategory then
+                    local mid = (CFQ.optionsCategory.GetID and CFQ.optionsCategory:GetID()) or CFQ.optionsCategory.ID
+                    ok = pcall(Settings.OpenToCategory, mid)
+                end
+                pcall(SettingsPanel.SelectCategory, SettingsPanel, sub)
+            end
+        end
+        if ok then return end
+    elseif CFQ.optionsLegacy and InterfaceOptionsFrame_OpenToCategory and CFQ.appearancePanel then
+        InterfaceOptionsFrame_OpenToCategory(CFQ.appearancePanel)
+        InterfaceOptionsFrame_OpenToCategory(CFQ.appearancePanel)
+        return
+    end
+    CFQ.ShowStandaloneOptions("appearance")
+end
+
+-- Our own options window (no Settings / Interface Options): page = "appearance" or the main page
+function CFQ.ShowStandaloneOptions(page)
     local host = CFQ.optionsStandalone
     if not host then
         host = CreateFrame("Frame", "QRF_OptionsStandalone", UIParent)
@@ -11585,7 +12003,11 @@ function CFQ.ShowStandaloneOptions()
         if UISpecialFrames then table.insert(UISpecialFrames, "QRF_OptionsStandalone") end
         CFQ.optionsStandalone = host
     end
-    local p = CFQ.BuildOptionsPanel()
+    local main = CFQ.BuildOptionsPanel()
+    local p = (page == "appearance" and CFQ.appearancePanel) or main
+    for _, other in ipairs({ main, CFQ.appearancePanel }) do
+        if other ~= p and other:GetParent() == host then other:Hide() end
+    end
     p:SetParent(host)
     p:ClearAllPoints()
     p:SetAllPoints(host)
@@ -11656,6 +12078,7 @@ SlashCmdList["HANDKERQUEST"] = function(msg)
             marble = "MARBLE", tablet = "MARBLE", sanctified = "MARBLE", holy = "MARBLE",
             gold = "GILDED", gilded = "GILDED", plate = "GILDED", golden = "GILDED",
             vellum = "VELLUM", illuminated = "VELLUM", manuscript = "VELLUM", libram = "VELLUM", book = "VELLUM",
+            dispatch = "DISPATCH", courier = "DISPATCH", message = "DISPATCH", despatch = "DISPATCH", orders = "DISPATCH",
             arcane = "ARCANE", mage = "ARCANE", magic = "ARCANE", rune = "ARCANE", runes = "ARCANE",
             window = "NATIVE", transparent = "NATIVE", native = "NATIVE" }
         if want and alias[want] then CFQ.parchmentStyle = alias[want] else P.CycleStyle() end
@@ -11687,6 +12110,9 @@ SlashCmdList["HANDKERQUEST"] = function(msg)
         end
     elseif cmd == "options" or cmd == "opt" or cmd == "config" or cmd == "settings" then
         CFQ.OpenOptions()
+    elseif cmd == "feedback" or cmd == "bug" or cmd == "bugs" or cmd == "issue" or cmd == "issues" then
+        print("|cFFFFD100" .. CONFIG.DISPLAY_NAME .. ":|r bugs, ideas and requests: " .. CONFIG.FEEDBACK_URL ..
+            "  (copy it from the box at the top of /hanky options)")
     else
         local anchor = trackerFilterBtn or (questLogBar and questLogBar.rewardBtn) or UIParent
         ToggleMenuAtButton(anchor, true, "LEVELS")
@@ -11699,6 +12125,9 @@ end
 local loader = CreateFrame("Frame")
 loader:RegisterEvent("ADDON_LOADED")
 loader:RegisterEvent("PLAYER_ENTERING_WORLD")
+loader:RegisterEvent("PLAYER_LOGOUT")
+loader:RegisterEvent("PLAYER_GUILD_UPDATE")     -- the courier dispatch stamp shows your guild
+loader:RegisterEvent("GUILD_ROSTER_UPDATE")
 loader:RegisterEvent("QUEST_LOG_UPDATE")
 loader:RegisterEvent("UNIT_QUEST_LOG_CHANGED")
 loader:RegisterEvent("QUEST_WATCH_LIST_CHANGED")
@@ -11752,6 +12181,15 @@ loader:SetScript("OnEvent", function(self, event, arg1, arg2, arg3)
     end
     if event == "LOOT_OPENED" then
         pcall(CFQ.OnLootOpened)
+        return
+    end
+    if event == "PLAYER_GUILD_UPDATE" or event == "GUILD_ROSTER_UPDATE" then
+        if shoppingListFrame then pcall(CFQ.P.LayoutStamp, shoppingListFrame) end   -- joined, left or renamed
+        return
+    end
+    if event == "PLAYER_LOGOUT" then                   -- also on /reload: just before the saved files are written
+        SaveState()
+        CFQ.SaveNotesForLogout()                       -- this character's Journal never goes in the account file
         return
     end
     if event == "ADDON_LOADED" and arg1 == "Handkerquest" then

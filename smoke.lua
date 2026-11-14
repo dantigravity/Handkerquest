@@ -752,10 +752,81 @@ do
     end
 end
 
+-- courier dispatch: a field-message sheet, folded in four, in copying pencil (after illuminated vellum)
+do
+    P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
+    local st = P.GetStyle()
+    check(CFQ.parchmentStyle == "DISPATCH" and st.label == "Courier dispatch"
+        and f.topSheet.body.__tex == "Interface\\AddOns\\Handkerquest\\textures\\courier_dispatch", "illuminated vellum -> courier dispatch, with its texture")
+    check(not st.rigid and not st.halo and not st.font and P.INK[1] == 0.27 and P.INK[3] == 0.38,
+        "courier dispatch: paper (not rigid), dry copying pencil (violet-grey, no wet ink), the chosen handwriting")
+    check(f.padL == math.floor(f:GetWidth() * 0.115 + 0.5) and f.padT == math.floor(f:GetHeight() * 0.150 + 0.5)
+        and f.padB == math.floor(f:GetHeight() * 0.125 + 0.5), "courier dispatch: writing right of the margin rule, between the printed header and foot")
+    check(f.visibleBackSheets == math.min(#P.areas - 1, 3), "courier dispatch: sheets piled underneath")
+    P.UpdateCorner(f); f.corner.drawnKey = nil; P.DrawCorner(f.corner)
+    check(anyShown(f.corner.flap), "courier dispatch bends: a real page fold")
+    check(P.SHEET_EDGES.DISPATCH and #P.SHEET_EDGES.DISPATCH.b == 21 and #P.SHEET_EDGES.DISPATCH.r == 21, "courier dispatch: its edge is measured for the tabs")
+    for _, name in ipairs({ "dispatch", "courier", "message", "despatch", "orders" }) do
+        CFQ.parchmentStyle = "RAG"; SlashCmdList["HANDKERQUEST"]("look " .. name)
+        check(CFQ.parchmentStyle == "DISPATCH", "/hanky look " .. name)
+    end
+    local fh = io.open(here .. "/textures/courier_dispatch.tga", "rb")
+    local head = fh and fh:read(18)
+    if fh then fh:close() end
+    check(head and head:byte(3) == 2 and head:byte(13) + head:byte(14) * 256 == 512 and head:byte(15) + head:byte(16) * 256 == 512
+        and head:byte(17) == 32, "courier dispatch: textures/courier_dispatch.tga is a 512x512 32-bit TGA")
+    local sh = io.open(here .. "/textures/dispatch_stamp.tga", "rb")
+    check(sh and sh:read(1) and true, "courier dispatch: its stamp texture is in textures/")
+    if sh then sh:close() end
+
+    -- the stamp: only in a guild, the guild's name round the ring
+    GUILD_NAME = nil
+    CFQ.parchmentStyle = "DISPATCH"; P.ApplyStyle(); Fire("ZONE_CHANGED")
+    check(not f.stampOn and not (f.stamp and f.stamp.ring.__shown), "dispatch stamp: no guild, no stamp")
+    GUILD_NAME = "Knights of the Sheaf"
+    Fire("PLAYER_GUILD_UPDATE", "player")
+    local S = f.stamp
+    check(f.stampOn and S and S.ring.__shown and S.ring.__tex == "Interface\\AddOns\\Handkerquest\\textures\\dispatch_stamp",
+        "dispatch stamp: joining a guild stamps the sheet")
+    local shownLetters, word = 0, {}
+    for _, l in ipairs(S.letters) do
+        if l.__shown then shownLetters = shownLetters + 1; word[#word + 1] = l.__text end
+    end
+    check(shownLetters == #("KNIGHTSOFTHESHEAF") and table.concat(word) == "KNIGHTSOFTHESHEAF",
+        "dispatch stamp: the guild's name in capitals round the ring (" .. table.concat(word) .. ")")
+    -- "KNIGHTS OF THE SHEAF": the middle (" OF " / "THE") over the top, reading left to right
+    local _, _, _, x9, y9 = S.letters[9]:GetPoint(1)      -- O
+    local _, _, _, x12, y12 = S.letters[12]:GetPoint(1)   -- T
+    local _, _, _, rx, ry = S.ring:GetPoint(1)
+    check(x9 < x12 and y9 > ry and y12 > ry and math.abs((x9 + x12) / 2 - rx) < S.ring:GetWidth() * 0.25,
+        "dispatch stamp: the name reads left to right over the top of the ring")
+    local w0, h0 = f:GetWidth(), f:GetHeight()
+    check(math.abs(S.ring:GetWidth() - S.ring:GetHeight()) < 0.01 and math.abs(S.ring:GetWidth() - math.floor(math.min(w0, h0) * 0.34 + 0.5)) <= 1,
+        "dispatch stamp: round, sized from the sheet's smaller side")
+    GUILD_NAME = "Ab"
+    Fire("PLAYER_GUILD_UPDATE", "player")
+    local short = 0
+    for _, l in ipairs(S.letters) do if l.__shown then short = short + 1 end end
+    check(short == 2, "dispatch stamp: a renamed guild re-letters the ring")
+    GUILD_NAME = nil
+    Fire("PLAYER_GUILD_UPDATE", "player")
+    local any = S.ring.__shown
+    for _, l in ipairs(S.letters) do any = any or l.__shown end
+    check(not any and not f.stampOn, "dispatch stamp: leaving the guild takes the stamp off")
+    GUILD_NAME = "Knights of the Sheaf"
+    Fire("PLAYER_GUILD_UPDATE", "player")
+    CFQ.parchmentStyle = "VELLUM"; P.ApplyStyle(); Fire("ZONE_CHANGED")
+    check(not S.ring.__shown and not f.stampOn, "dispatch stamp: other looks have no stamp")
+    CFQ.parchmentStyle = "DISPATCH"; P.ApplyStyle(); Fire("ZONE_CHANGED")
+    check(S.ring.__shown, "dispatch stamp: ...and it's back on the dispatch")
+    GUILD_NAME = nil
+    P.LayoutStamp(f)
+end
+
 -- arcane script: words of light in the air, a turning rune circle, drifting motes, no pile
 P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
 check(CFQ.parchmentStyle == "ARCANE" and f.arcaneOn and f.arcane.ring.__shown
-    and f.arcane.ring.__tex == "Interface\\AddOns\\Handkerquest\\textures\\arcane_ring", "illuminated vellum -> arcane script: the rune circle is up")
+    and f.arcane.ring.__tex == "Interface\\AddOns\\Handkerquest\\textures\\arcane_ring", "courier dispatch -> arcane script: the rune circle is up")
 check(f.visibleBackSheets == 0 and not f.shadowSheet.__shown, "arcane script: no pile of pages, no shadow")
 local th = f.titleFS.halo
 check(th and th[1].__shown and th[1].__vc == nil and th[1].haloCol[3] == 1.0 and th[1].haloCol[1] < 0.7,
@@ -922,26 +993,51 @@ check(QRF_OptionsPanel:IsShown(), "options panel shown")
 check(QRF_TrackerOptionsButton ~= nil and QRF_TrackerOptionsButton:IsShown(), "tracker gear exists")
 check(f.optBtn ~= nil, "parchment gear exists")
 
--- handwriting button in the panel cycles the face
-local fontBtn
+-- Appearance comes first on the main page (seen without scrolling), and again on a page of its own
+check(CFQ.appearancePanel and CFQ.appearanceCategory and SETTINGS_SUB and SETTINGS_SUB.panel == CFQ.appearancePanel
+    and SETTINGS_SUB.parent == SETTINGS_CAT and SETTINGS_SUB.name == "Appearance", "options: Appearance is a subcategory under ours")
+local apMain, apPage = {}, {}
 for _, w in ipairs(CFQ.optionWidgets) do
-    if type(w.__text) == "string" and w.__text:find("^Handwriting: ") then fontBtn = w end
+    if type(w.__text) == "string" and (w.__text:find("^Look: ") or w.__text:find("^Handwriting: ")) then
+        local _, rel, _, _, oy = w:GetPoint(1)
+        local key = w.__text:find("^Look") and "look" or "font"
+        if not apMain[key] then apMain[key] = { w = w, y = oy } else apPage[key] = { w = w, y = oy } end
+    end
 end
+check(apMain.look and apMain.font and apMain.look.y == apMain.font.y and apMain.look.y > -120,
+    "options: Look and Handwriting side by side at the top of the main page (y " .. tostring(apMain.look and apMain.look.y) .. ")")
+check(apPage.look and apPage.font and apPage.look.w ~= apMain.look.w and CFQ.appearancePageWidgets.lookBtn == apPage.look.w,
+    "options: ...and the same controls on the Appearance page")
+check(CFQ.inkColorRow and CFQ.runeColorRow and CFQ.runeColorRow.__shown ~= false and CFQ.runeColorRow.__alpha == 0.45
+    and CFQ.textSizeRow, "options: writing colour, rune colour (greyed unless Arcane script) and text size with them")
+CFQ.OpenAppearance()
+check(OPENED_SETTINGS == 100 and CFQ.appearancePanel:IsShown(), "options: CFQ.OpenAppearance opens the Appearance page")
+SlashCmdList["HANDKERQUEST"]("options")
+check(OPENED_SETTINGS == 99, "options: /hanky options still opens the main page")
+
+-- handwriting: a drop-down list, each hand written in itself; picking one switches and closes it
+local fontBtn = apMain.font and apMain.font.w
 check(fontBtn ~= nil and fontBtn.__text == "Handwriting: Quill script", "handwriting button shows Quill script by default")
 if fontBtn then
+    local fl = fontBtn.list
+    check(fl and fl == CFQ.fontDropDown and not fl.__shown and #fl.rows == #P.FONT_STYLES, "handwriting drop-down: one row per hand, closed")
     fontBtn:GetScript("OnClick")(fontBtn)
-    check(fontBtn.__text == "Handwriting: Rough scrawl", "handwriting button cycles to Rough scrawl")
-    fontBtn:GetScript("OnClick")(fontBtn); fontBtn:GetScript("OnClick")(fontBtn)
+    check(fl.__shown and fl.rows[1].tick.__shown and not fl.rows[2].tick.__shown, "handwriting drop-down: opens with the current hand ticked")
+    check(fl.rows[1].label.__font[1] == "Fonts\\MORPHEUS.TTF" and fl.rows[2].label.__font[1] == "Fonts\\SKURRI.TTF",
+        "handwriting drop-down: each row is written in its own hand")
+    fl.rows[2]:GetScript("OnClick")(fl.rows[2])
+    check(fontBtn.__text == "Handwriting: Rough scrawl" and CFQ.parchmentFont == "SCRAWL" and not fl.__shown,
+        "handwriting drop-down: picking Rough scrawl switches and closes the list")
+    fontBtn:GetScript("OnClick")(fontBtn)
+    fl.rows[1]:GetScript("OnClick")(fl.rows[1])
+    check(CFQ.parchmentFont == "QUILL", "handwriting drop-down: back to Quill script")
 end
 -- Look drop-down in the panel: every look listed, the current one ticked; picking one switches and closes it
-local lookBtn
-for _, w in ipairs(CFQ.optionWidgets) do
-    if type(w.__text) == "string" and w.__text:find("^Look: ") then lookBtn = w end
-end
+local lookBtn = apMain.look and apMain.look.w      -- the main page's (the Appearance page has its own)
 check(lookBtn ~= nil and lookBtn.__text == "Look: Handkerchief notes", "options show Look: Handkerchief notes")
 if lookBtn then
     local list = lookBtn.list
-    check(list and not list.__shown and #list.rows == #P.STYLES and #P.STYLES == 13, "look drop-down: one row per look (13), closed")
+    check(list and not list.__shown and #list.rows == #P.STYLES and #P.STYLES == 14, "look drop-down: one row per look (14), closed")
     lookBtn:GetScript("OnClick")(lookBtn)
     check(list.__shown and list.rows[1].tick.__shown and not list.rows[2].tick.__shown, "clicking the button opens the list, the handkerchief ticked")
     check(list.rows[4].swatch.__tex == "Interface\\AddOns\\Handkerquest\\textures\\torn_rag" and list.rows[1].swatch.__color ~= nil,
@@ -988,13 +1084,13 @@ if lookBtn then
     lookBtn:GetScript("OnClick")(lookBtn)
     check(list.__shown, "list open again")
     CFQ.optionsPanel:Show(); CFQ.optionsPanel:Hide()
-    check(not list.__shown, "closing the options closes the list")
+    check(not list.__shown, "closing the options page closes its list")
     Pick("HANDKERCHIEF")
     check(CFQ.parchmentStyle == "HANDKERCHIEF" and QRF_SavedState.parchmentStyle == "HANDKERCHIEF", "back to the handkerchief (saved)")
 end
 local hasMapOpt, hasFxOpt = false, false
 for _, w in ipairs(CFQ.optionWidgets) do
-    if w.label and w.label.__text == "Mark the tracked quest's item spots on the minimap" then hasMapOpt = true end
+    if w.label and w.label.__text == "Item spots on the minimap" then hasMapOpt = true end
     if w.label and w.label.__text == "Glowing & burning ink" then hasFxOpt = true end
 end
 check(hasMapOpt and hasFxOpt, "options for the minimap pins and the ink effects")
@@ -1010,7 +1106,7 @@ check(#P.areas == 1, "only the current-area page when other pages are off")
 check(not f.corner:IsShown(), "dog-ear hidden with a single page")
 check(f.visibleBackSheets == 0, "no pile under a single page")
 for _, w in ipairs(CFQ.optionWidgets) do
-    if w.label and w.label.__text == "Show the parchment tally list" then
+    if w.label and w.label.__text == "Show the tally" then
         w.__checked = false
         w:GetScript("OnClick")(w)
     end
@@ -1051,7 +1147,7 @@ end
 do
     CFQ.parchmentOpts.tallyTasks = true
     for _, w in ipairs(CFQ.optionWidgets) do     -- the tally was put away by the options tests above
-        if w.label and w.label.__text == "Show the parchment tally list" then w.__checked = true; w:GetScript("OnClick")(w) end
+        if w.label and w.label.__text == "Show the tally" then w.__checked = true; w:GetScript("OnClick")(w) end
     end
     P.SelectArea(P.CURRENT_KEY, false)
     local q102 = __QMAP()[102]
@@ -1163,10 +1259,10 @@ do
 
     local tasksCb, sepCb
     for _, w in ipairs(CFQ.optionWidgets) do
-        if w.label and w.label.__text == "List tasks" then tasksCb = w end
-        if w.label and w.label.__text == "Tasks apart from items" then sepCb = w end
+        if w.label and w.label.__text == "Tasks" then tasksCb = w end
+        if w.label and w.label.__text == "Tasks apart" then sepCb = w end
     end
-    check(tasksCb and sepCb, "options panel: List tasks, Tasks apart from items")
+    check(tasksCb and sepCb, "options panel: Tasks, Tasks apart (on the Lists row)")
     if tasksCb and sepCb then
         tasksCb:SetChecked(true); tasksCb:GetScript("OnClick")(tasksCb)
         sepCb:SetChecked(false); sepCb:GetScript("OnClick")(sepCb)
@@ -1291,7 +1387,41 @@ do
     CFQ.parchmentFont = "QUILL"; P.CycleFontStyle(); P.CycleFontStyle(); P.CycleFontStyle()
     check(CFQ.parchmentFont == "BLOTTED", "quill -> scrawl -> plain -> blotted")
     P.CycleFontStyle()
+    check(CFQ.parchmentFont == "TYPEWRITER", "blotted -> typewriter")
+    P.CycleFontStyle()
     check(CFQ.parchmentFont == "QUILL", "...and back round to the quill")
+
+    -- the typewriter: the one font shipped with the addon (Special Elite, Apache 2.0, licence alongside)
+    do
+        local tw
+        for _, fst in ipairs(P.FONT_STYLES) do if fst.key == "TYPEWRITER" then tw = fst end end
+        check(tw and tw.label == "Typewriter" and tw.path == "Interface\\AddOns\\Handkerquest\\fonts\\SpecialElite-Regular.ttf",
+            "typewriter: in the handwriting list, from the addon's fonts folder")
+        local fh = io.open(here .. "/fonts/SpecialElite-Regular.ttf", "rb")
+        local magic = fh and fh:read(4)
+        if fh then fh:close() end
+        check(magic == "\0\1\0\0", "typewriter: fonts/SpecialElite-Regular.ttf is there (a TrueType file)")
+        local lh = io.open(here .. "/fonts/LICENSE-SpecialElite.txt", "rb")
+        local lic = lh and lh:read("*a") or ""
+        if lh then lh:close() end
+        check(lic:find("Apache License", 1, true) ~= nil, "typewriter: its licence ships with it")
+        CFQ.parchmentStyle = "DISPATCH"; CFQ.parchmentFont = "TYPEWRITER"; P.ApplyStyle(); Fire("ZONE_CHANGED")
+        check(f.titleFS.__font and f.titleFS.__font[1] == tw.path, "typewriter: the dispatch typed in it")
+        -- a client that won't load an addon's font: plain print instead, writing boxes included
+        local fs = f.titleFS
+        local realSetFont = fs.SetFont
+        fs.SetFont = function(self, path, size, flags)
+            if path == tw.path then return false end
+            return realSetFont(self, path, size, flags)
+        end
+        fs.inkKey = nil
+        P.SetInkFont(fs, "title")
+        check(fs.__font[1] ~= tw.path and fs.__font[1] == (STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"),
+            "typewriter: if the client can't load it, plain print (" .. tostring(fs.__font[1]) .. ")")
+        fs.SetFont = realSetFont
+        fs.inkKey = nil
+        CFQ.parchmentFont = "QUILL"; P.ApplyStyle(); Fire("ZONE_CHANGED")
+    end
     CFQ.parchmentStyle = "RAG"; P.ApplyStyle(); Fire("ZONE_CHANGED")
     check(Drops() == 0, "no drops in the other hands")
 end
@@ -1369,7 +1499,7 @@ do
     -- options: the hide choice sits right under "Show the parchment tally list", indented; the panel scrolls
     local showIdx, hideIdx, hideCb
     for i, w in ipairs(CFQ.optionWidgets) do
-        if w.label and w.label.__text == "Show the parchment tally list" then showIdx = i end
+        if w.label and w.label.__text == "Show the tally" then showIdx = i end
         if w.label and w.label.__text == "...only when something is nearby" then hideIdx, hideCb = i, w end
     end
     check(showIdx and hideIdx == showIdx + 1, "options: \"...only when something is nearby\" right under the tally checkbox")
@@ -1428,8 +1558,10 @@ do  -- tally colours: Arcane script's runes (beside the Look button, only on tha
     local function Click(b) b:GetScript("OnClick")(b) end
     local ragInk = P.CopyTable(P.StyleDefaults(rag).ink)
     CFQ.parchmentStyle = "RAG"; P.ApplyStyle(); CFQ.RefreshOptionsPanel()
-    check(runeRow and inkRow and not runeRow.__shown and inkRow.__shown, "rag look: no rune colours, the writing colour is there")
-    check(runeRow.__points[1][4] == 244 and inkRow.__points[1][4] == 24, "rune swatches sit beside the Look button, writing on its own row")
+    check(runeRow and inkRow and runeRow.__shown and runeRow.__alpha == 0.45 and inkRow.__shown and inkRow.__alpha == 1,
+        "rag look: rune colours greyed (they stay put, nothing jumps about), the writing colour is live")
+    check(runeRow.__points[1][4] == 24 and inkRow.__points[1][4] == 24 and runeRow.__points[1][5] < inkRow.__points[1][5],
+        "writing colour, then the rune colour on the row under it")
     check(inkRow.swatches[1].selected and Same(inkRow.swatches[1].fill.__color, ragInk), "first writing swatch = the rag's own soot, picked")
     -- writing on the rag: oxblood red
     local red = P.INK_COLORS[6].c
@@ -1480,7 +1612,7 @@ do  -- tally colours: Arcane script's runes (beside the Look button, only on tha
     check(Same(CFQ.inkColors.ARCANE, { 0.5, 0.9, 0.5 }) and inkRow.customBtn.__text == "Custom •", "custom writing colour")
     -- back to the rag: runes go away
     CFQ.parchmentStyle = "RAG"; P.ApplyStyle(); CFQ.RefreshOptionsPanel()
-    check(not runeRow.__shown and inkRow.swatches[6].selected, "rag again: rune colours hidden, its red writing still picked")
+    check(runeRow.__alpha == 0.45 and inkRow.swatches[6].selected, "rag again: rune colours greyed, its red writing still picked")
     -- saved and loaded; broken saved values ignored; the old arcane-only writing setting carries over
     QRF_SavedState.arcaneRuneColor = { 0.30, 0.68, 1.00 }
     QRF_SavedState.inkColors = { RAG = { "x", 1, 1 }, STONE = { 0.2, 0.3, 0.4 } }
@@ -1716,11 +1848,12 @@ do  -- "For me": your own tasks at the bottom of the "Near me" page
     check(back and back.doneTask and back.doneTask.text == "Three" and back.doneTask.place and back.doneTask.place.zone ~= nil,
         "For me: a Done entry keeps its task through a reload")
     -- a broken save loads what it can
+    QRF_CharState = nil
     QRF_SavedState.notes = { tasks = { "junk", { text = 5 }, { text = "" }, { text = "Keep me", done = "yes", place = "here" } }, forMeFolded = "no" }
     Fire("ADDON_LOADED", "Handkerquest")
     check(#CFQ.notes.tasks == 1 and CFQ.notes.tasks[1].text == "Keep me" and CFQ.notes.tasks[1].done == false
         and CFQ.notes.tasks[1].place == nil and CFQ.notes.forMeFolded == false, "For me: a broken save loads what it can")
-    QRF_SavedState.notes = "nonsense"
+    QRF_SavedState.notes = "nonsense"; QRF_CharState = nil
     Fire("ADDON_LOADED", "Handkerquest")
     check(type(CFQ.notes) == "table" and #CFQ.notes.tasks == 0, "For me: a nonsense save gives an empty list")
     CFQ.notes = { tasks = {}, forMeFolded = false }
@@ -1948,10 +2081,123 @@ do  -- Journal: longer entries, newest first, on the last page of the pile
     local nJ = #CFQ.notes.journal
     Fire("ADDON_LOADED", "Handkerquest")
     check(#CFQ.notes.journal == nJ and CFQ.notes.writeMode == "entry" and CFQ.notes.journal[1].place, "Journal: entries and the switch survive a reload")
+    check(QRF_CharState and QRF_CharState.journal == CFQ.notes.journal, "Journal: saved in the character's own file (QRF_CharState)")
     QRF_SavedState.notes = { journal = { 7, { text = false }, { text = "ok", place = { zone = 5, subzone = "Goldshire" } } }, writeMode = "bogus" }
+    QRF_CharState = nil
     Fire("ADDON_LOADED", "Handkerquest")
     check(#CFQ.notes.journal == 1 and CFQ.notes.journal[1].text == "ok" and CFQ.notes.journal[1].place.zone == nil
         and CFQ.notes.journal[1].place.subzone == "Goldshire" and CFQ.notes.writeMode == "task", "Journal: a broken save loads what it can")
+
+    -- tasks and the Journal are each character's own; ones from before the split go back to whoever wrote them
+    do
+        local keep = CFQ.notes
+        local realUnitName = UnitName
+        local me = CFQ.NoteOwner()
+        local function texts(list) local o = {} for _, e in ipairs(list) do o[#o + 1] = e.text end return table.concat(o, ",") end
+        local function waiting(key) return texts(CFQ.notesWaiting[key]) end
+        CFQ.parchmentOpts.shareTasks, CFQ.parchmentOpts.shareJournal = false, false
+        QRF_CharState = nil
+        QRF_SavedState.notes = { tasks = { { text = "my task", t = 1, owner = me }, { text = "alt task", t = 2, owner = "Alt-Forever" } },
+            journal = { { text = "a", t = 1, owner = me }, { text = "b", t = 2, owner = "Alt-Forever" }, { text = "c", t = 3, owner = me } } }
+        Fire("ADDON_LOADED", "Handkerquest")
+        check(texts(CFQ.notes.journal) == "a,c" and waiting("journal") == "b",
+            "Per character: a character takes its own notes from the old shared Journal (" .. texts(CFQ.notes.journal) .. ")")
+        check(texts(CFQ.notes.tasks) == "my task" and waiting("tasks") == "alt task", "Per character: ...and its own tasks")
+        CFQ.AddEntry("d"); CFQ.AddTask("new task")
+        check(QRF_CharState.journal == CFQ.notes.journal and QRF_CharState.tasks == CFQ.notes.tasks
+            and texts(QRF_CharState.journal) == "a,c,d", "Per character: new writing goes in the character's file")
+        -- mid-session reload of the saved tables (PLAYER_ENTERING_WORLD): nothing doubled, nothing lost
+        CFQ.LoadNotes(QRF_SavedState.notes, QRF_CharState)
+        check(texts(CFQ.notes.journal) == "a,c,d" and texts(CFQ.notes.tasks) == "my task,new task" and waiting("journal") == "b",
+            "Per character: reloading mid-session doubles nothing")
+        Fire("PLAYER_LOGOUT")
+        check(texts(QRF_SavedState.notes.journal) == "b" and texts(QRF_SavedState.notes.tasks) == "alt task"
+            and texts(QRF_CharState.journal) == "a,c,d" and texts(QRF_CharState.tasks) == "my task,new task",
+            "Per character: on logout the account file keeps only the other characters' writing")
+        -- the alt logs in
+        local mainState = QRF_CharState
+        QRF_CharState = nil
+        UnitName = function() return "Alt" end
+        Fire("ADDON_LOADED", "Handkerquest")
+        check(texts(CFQ.notes.journal) == "b" and texts(CFQ.notes.tasks) == "alt task" and waiting("journal") == "" and waiting("tasks") == "",
+            "Per character: the alt sees only its own notes and tasks")
+        CFQ.AddEntry("e")
+        Fire("PLAYER_LOGOUT")
+        local altState = QRF_CharState
+        check(#QRF_SavedState.notes.journal == 0 and texts(altState.journal) == "b,e", "Per character: the alt's notes go in its own file")
+        -- back to the first character: its own only
+        QRF_CharState = mainState
+        UnitName = realUnitName
+        Fire("ADDON_LOADED", "Handkerquest")
+        check(texts(CFQ.notes.journal) == "a,c,d" and texts(CFQ.notes.tasks) == "my task,new task",
+            "Per character: back on the first character, none of the alt's writing")
+
+        -- sharing the Journal: this character's notes go into the account's list...
+        CFQ.SetNotesShared("journal", true)
+        check(CFQ.parchmentOpts.shareJournal and texts(CFQ.notes.journal) == "a,c,d" and #QRF_CharState.journal == 0,
+            "Shared Journal: switched on, the character's notes are the shared list")
+        check(texts(CFQ.notes.tasks) == "my task,new task" and QRF_CharState.tasks == CFQ.notes.tasks, "Shared Journal: tasks stay this character's")
+        Fire("PLAYER_LOGOUT")
+        check(texts(QRF_SavedState.notes.journal) == "a,c,d" and #QRF_CharState.journal == 0, "Shared Journal: saved in the account file")
+        mainState = QRF_CharState
+        -- ...and the alt's join it when the alt logs in, by time, stamped with who wrote them
+        QRF_CharState = altState
+        UnitName = function() return "Alt" end
+        Fire("ADDON_LOADED", "Handkerquest")
+        local order = texts(CFQ.notes.journal)
+        check(order == "a,b,c,d,e" or order == "a,b,c,e,d", "Shared Journal: the alt's notes join the shared one, by time (" .. order .. ")")
+        local aEntry = CFQ.notes.journal[1]
+        check(P.EntryStamp(aEntry):find("Gnarlpine Ambusher", 1, true) ~= nil,
+            "Shared Journal: a note from another character says who wrote it (" .. P.EntryStamp(aEntry) .. ")")
+        local bEntry = CFQ.notes.journal[2]
+        check(not P.EntryStamp(bEntry):find("Alt", 1, true), "Shared Journal: your own notes don't (" .. P.EntryStamp(bEntry) .. ")")
+        Fire("PLAYER_LOGOUT")
+        check(#QRF_SavedState.notes.journal == 5 and #QRF_CharState.journal == 0, "Shared Journal: all of them in the account file")
+        -- switched off again: each character takes back what it wrote
+        CFQ.SetNotesShared("journal", false)
+        check(texts(CFQ.notes.journal) == "b,e" and #CFQ.notesWaiting.journal == 3, "Shared Journal: switched off, the alt keeps only its own")
+        Fire("PLAYER_LOGOUT")
+        altState = QRF_CharState
+        QRF_CharState = mainState
+        UnitName = realUnitName
+        Fire("ADDON_LOADED", "Handkerquest")
+        check(texts(CFQ.notes.journal) == "a,c,d" and #CFQ.notesWaiting.journal == 0, "Shared Journal: ...and the first character takes its own back")
+
+        -- sharing tasks: the same, and a shared task says who wrote it
+        CFQ.SetNotesShared("tasks", true)
+        Fire("PLAYER_LOGOUT")
+        check(texts(QRF_SavedState.notes.tasks) == "my task,new task" and #QRF_CharState.tasks == 0, "Shared tasks: in the account file")
+        QRF_CharState = altState
+        UnitName = function() return "Alt" end
+        Fire("ADDON_LOADED", "Handkerquest")
+        check(texts(CFQ.notes.tasks) == "my task,alt task,new task", "Shared tasks: the alt sees them, its own joining in by time (" .. texts(CFQ.notes.tasks) .. ")")
+        check(CFQ.OtherOwner("tasks", CFQ.notes.tasks[1]) == "Gnarlpine Ambusher", "Shared tasks: ...written by the first character (same realm: no realm)")
+        CFQ.SetNotesShared("tasks", false)
+        check(texts(CFQ.notes.tasks) == "alt task" and #CFQ.notesWaiting.tasks == 2, "Shared tasks: switched off, they go back to who wrote them")
+        UnitName = realUnitName
+        check(CFQ.OwnerName("Bob-Other Realm") == "Bob-Other Realm" and CFQ.OwnerName("Bob-Forever") == "Bob", "Owner names: the realm only when it's another")
+
+        -- the account file somehow still holding this character's own: taken once, not twice
+        QRF_CharState = { journal = { { text = "a", t = 1, owner = me } } }
+        QRF_SavedState.notes = { journal = { { text = "a", t = 1, owner = me }, { text = "f", t = 4, owner = me } } }
+        Fire("ADDON_LOADED", "Handkerquest")
+        check(texts(CFQ.notes.journal) == "a,f", "Per character: a note already in the character's Journal isn't doubled")
+        -- no name yet: nothing taken, nothing lost
+        QRF_CharState = nil
+        QRF_SavedState.notes = { journal = { { text = "x", t = 1, owner = me }, { text = "y", t = 2 } } }
+        UnitName = function() return nil end
+        Fire("ADDON_LOADED", "Handkerquest")
+        check(#CFQ.notes.journal == 0 and #CFQ.notesWaiting.journal == 2, "Per character: without the character's name nothing is taken (or lost)")
+        UnitName = realUnitName
+        Fire("ADDON_LOADED", "Handkerquest")
+        check(texts(CFQ.notes.journal) == "x,y" and #CFQ.notesWaiting.journal == 0, "Per character: ...taken once the name is known (no owner = whoever logs in first)")
+        -- back to what the tests below expect
+        CFQ.parchmentOpts.shareTasks, CFQ.parchmentOpts.shareJournal = false, false
+        QRF_CharState = { journal = keep.journal, tasks = keep.tasks }
+        QRF_SavedState.notes = { tasks = {}, journal = {}, forMeFolded = keep.forMeFolded, writeMode = keep.writeMode }
+        Fire("ADDON_LOADED", "Handkerquest")
+        check(texts(CFQ.notes.journal) == "ok", "Per character: (restored)")
+    end
 
     -- switched off: no Journal page
     CFQ.parchmentOpts.forMe = false
@@ -2044,7 +2290,7 @@ do  -- Tabs: the two quick tabs, cut from the sheet itself (Near me above Journa
     frames(60)
 
     -- every look: image looks cut from their image; drawn looks in their paper colour
-    for _, look in ipairs({ "CRUMPLED", "STONE", "BARK", "LEAF", "LEATHER", "MARBLE", "GILDED", "VELLUM", "ARCANE" }) do
+    for _, look in ipairs({ "CRUMPLED", "STONE", "BARK", "LEAF", "LEATHER", "MARBLE", "GILDED", "VELLUM", "DISPATCH", "ARCANE" }) do
         CFQ.parchmentStyle = look; P.ApplyStyle(); redraw()
         local s2 = P.GetStyle()
         check(near.__shown and near.tex.__tex == s2.image and near.edgeX > 0 and near.edgeX <= f:GetWidth(), "Tabs: " .. look .. " cut from its own image")
@@ -2081,6 +2327,17 @@ do  -- Auto entries: the Journal writes down the achievements you earn (off by d
     check(CFQ.achievementEvent == true and CFQ.AchievementsSupported(), "Achievements: this client has them, the event is registered")
     check(CFQ.parchmentOpts.autoAchievements == false, "Achievements: off by default")
     check(CFQ.achievementCheck and CFQ.achievementCheck.label.__text:find("achievements you earn", 1, true), "Achievements: the switch is in the options, under For me")
+    -- the sharing switches: per character by default, flipped from the options panel (and saved)
+    check(CFQ.shareTasksCheck and CFQ.shareJournalCheck and CFQ.shareJournalCheck.label.__text:find("share the Journal", 1, true)
+        and CFQ.parchmentOpts.shareTasks == false and CFQ.parchmentOpts.shareJournal == false,
+        "Sharing: both switches are in the options under For me, off by default")
+    CFQ.shareJournalCheck:SetChecked(true)
+    CFQ.shareJournalCheck:GetScript("OnClick")(CFQ.shareJournalCheck)
+    check(CFQ.parchmentOpts.shareJournal and QRF_SavedState.parchmentOpts.shareJournal == true and QRF_CharState.journal ~= CFQ.notes.journal,
+        "Sharing: the Journal switch turns sharing on (and saves)")
+    CFQ.shareJournalCheck:SetChecked(false)
+    CFQ.shareJournalCheck:GetScript("OnClick")(CFQ.shareJournalCheck)
+    check(not CFQ.parchmentOpts.shareJournal and QRF_CharState.journal == CFQ.notes.journal, "Sharing: ...and off again")
 
     -- off: nothing written
     Fire("ACHIEVEMENT_EARNED", 6, false)
@@ -2327,6 +2584,34 @@ do  -- the .toc loads files that exist (code file renamed Handkerquest.lua -> Ha
     end
     check(toc and #listed > 0 and #missing == 0, "Handkerquest.toc lists only files that exist (" .. #listed .. " listed, missing: " .. table.concat(missing, ", ") .. ")")
     check(listed[1] == "HandkerSheaf.lua", "Handkerquest.toc loads HandkerSheaf.lua")
+end
+do  -- feedback link: copy box in the options panel, /hanky feedback, .toc website
+    CFQ.BuildOptionsPanel()
+    local fb = CFQ.feedbackBox
+    local url = "https://github.com/dantigravity/Handkerquest/issues"
+    check(fb and fb:GetText() == url, "options panel has a feedback box holding the issues link")
+    if fb then
+        fb:SetText("typed over")
+        fb:GetScript("OnTextChanged")(fb, true)
+        check(fb:GetText() == url, "typing in the feedback box puts the link back")
+        local okM = pcall(fb:GetScript("OnMouseUp"), fb)
+        local okL = pcall(fb:GetScript("OnEditFocusLost"), fb)
+        check(okM and okL, "clicking into / away from the feedback box doesn't error")
+    end
+    local said = {}
+    local realPrintF = print
+    print = function(s) said[#said + 1] = tostring(s) end
+    SlashCmdList["HANDKERQUEST"]("feedback")
+    SlashCmdList["HANDKERQUEST"]("bug")
+    print = realPrintF
+    check(#said == 2 and said[1]:find(url, 1, true) and said[2]:find(url, 1, true), "/hanky feedback and /hanky bug print the issues link")
+    local toc = io.open(here .. "/Handkerquest.toc")
+    local site = false
+    if toc then
+        for line in toc:lines() do if line:find("^## X%-Website: https://github.com/dantigravity/Handkerquest") then site = true end end
+        toc:close()
+    end
+    check(site, "Handkerquest.toc has the X-Website line")
 end
 check(#ERRORS == 0, "no Lua errors reported (" .. #ERRORS .. ")")
 print(string.format("\n%d passed, %d failed", pass, fail))
