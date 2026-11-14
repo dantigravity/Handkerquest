@@ -454,6 +454,35 @@ local pvRings = 0
 for _, c in ipairs(pv and pv.child.circles or {}) do if c.__shown then pvRings = pvRings + 1 end end
 check(pvRings == 2, "preview rings the looted spot and the objective area (got " .. pvRings .. ")")
 check(pv and pv.you.__shown, "preview marks where you are")
+do  -- ...with an arrow the way you face, turning and walking with you while the map is up
+    local ar = pv.you.arrow
+    local function pt(fr) local p = fr.__points[1]; return p[4], p[5] end
+    check(ar and ar.__shown and ar.__tex == "Interface\\AddOns\\Handkerquest\\textures\\facing_arrow" and ar.__rotation == 0,
+        "preview: an arrow by the dot, facing north")
+    local ax, ay = pt(ar)
+    check(math.abs(ax) < 1e-6 and math.abs(ay - P.FACING_ARROW_OFF) < 1e-6, "preview: ...just ahead of the dot (north = up)")
+    local tick = pv.__scripts.OnUpdate
+    PLAYER_FACING = math.pi / 2                                  -- west
+    tick(pv, 1)
+    ax, ay = pt(ar)
+    check(math.abs(ar.__rotation - math.pi / 2) < 1e-6 and ax < -P.FACING_ARROW_OFF + 1e-6 and math.abs(ay) < 1e-6,
+        "preview: turning west turns the arrow to the left of the dot")
+    local yx0 = pt(pv.you)
+    local px0 = PX
+    PX = (PX or 0.55) + 0.01
+    tick(pv, 1)
+    check(pt(pv.you) > yx0, "preview: walking east moves the dot with you")
+    PX = px0
+    PLAYER_FACING = nil                                          -- some instances won't say
+    tick(pv, 1)
+    check(not ar.__shown and pv.you.__shown, "preview: facing unknown: the plain dot, no arrow")
+    PLAYER_FACING = 0
+    tick(pv, 1)
+    check(ar.__shown, "preview: ...and the arrow is back when it's known again")
+    local fh = io.open(here .. "/textures/facing_arrow.tga", "rb")
+    check(fh and fh:read(1) and true, "preview: textures/facing_arrow.tga is there")
+    if fh then fh:close() end
+end
 check(pv and pv.paper.__shown, "no map art from the client: plain parchment sketch underneath")
 C_Map.GetMapArtLayers = function() return { { layerWidth = 1002, layerHeight = 668, tileWidth = 256, tileHeight = 256 } } end
 C_Map.GetMapArtLayerTextures = function() local t = {}; for i = 1, 12 do t[i] = 10000 + i end; return t end
@@ -2552,6 +2581,92 @@ do  -- Auto entries: the quests you turn in, and what they gave you
 
     CFQ.parchmentOpts.autoQuests = false
     CFQ.notes = { tasks = {}, journal = {}, forMeFolded = false, writeMode = "task" }
+    f:SetSize(fw0, fh0)
+    P.selectedKey = P.areas[1].key
+    redraw()
+end
+do  -- level ups: an auto entry that glows gold in the Journal (on by default)
+    local fw0, fh0 = f:GetWidth(), f:GetHeight()
+    local function redraw() P.OnTallyChoiceChanged() end
+    f:SetSize(320, 420)
+    CFQ.parchmentOpts.forMe = true
+    CFQ.notes = { tasks = {}, journal = {}, forMeFolded = false, writeMode = "task" }
+    CFQ.LinkSavedNotes()
+    check(CFQ.parchmentOpts.autoLevels == true, "Level ups: on by default")
+    check(CFQ.levelCheck and CFQ.levelCheck.label.__text == "...note level-ups", "Level ups: the switch is in the options, under For me")
+    local realTime = GetServerTime
+    local clock = 1794350400
+    GetServerTime = function() return clock end
+
+    Fire("PLAYER_LEVEL_UP", 12, 20, 10, 1)
+    local e = CFQ.notes.journal[1]
+    check(#CFQ.notes.journal == 1 and e.auto == "level" and e.text == "Reached level 12." and e.levels[1].level == 12
+        and e.when and e.place, "Level ups: \"Reached level 12.\", stamped with when and where")
+    clock = clock + 60
+    Fire("PLAYER_LEVEL_UP", 13)
+    Fire("PLAYER_LEVEL_UP", 13)
+    check(#CFQ.notes.journal == 1 and e.text == "Reached levels 12 and 13." and #e.levels == 2,
+        "Level ups: two in a few minutes share a note, the same level once (" .. e.text .. ")")
+    clock = clock + 600
+    Fire("PLAYER_LEVEL_UP", 14)
+    check(#CFQ.notes.journal == 2 and CFQ.notes.journal[2].text == "Reached level 14.", "Level ups: later, a note of its own")
+    clock = clock + 5
+    CFQ.AddEntry("Found a cosy inn.")
+
+    -- in the Journal: full ink, glowing gold (newest first: the note, then level 14, then 12 and 13)
+    SlashCmdList["HANDKERQUEST"]("journal")
+    local rows = f.journalRows
+    local st = P.GetStyle()
+    local plain, lvl = rows[1], rows[2]
+    check(lvl.text.__text == "Reached level 14." and lvl.text.glow and lvl.text.glow[1].__shown
+        and lvl.text.glow[1].__textColor and math.abs(lvl.text.glow[1].__textColor[1] - P.GLOW_COLOR[1]) < 1e-6
+        and math.abs(lvl.text.glow[1].__textColor[2] - P.GLOW_COLOR[2]) < 1e-6 and #lvl.text.glow == 8,
+        "Level ups: the entry glows gold all round its words")
+    local ink = st.name or st.ink
+    check(math.abs(lvl.text.__textColor[1] - ink[1]) < 1e-6 and lvl.mark and lvl.mark.__shown,
+        "Level ups: written in full ink (a milestone, not faded), with the small star")
+    check(not (plain.text.glow and plain.text.glow[1].__shown), "Level ups: other notes don't glow")
+    P.PulseGlow(0); local a0 = lvl.text.glow[1].__textColor[4]
+    P.PulseGlow(math.pi / (2 * P.GLOW_SPEED)); local a1 = lvl.text.glow[1].__textColor[4]
+    check(a1 > a0 and a1 <= P.GLOW_ALPHA + 1e-6, "Level ups: the glow breathes")
+    local said = {}
+    local realAdd = GameTooltip.AddLine
+    GameTooltip.AddLine = function(self, s, ...) said[#said + 1] = tostring(s); return realAdd(self, s, ...) end
+    rows[3]:GetScript("OnEnter")(rows[3])
+    GameTooltip.AddLine = realAdd
+    local all = table.concat(said, "\n")
+    check(all:find("when you levelled up", 1, true) and all:find("Level 12", 1, true) and all:find("Level 13", 1, true),
+        "Level ups: the tooltip lists the levels")
+    -- the glow follows its entry when the rows shift (level 14 rubbed out: 12 and 13 move up a row)
+    P.RubOutEntry(CFQ.notes.journal[2])
+    redraw()
+    check(f.journalRows[1].text.__text == "Found a cosy inn." and not (f.journalRows[1].text.glow and f.journalRows[1].text.glow[1].__shown)
+        and f.journalRows[2].text.__text == "Reached levels 12 and 13." and f.journalRows[2].text.glow[1].__shown,
+        "Level ups: the glow moves with its entry")
+
+    -- kept between logins
+    P.ForMeChanged()
+    Fire("ADDON_LOADED", "Handkerquest")
+    local back
+    for _, x in ipairs(CFQ.notes.journal) do if x.auto == "level" and #x.levels == 2 then back = x end end
+    check(back and back.levels[2].level == 13 and back.autoText == back.text, "Level ups: kept between logins")
+
+    -- switched off, or For me off: nothing written
+    local n = #CFQ.notes.journal
+    CFQ.levelCheck:SetChecked(false)
+    CFQ.levelCheck:GetScript("OnClick")(CFQ.levelCheck)
+    check(CFQ.parchmentOpts.autoLevels == false and QRF_SavedState.parchmentOpts.autoLevels == false, "Level ups: the switch turns it off (and saves)")
+    clock = clock + 900
+    Fire("PLAYER_LEVEL_UP", 15)
+    check(#CFQ.notes.journal == n, "Level ups: off writes nothing")
+    CFQ.parchmentOpts.autoLevels = true
+    CFQ.parchmentOpts.forMe = false
+    Fire("PLAYER_LEVEL_UP", 16)
+    check(#CFQ.notes.journal == n, "Level ups: nothing written while For me is off")
+
+    GetServerTime = realTime
+    CFQ.notes = { tasks = {}, journal = {}, forMeFolded = false, writeMode = "task" }
+    CFQ.LinkSavedNotes()
     f:SetSize(fw0, fh0)
     P.selectedKey = P.areas[1].key
     redraw()

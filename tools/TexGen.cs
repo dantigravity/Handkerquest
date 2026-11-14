@@ -1642,6 +1642,48 @@ public static class TexGen
         Save(img, tga, png);
     }
 
+    // ---------------------------------------------------------------- the hover map's facing arrow
+    // A small arrowhead pointing up (turned in game to the way the player faces): white inside (tinted gold in
+    // game), a dark rim that stays dark under the tint, a notch in its base. Drawn at 4x and averaged down.
+    static double SegDistSigned(double px, double py, double[] xs, double[] ys)
+    {
+        double d = 1e9;
+        bool inside = false;
+        int n = xs.Length;
+        for (int i = 0, j = n - 1; i < n; j = i++)
+        {
+            d = Math.Min(d, SegDist(px, py, xs[j], ys[j], xs[i], ys[i]));
+            if (((ys[i] > py) != (ys[j] > py)) && (px < (xs[j] - xs[i]) * (py - ys[i]) / (ys[j] - ys[i]) + xs[i])) inside = !inside;
+        }
+        return inside ? d : -d;
+    }
+
+    public static void FacingArrow(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        int SS = 4, W = size * SS;
+        double S = W / 32.0;
+        double[] xs = { 16, 27.5, 16, 4.5 }, ys = { 2.5, 28.5, 21.5, 28.5 };   // tip, right corner, notch, left corner
+        var img = new double[size, size, 4];
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                double r = 0, g = 0, b = 0, a = 0;
+                for (int j = 0; j < SS; j++)
+                    for (int i = 0; i < SS; i++)
+                    {
+                        double u = (x * SS + i + 0.5) / S, v = (y * SS + j + 0.5) / S;
+                        double d = SegDistSigned(u, v, xs, ys);
+                        if (d <= 0) continue;
+                        double c = d > 2.2 ? 1 : 0.05;        // white inside, a dark rim 2.2 units wide
+                        r += c; g += c; b += c; a += 1;
+                    }
+                img[x, y, 3] = a / (SS * SS);
+                if (a > 0) { img[x, y, 0] = r / a; img[x, y, 1] = g / a; img[x, y, 2] = b / a; }
+            }
+        Save(img, tga, png);
+    }
+
     // ---------------------------------------------------------------- sheet edges (the quick tabs)
     static double[,,] LoadTga(string path)
     {

@@ -69,6 +69,7 @@ local CFQ = {
         forMe = true,                   -- "For me": your own tasks at the bottom of the "Near me" page
         autoAchievements = false,       -- the Journal writes down the achievements you earn (only if this client has them)
         autoQuests = false,             -- the Journal writes down the quests you turn in, and what they gave you
+        autoLevels = true,              -- the Journal writes down each level you reach (glowing gold; on by default, as agreed)
         shareTasks = false,             -- "For me" tasks shared by every character on the account (off: each its own)
         shareJournal = false,           -- the Journal shared by every character on the account (off: each its own)
     },
@@ -2487,6 +2488,53 @@ function P.SetHalo(fs, text, color)
     end
 end
 
+-- A gold glow round a Journal entry's words (a level reached, user request): eight soft copies of the words
+-- in gold under the ink (ARTWORK, the words are OVERLAY), on every look, breathing (P.PulseGlow from the
+-- tally's OnUpdate). Its own copies (fs.glow), apart from the look's wet ink / light (fs.halo). text nil = off.
+P.GLOW_COLOR = { 1.00, 0.78, 0.22 }
+P.GLOW_ALPHA, P.GLOW_RADIUS, P.GLOW_SPEED = 0.55, 1.6, 1.6
+P.GLOW_OFFS = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 }, { 0.7, 0.7 }, { -0.7, 0.7 }, { 0.7, -0.7 }, { -0.7, -0.7 } }
+P.glowing = {}                 -- the words with a glow showing
+function P.SetGlow(fs, text)
+    if not text or text == "" then
+        if fs.glow then for _, c in ipairs(fs.glow) do c:Hide() end end
+        P.glowing[fs] = nil
+        return
+    end
+    if not fs.glow then
+        fs.glow = {}
+        local parent = fs:GetParent()
+        for k = 1, #P.GLOW_OFFS do
+            local c = parent:CreateFontString(nil, "ARTWORK", nil, 5)
+            c:SetJustifyH("LEFT")
+            c:SetJustifyV("TOP")
+            fs.glow[k] = c
+        end
+    end
+    local path, size, flags = fs:GetFont()
+    local plain = P.PlainText(text)
+    local col = P.GLOW_COLOR
+    for k, c in ipairs(fs.glow) do
+        c:SetFont(path or STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", size or 12, flags or "")
+        if c.SetShadowColor then c:SetShadowColor(0, 0, 0, 0) end
+        P.MatchCopy(c, fs, P.GLOW_OFFS[k][1] * P.GLOW_RADIUS, P.GLOW_OFFS[k][2] * P.GLOW_RADIUS)
+        c:SetText(plain)
+        c:SetTextColor(col[1], col[2], col[3], P.GLOW_ALPHA)
+        c:Show()
+    end
+    P.glowing[fs] = true
+end
+
+function P.PulseGlow(now)
+    local k = 0.70 + 0.30 * math.sin(now * P.GLOW_SPEED)
+    local col = P.GLOW_COLOR
+    for fs in pairs(P.glowing) do
+        for _, c in ipairs(fs.glow or {}) do
+            if c:IsShown() then c:SetTextColor(col[1], col[2], col[3], P.GLOW_ALPHA * k) end
+        end
+    end
+end
+
 -- "Blotted scrawl": drops of ink shaken off the quill, placed by a hash of the line so they stay put.
 -- d = { key, lastW (width of the last line), textH, lines, textW, ink }; nil = no drops on this row.
 P.DROP_MAX = 8
@@ -3914,6 +3962,7 @@ function P.OnUpdate(f, elapsed)
         P.PulseHalo(f, GetTime())
     end
     if f.sheenOn then P.AnimateSheen(f, GetTime()) end
+    if next(P.glowing) then P.PulseGlow(GetTime()) end         -- a level reached, glowing gold in the Journal
     if f.fly then P.AnimateFly(f, dt) end
     if f.tabsMoving then P.AnimateTabs(f, dt) end
 
@@ -5445,9 +5494,15 @@ function CFQ.LoadNoteFields(t)
         t = (type(t.t) == "number") and t.t or nil,
         when = (type(t.when) == "string") and t.when or nil,
         owner = (type(t.owner) == "string") and t.owner or nil,
-        auto = (t.auto == "achievement" or t.auto == "quest") and t.auto or nil,
+        auto = (t.auto == "achievement" or t.auto == "quest" or t.auto == "level") and t.auto or nil,
         autoText = (type(t.autoText) == "string") and t.autoText or nil,
     }
+    if out.auto == "level" and type(t.levels) == "table" then
+        out.levels = {}
+        for _, l in ipairs(t.levels) do
+            if type(l) == "table" and type(l.level) == "number" then table.insert(out.levels, { level = l.level }) end
+        end
+    end
     if out.auto == "quest" and type(t.quests) == "table" then
         local function num(v) return (type(v) == "number") and v or nil end
         local function str(v) return (type(v) == "string") and v or nil end
@@ -6426,6 +6481,23 @@ function CFQ.OnAchievementEarned(id)
         P.AchievementText, function(a, b) return a.id == b.id end)
 end
 
+-- ---- level ups (user request): "Reached level 12.", glowing gold in the Journal (P.SetGlow) ----------------
+-- Several within P.AUTO_MERGE in one place share an entry: "Reached levels 11 and 12."
+function P.LevelText(list)
+    if #list == 1 then return "Reached level " .. list[1].level .. "." end
+    local n = {}
+    for i, l in ipairs(list) do n[i] = tostring(l.level) end
+    local last = table.remove(n)
+    return "Reached levels " .. table.concat(n, ", ") .. " and " .. last .. "."
+end
+
+function CFQ.OnLevelUp(level)
+    if not (CFQ.parchmentOpts.forMe and CFQ.parchmentOpts.autoLevels) then return nil end
+    level = tonumber(level)
+    if not level or level < 2 then return nil end
+    return P.WriteAuto("level", "levels", { level = level }, P.LevelText, function(a, b) return a.level == b.level end)
+end
+
 -- ---- quests turned in, and what they gave ----------------------------------------------------------
 -- The reward panel is read as it opens (QUEST_COMPLETE): the items always given and the ones to choose
 -- from; the one taken comes from GetQuestReward(choice) (hooked). QUEST_TURNED_IN then brings the xp and
@@ -6846,6 +6918,10 @@ function P.EntryTooltip(row, e)
             if #extra > 0 then GameTooltip:AddLine("   " .. table.concat(extra, ", "), 0.8, 0.8, 0.8) end
         end
     end
+    if e.auto == "level" then
+        GameTooltip:AddLine("Written in for you when you levelled up", 0.55, 0.85, 0.55)
+        for _, l in ipairs(e.levels or {}) do GameTooltip:AddLine("Level " .. l.level, 1, 0.82, 0.3) end
+    end
     if e.auto == "achievement" then
         GameTooltip:AddLine("Written in for you when you earned it", 0.55, 0.85, 0.55)
         for _, a in ipairs(e.achievements or {}) do
@@ -6982,11 +7058,15 @@ function P.RenderJournal(f, area, contentW, contentH, pageStr)
         row.text:SetWidth(textW)
         row.text:ClearAllPoints()
         row.text:SetPoint("TOPLEFT", row, "TOPLEFT", 4, -(stampH + 4))
-        local ink = e.auto and st.faded or (st.name or st.ink)      -- auto entries in faded ink: yours stand out
+        -- auto entries in faded ink, so yours stand out; a level reached is a milestone: full ink, glowing gold
+        local levelUp = e.auto == "level"
+        local faded = e.auto and not levelUp
+        local ink = faded and st.faded or (st.name or st.ink)
         row.text:SetTextColor(ink[1], ink[2], ink[3], 1)
         local beingEdited = editing and editing.entry == e
         row.text:SetText(beingEdited and "" or e.text)
-        P.SetHalo(row.text, beingEdited and "" or e.text, e.auto and st.faded or P.INK)
+        P.SetHalo(row.text, beingEdited and "" or e.text, faded and st.faded or P.INK)
+        P.SetGlow(row.text, (levelUp and not beingEdited) and e.text or nil)
         local textH = beingEdited and editH or math.max(14, math.ceil(row.text:GetStringHeight() or 14))
         local rowH = stampH + textH + 10
         if shown > 0 and math.abs(y) + rowH > contentH + 4 then break end
@@ -7905,6 +7985,13 @@ end
 -- EDIT: size of the map area in pixels (keep roughly 3:2, the shape of zone maps)
 P.PREVIEW_W, P.PREVIEW_H = 220, 147
 
+-- Which way you face on the hover map (user request): a small gold arrowhead just outside the "you" dot,
+-- turned to GetPlayerFacing and kept up to date while the map is up (P.UpdatePreviewYou). Hidden where the
+-- game won't say (some instances): then the plain dot. textures/facing_arrow is ours (TexGen FacingArrow).
+P.FACING_ARROW_TEX = "Interface\\AddOns\\Handkerquest\\textures\\facing_arrow"
+P.FACING_ARROW_SIZE = 11      -- px
+P.FACING_ARROW_OFF = 8        -- its middle, px from the dot's middle
+P.FACING_EVERY = 0.03         -- seconds between updates while the map is up
 function CFQ.EnsureMapPreview()
     if CFQ.mapPreview then return CFQ.mapPreview end
     local pv = CreateFrame("Frame", "HKQ_MapPreview", UIParent)
@@ -7966,7 +8053,19 @@ function CFQ.EnsureMapPreview()
     you.dot:SetPoint("TOPLEFT", 1.5, -1.5)
     you.dot:SetPoint("BOTTOMRIGHT", -1.5, 1.5)
     you.dot:SetVertexColor(1.0, 0.92, 0.25, 1)
+    you.arrow = you:CreateTexture(nil, "ARTWORK", nil, 2)
+    you.arrow:SetTexture(P.FACING_ARROW_TEX)
+    you.arrow:SetSize(P.FACING_ARROW_SIZE, P.FACING_ARROW_SIZE)
+    you.arrow:SetVertexColor(1.0, 0.92, 0.25, 1)          -- the dot's gold; its dark rim stays dark
+    you.arrow:Hide()
     pv.you = you
+    -- you turn and walk while the map is up: the dot and arrow follow
+    pv:SetScript("OnUpdate", function(self, elapsed)
+        self.youWait = (self.youWait or 0) - (elapsed or 0)
+        if self.youWait > 0 then return end
+        self.youWait = P.FACING_EVERY
+        P.UpdatePreviewYou(self)
+    end)
 
     pv.note = pv:CreateFontString(nil, "OVERLAY")
     pv.note:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
@@ -7986,6 +8085,37 @@ function P.GetMapArt(mapID)
     local ok2, files = pcall(C_Map.GetMapArtLayerTextures, mapID, 1)
     if not (ok2 and type(files) == "table" and #files > 0) then return nil end
     return { w = layer.layerWidth, h = layer.layerHeight, tw = layer.tileWidth, th = layer.tileHeight, files = files }
+end
+
+-- The "you" dot where you stand on the preview's map (hidden off it), and the arrow the way you face.
+-- Facing: radians from north, counter-clockwise (as GetPlayerFacing gives it; the map has north up).
+function P.UpdatePreviewYou(pv)
+    if not (pv and pv.mapID and pv.you) then return end
+    local you = pv.you
+    local pMap, px, py = GetPlayerMapPositionSafe()
+    local yx, yy
+    if pMap and px and py then yx, yy = P.TranslatePos(pMap, px, py, pv.mapID) end
+    if not yx then
+        you:Hide()
+        return
+    end
+    you:ClearAllPoints()
+    you:SetPoint("CENTER", pv.child, "TOPLEFT", yx * pv.CW, -yy * pv.CH)
+    you:Show()
+    local fa
+    if type(GetPlayerFacing) == "function" then
+        local ok, v = pcall(GetPlayerFacing)
+        if ok and type(v) == "number" then fa = v end
+    end
+    local ar = you.arrow
+    if not (fa and ar) then
+        if ar then ar:Hide() end
+        return
+    end
+    ar:ClearAllPoints()
+    ar:SetPoint("CENTER", you, "CENTER", -math.sin(fa) * P.FACING_ARROW_OFF, math.cos(fa) * P.FACING_ARROW_OFF)
+    if ar.SetRotation then pcall(ar.SetRotation, ar, fa) end
+    ar:Show()
 end
 
 function CFQ.ShowMapPreview(entry, anchor)
@@ -8061,16 +8191,8 @@ function CFQ.ShowMapPreview(entry, anchor)
     end
     for i = #marks + 1, #child.circles do child.circles[i]:Hide() end
 
-    local pMap, px, py = GetPlayerMapPositionSafe()
-    local yx, yy
-    if pMap and px and py then yx, yy = P.TranslatePos(pMap, px, py, mapID) end
-    if yx then
-        pv.you:ClearAllPoints()
-        pv.you:SetPoint("CENTER", child, "TOPLEFT", yx * CW, -yy * CH)
-        pv.you:Show()
-    else
-        pv.you:Hide()
-    end
+    pv.mapID, pv.CW, pv.CH = mapID, CW, CH
+    P.UpdatePreviewYou(pv)
 
     local info = C_Map and C_Map.GetMapInfo and C_Map.GetMapInfo(mapID)
     pv.title:SetText("|cFFFFD100" .. ((info and info.name) or "Map") .. "|r  |cFFCCCCCC" .. (entry.itemName or "") .. "|r")
@@ -11713,18 +11835,26 @@ function CFQ.BuildOptionsPanel()
             CFQ.parchmentOpts.forMe = v; P.CancelForMeEdit(); P.OnTallyChoiceChanged()
             if showShoppingList and not v then P.TurnTallyOn() end    -- says so in chat if this just put it away
         end)
-    local hasAch, hasQuest = CFQ.AchievementsSupported(), CFQ.questTurnInEvent and true or false
-    if hasAch then
-        CFQ.achievementCheck = Check("...note achievements you earn",
-            "When you earn an achievement, a note goes in your Journal by itself: its name and points, the time and where you were. Several earned within a few minutes in one place share a note. Written in faded ink with a small star, so your own notes stand out.",
-            function() return CFQ.parchmentOpts.autoAchievements end,
-            function(v) CFQ.parchmentOpts.autoAchievements = v end, 24, hasQuest)
+    -- the Journal's own entries, two to a row (achievements / quests only where the client has them)
+    local autos = {
+        { key = "levelCheck", label = "...note level-ups", opt = "autoLevels",
+          tip = "When you reach a new level, a note goes in your Journal by itself: the level, the time and where you were. It glows gold, so your milestones stand out." },
+    }
+    if CFQ.AchievementsSupported() then
+        table.insert(autos, { key = "achievementCheck", label = "...note achievements you earn", opt = "autoAchievements",
+          tip = "When you earn an achievement, a note goes in your Journal by itself: its name and points, the time and where you were. Several earned within a few minutes in one place share a note. Written in faded ink with a small star, so your own notes stand out." })
     end
-    if hasQuest then
-        CFQ.questCheck = Check("...note quests you turn in",
-            "When you turn in a quest, a note goes in your Journal by itself: the quest, what it gave you (the items, the one you chose, xp and money), the time and where you were. Several turned in within a few minutes in one place share a note. Written in faded ink with a small star, so your own notes stand out.",
-            function() return CFQ.parchmentOpts.autoQuests end,
-            function(v) CFQ.parchmentOpts.autoQuests = v end, hasAch and 280 or 24)
+    if CFQ.questTurnInEvent then
+        table.insert(autos, { key = "questCheck", label = "...note quests you turn in", opt = "autoQuests",
+          tip = "When you turn in a quest, a note goes in your Journal by itself: the quest, what it gave you (the items, the one you chose, xp and money), the time and where you were. Several turned in within a few minutes in one place share a note. Written in faded ink with a small star, so your own notes stand out." })
+    end
+    local forMeChecks = {}
+    for i, a in ipairs(autos) do
+        local left = (i % 2 == 1)
+        CFQ[a.key] = Check(a.label, a.tip,
+            function() return CFQ.parchmentOpts[a.opt] end,
+            function(v) CFQ.parchmentOpts[a.opt] = v end, left and 24 or 280, left and i < #autos)
+        table.insert(forMeChecks, CFQ[a.key])
     end
     -- per character by default; shared = the list lives in the account's saved file
     CFQ.shareTasksCheck = Check("...share tasks with all characters",
@@ -11735,7 +11865,9 @@ function CFQ.BuildOptionsPanel()
         "Off: each character keeps its own Journal. On: one Journal for every character on this account, notes from all of them by time, each stamped with who wrote it. A character's own notes join it the next time you log into that character. Switching off gives each character back the notes it wrote.",
         function() return CFQ.parchmentOpts.shareJournal end,
         function(v) CFQ.SetNotesShared("journal", v) end, 280)
-    for _, cb in ipairs({ CFQ.achievementCheck, CFQ.questCheck, CFQ.shareTasksCheck, CFQ.shareJournalCheck }) do
+    table.insert(forMeChecks, CFQ.shareTasksCheck)
+    table.insert(forMeChecks, CFQ.shareJournalCheck)
+    for _, cb in ipairs(forMeChecks) do
         local base = cb.Refresh
         cb.Refresh = function(self)
             base(self)
@@ -12305,6 +12437,10 @@ loader:SetScript("OnEvent", function(self, event, arg1, arg2, arg3)
             RenderCustomFilteredList()
         end
     elseif event == "QUEST_LOG_UPDATE" or event == "UNIT_QUEST_LOG_CHANGED" or event == "QUEST_WATCH_LIST_CHANGED" or event == "PLAYER_LEVEL_UP" then
+        if event == "PLAYER_LEVEL_UP" then
+            local okLvl, err = pcall(CFQ.OnLevelUp, arg1)              -- a Journal entry, if switched on
+            if not okLvl and CFQ.ReportError then CFQ.ReportError(err) end
+        end
         if event == "UNIT_QUEST_LOG_CHANGED" and arg1 ~= "player" then return end
         if not isSyncingTracker then
             ScanQuestLogRewards()

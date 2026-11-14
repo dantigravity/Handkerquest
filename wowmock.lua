@@ -47,6 +47,7 @@ function methods:SetShadowColor(r, g, b, a) self.__shadow = { r, g, b, a or 1 } 
 function methods:SetShadowOffset(x, y) self.__shadowOff = { x, y } end
 function methods:SetTexCoord(...) self.__tc = { ... } end
 function methods:SetTextColor(r, g, b, a) self.__textColor = { r, g, b, a } end
+function methods:SetRotation(r) self.__rotation = r end
 function methods:GetEffectiveScale() return 1 end
 function methods:GetScale() return 1 end
 function methods:SetAlpha(a) self.__alpha = a end
@@ -240,6 +241,8 @@ function GetServerTime() return 1794350400 end
 date = date or os.date
 time = time or os.time
 function GetRealmName() return "Forever" end
+PLAYER_FACING = 0                      -- set by tests: radians from north, counter-clockwise (nil = unknown)
+function GetPlayerFacing() return PLAYER_FACING end
 GUILD_NAME = nil                       -- set by tests: the player's guild
 function GetGuildInfo(unit) if unit == "player" and GUILD_NAME then return GUILD_NAME, "Member", 5 end return nil end
 

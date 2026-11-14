@@ -38,6 +38,8 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
     print stays crisp; insets set by hand: right of the red margin rule, between the printed header and foot;
     no stamp: that's drawn in game), `::DispatchStamp(tga, png, 256, 12)` → dispatch_stamp (256, white: rings,
     bars, PASSED; the band between the rings left empty for the guild's name; tinted red in game)
+  - `::FacingArrow(tga, png, 32, 1)` → facing_arrow (32, an arrowhead pointing up: white inside, dark rim,
+    notched base; tinted gold and turned in game: the hover map's "which way you face")
   - `::Icon(tga, png, 64, 3)` → icon (64, the AddOns-list icon, `.toc` `IconTexture`: a rag scrap with soot
     writing and a brown quill; drawn at 4x and averaged down so it reads at 16-20px)
   - `::EdgeProfile(tga)` prints a sheet image's bottom / right edge as a Lua table → `P.SHEET_EDGES[look]`
@@ -124,7 +126,11 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
 - Hovering a tally item: tooltip goes beside the tally on the roomier side (`P.PlaceTooltip`); a small
   map preview (`CFQ.ShowMapPreview`: zone tiles, quest-area blob, rings, player dot) takes the candidate
   spot that is on screen and overlaps least (tally/tooltip weighted heavily, then `P.AVOID_FRAMES`).
-  Blizzard's blob is only ever drawn *inside the preview*.
+  Blizzard's blob is only ever drawn *inside the preview*. **Which way you face** (user request): a small gold
+  arrowhead (`textures/facing_arrow`, `you.arrow`) just outside the dot, `P.FACING_ARROW_OFF` px out the way
+  you face and turned to `GetPlayerFacing` (radians from north, counter-clockwise; the map has north up). The
+  preview's OnUpdate re-places the dot and arrow every `P.FACING_EVERY` s while it's up (`P.UpdatePreviewYou`),
+  so they turn and walk with you. No facing (some instances) = the plain dot.
 - Minimap: amber pins for the super-tracked quest's looted spots (`CFQ.UpdateMinimapPins`), on the rim
   when out of range; world coords: X = north, Y = west.
 - Parchment look has no shaded header band (removed: it grew with the window). Grain is cropped from
@@ -406,6 +412,15 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
     Switch "...note quests you turn in" (`parchmentOpts.autoQuests`, off by default),
     offered only if `QUEST_TURNED_IN` registers (`CFQ.TryRegister`, `CFQ.questTurnInEvent`).
     Not built: "only quests that took longer than X days".
+  - **Level ups** (user request): `PLAYER_LEVEL_UP` (level) → `CFQ.OnLevelUp` writes "Reached level 12."
+    (merged: "Reached levels 12 and 13."; the same level once). Saved as `auto = "level"`, `levels = { { level } }`;
+    the tooltip lists the levels. Switch "...note level-ups" (`parchmentOpts.autoLevels`, **on by default**, as
+    the notes plan agreed), always offered. **Glows gold in the Journal** (user request): drawn in the full ink
+    (a milestone; other auto entries stay faded) with eight gold copies of its words under the ink
+    (`P.SetGlow`, `fs.glow`, `P.GLOW_COLOR` / `P.GLOW_ALPHA` / `P.GLOW_RADIUS`), on every look, breathing
+    (`P.PulseGlow` from `P.OnUpdate` while `P.glowing` has any). Every level, no "every 5 / 10" choice yet.
+  - The auto-entry switches sit two to a row under "For me" (level-ups first, then achievements / quests
+    where the client has them), all greyed while "For me" is off.
   - Shared: `P.WriteAuto(kind, listKey, thing, textFn, sameFn)` / `P.AutoMergeTarget`; kinds never merge
     with each other. `CFQ.CleanName` strips colour codes and `|` from game names.
 
@@ -478,7 +493,7 @@ threshold set in the **options panel** (never on the tally). Each trigger is its
   - later extra: **our own observed rate** ("seen in under N% of kills"), counted from loot tries like the
     quest-item counts behind `P.RULE_OUT_LOOTS`; only meaningful after many kills.
 - ~~**Achievements earned**~~ (built: see "Auto entries" in "Design rules").
-- **Level ups** (`PLAYER_LEVEL_UP`): every level, or every 5 / 10.
+- ~~**Level ups**~~ (built: every level, glowing gold; see "Auto entries"). "Every 5 / 10" not built.
 - **Rare / elite kills** (`UnitClassification`: rare, elite, rareelite, worldboss).
 - **New places**: first time entering a zone / subzone.
 - ~~**Quests turned in**~~ (built, with their rewards; "only those that took longer than X days" not built).
@@ -491,7 +506,7 @@ items in the Fargodeep Mine"); everything is **off by default except level ups a
 
 **Build order**: ~~"For me" tasks + writing line~~ (done) → ~~Journal page + entries/stamps (+ the task/entry
 switch on the writing line)~~ (done; hover map for entries still to do) → ~~quick tabs~~ (done, cut from the sheet; knots dropped) → "with" + quick-insert
-menu → auto-recording (achievements and quests turned in done first, at the user's request; the other triggers still to do).
+menu → auto-recording (achievements, quests turned in and level ups done first, at the user's request; the other triggers still to do).
 
 ## Planned: look saved per character (user request, Nov 2026; not built)
 The look (`CFQ.parchmentStyle`) is saved account-wide in `QRF_SavedState`, so every character shares it.
