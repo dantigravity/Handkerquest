@@ -1684,6 +1684,968 @@ public static class TexGen
         Save(img, tga, png);
     }
 
+    // ---------------------------------------------------------------- the Gnomish Magic Box (phosphor terminal)
+    // A gnome-engineered terminal's face (user requests, Nov 2026: "a sort of Fallout like theme", "more like WoW
+    // tech", "even more WOW", "too flat ... the kind of bulky three dimensional look", then "edgy in vibe terms"):
+    // blackened gunmetal rubbed through to brass on its raised edges, cut corners, ridged armour-plate brackets,
+    // red warning crystals, hazard stripes, steel pyramid studs, scratches, oil streaks, rust, a scorched grille,
+    // a gauge pegged in the red. Our own procedural art
+    // in the spirit of Azeroth's chunky UI frames and gnomish engineering, nothing copied. Built as a height field
+    // and lit as real metal: two fat rounded brass tubes with a blued-iron channel between them (brass rivets in
+    // it), thick domed brass brackets clamped over each corner (engraved border, a dark-iron hex bolt on a washer,
+    // a blue crystal in the lower two), a raised crest with a crystal at the top, a pressure gauge, a grille and
+    // a copper cog under the screen, and a steep iron bezel dropping to glass sunk deep in the box. Soft cast
+    // shadows (marching towards the light), ambient occlusion in the crevices, diffuse + sky + two highlights.
+    // The phosphor glow, scanlines and writing are added in game (crt_glow, crt_scanlines). 512 grid, drawn at 2x.
+    // The screen's opening: l 46, t 46, r 466, b 454, corner radius 36 (P.STYLES TERMINAL crt.screen). Brackets and
+    // crest reach 6 into it (4 at the bottom), never into the writing area (inset: x 59..453, y 59..438).
+    static double RoundRect(double u, double v, double l, double t, double r, double b, double rad)
+    {
+        double hx = (r - l) / 2 - rad, hy = (b - t) / 2 - rad;
+        double qx = Math.Abs(u - (l + r) / 2) - hx, qy = Math.Abs(v - (t + b) / 2) - hy;
+        double ox = Math.Max(qx, 0), oy = Math.Max(qy, 0);
+        return rad - (Math.Sqrt(ox * ox + oy * oy) + Math.Min(Math.Max(qx, qy), 0));    // > 0 inside
+    }
+    // distance inside a hexagon of inner radius ri (flat sides), turned by a (> 0 inside)
+    static double Hex(double du, double dv, double ri, double a)
+    {
+        double m = -1e9;
+        for (int k = 0; k < 6; k++)
+        {
+            double t = a + k * Math.PI / 3;
+            m = Math.Max(m, du * Math.Cos(t) + dv * Math.Sin(t));
+        }
+        return ri - m;
+    }
+    // a quarter-round: 0 at the edge, 1 once t is w in (a rounded, bulging profile)
+    static double Bulge(double t, double w) { double k = 1 - Clamp(t / w, 0, 1); return Math.Sqrt(Math.Max(0, 1 - k * k)); }
+    // a corner bracket's arm: a = across (from the outer edge), b = along; w = width, len = length, the inner side
+    // sloping in to a point over the last `tip` units (> 0 inside)
+    static double Arm(double a, double b, double w, double len, double tip)
+    {
+        double wEff = b < len - tip ? w : w * Math.Max(0, (len - b) / tip);
+        return Math.Min(Math.Min(a + 50, wEff - a), Math.Min(b + 50, len - b));
+    }
+    static double CornerCap(double u, double v)
+    {
+        // corner-local: across from the left / right edge, along from the top / bottom edge (from the outline at 6)
+        double ax = u < 256 ? u - 6 : 506 - u, by = v < 256 ? v - 6 : 506 - v;
+        double wx = 46, wy = v < 256 ? 46 : 56;          // 6 into the screen on top / sides, 4 at the bottom
+        return Math.Max(Arm(ax, by, wx, 132, 46), Arm(by, ax, wy, 132, 46));
+    }
+    // the case's outline: a square with its corners cut off at 45 degrees (> 0 inside)
+    static double CutCorners(double u, double v, double l, double t, double r, double b, double cut)
+    {
+        double rect = Math.Min(Math.Min(u - l, r - u), Math.Min(v - t, b - v));
+        double cx = (l + r) / 2, cy = (t + b) / 2, hx = (r - l) / 2, hy = (b - t) / 2;
+        double chamf = (hx + hy - cut - Math.Abs(u - cx) - Math.Abs(v - cy)) / Math.Sqrt(2);
+        return Math.Min(rect, chamf);
+    }
+
+    public static void Terminal(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        int SS = 2, W = size * SS, H = size * SS;
+        double S = W / 512.0;
+        double sL = 46, sT = 46, sR = 466, sB = 454, sRad = 36;
+        double[] bX = { 33, 479, 33, 479 }, bY = { 33, 33, 479, 479 }, bA = { 0.20, 0.71, 1.13, 0.46 };   // corner bolts
+        double[][] gems = { new[] { 256.0, 28.0, 8.5 }, new[] { 72.0, 482.0, 7.0 }, new[] { 440.0, 482.0, 7.0 } };   // crest, lower brackets
+        double gX = 154, gY = 482;                       // the gauge
+        double cX = 358, cY = 482;                       // the cog
+        // diamond studs: in the channel between the brackets and the crest, and on the crest
+        var rivets = new System.Collections.Generic.List<double[]>();
+        rivets.Add(new[] { 152.0, 24.0 }); rivets.Add(new[] { 360.0, 24.0 });
+        for (double y = 148; y <= 364; y += 24) { rivets.Add(new[] { 24.0, y }); rivets.Add(new[] { 488.0, y }); }
+        rivets.Add(new[] { 214.0, 29.0 }); rivets.Add(new[] { 298.0, 29.0 });
+        double[] crX = { 168, 192, 320, 344, 320, 192 }, crY = { 29, 6, 6, 29, 52, 52 };   // the crest: a long pointed hexagon
+        // part: 0 iron channel, 1 iron bezel wall, 2 glass, 3 bolt head, 4 washer, 5 rivet, 6 cog, 7 crystal, 8 setting,
+        //       9 grille, 10 brass rim, 11 brass lip, 12 bracket, 13 crest, 14 gauge face, 16 gauge bezel
+        var part = new int[W, H];
+        var dist = new double[W, H];
+        var dScr = new double[W, H];
+        var hgt = new double[W, H];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double u = (x + 0.5) / S, v = (y + 0.5) / S;
+                double d = CutCorners(u, v, 6, 6, 506, 506, 30);
+                double ds = RoundRect(u, v, sL, sT, sR, sB, sRad);
+                dist[x, y] = d; dScr[x, y] = ds;
+                int p;
+                double h;
+                if (ds > 0)
+                {
+                    // the glass, sunk deep in the box, bulging a little
+                    p = 2;
+                    double nx = (u - (sL + sR) / 2) / ((sR - sL) / 2), ny = (v - (sT + sB) / 2) / ((sB - sT) / 2);
+                    h = -22 + 5 * Clamp(1 - (nx * nx + ny * ny) * 0.5, 0, 1);
+                }
+                else if (ds > -6)
+                {
+                    // the iron bezel: a steep wall dropping from the lip into the box
+                    p = 1;
+                    h = 8 - 30 * Smooth(Clamp((ds + 6) / 6.0, 0, 1));
+                }
+                else if (ds > -17)
+                {
+                    // the inner brass bar: chamfered both sides, a flat top (hard facets, not a round bead)
+                    p = 11;
+                    double t = (ds + 17) / 11.0;
+                    h = 8 + 10 * Math.Min(1, Math.Min(t, 1 - t) / 0.32);
+                }
+                else if (d < 13)
+                {
+                    // the outer brass bar: a steep chamfer up from the outline, a flat top, a chamfer down to the channel
+                    p = 10;
+                    h = d < 9 ? 18 * Math.Min(1, d / 4.0) : 18 - 10 * Clamp((d - 9) / 4.0, 0, 1);
+                }
+                else
+                {
+                    // the blued iron channel between the tubes, faintly hammered
+                    p = 0;
+                    h = 8 + (Fbm(u / 6.0, v / 6.0, 2, 331) - 0.5) * 0.8;
+                }
+                // corner brackets and the crest: ridged armour plates (faceted roofs meeting in a sharp ridge, mitred
+                // where the arms join), clamped over the frame
+                double cap = Math.Min(CornerCap(u, v), d);
+                double crest = Math.Min(SegDistSigned(u, v, crX, crY), d);
+                double top = Math.Max(cap, crest);
+                if (top > 0)
+                {
+                    double slab = 8 + Math.Min(top * 1.35, 24);
+                    if (slab > h)
+                    {
+                        p = cap > crest ? 12 : 13;
+                        h = slab;
+                        if (Math.Abs(top - 11) < 1.2) h -= 2.0 * (1 - Math.Abs(top - 11) / 1.2);       // an engraved border
+                    }
+                }
+                if (p != 2 && p != 1)
+                {
+                    double baseH = h;
+                    foreach (var r in rivets)
+                    {
+                        double md = Math.Abs(u - r[0]) + Math.Abs(v - r[1]);           // a four-sided pyramid stud
+                        if (md < 5.0) { p = 5; h = Math.Max(h, baseH + 5.5 * (1 - md / 5.0)); }
+                    }
+                    for (int i = 0; i < 4; i++)
+                    {
+                        double du = u - bX[i], dv = v - bY[i];
+                        double rd = Math.Sqrt(du * du + dv * dv);
+                        if (rd < 14.5)
+                        {
+                            double hx = Hex(du, dv, 9.5, bA[i]);
+                            if (hx > 0) { p = 3; h = baseH + 5 + 8 * Clamp(hx / 4.5, 0, 1); }                    // a faceted hex head
+                            else { p = 4; h = baseH + 4.5 * Clamp((14.5 - rd) / 2.2, 0, 1); }
+                        }
+                    }
+                    foreach (var g in gems)
+                    {
+                        double du = u - g[0], dv = v - g[1];
+                        double rd = Math.Sqrt(du * du + dv * dv);
+                        double hx = Hex(du, dv, g[2], Math.PI / 6);
+                        if (hx > 0) { p = 7; h = baseH + 4 + 9 * Clamp(hx / (g[2] * 0.85), 0, 1); }          // a cut stone: flat facets to a point
+                        else if (rd < g[2] + 5) { p = 8; h = baseH + 6 * Math.Min(1, Math.Min(g[2] + 5 - rd, rd - g[2] + 1) / 2.0); }
+                    }
+                }
+                if ((p == 0 || p == 10 || p == 11 || p == 5) && v > 454)
+                {
+                    // the gauge: a fat brass bezel round an ivory face under glass
+                    double du = u - gX, dv = v - gY, r = Math.Sqrt(du * du + dv * dv);
+                    if (r < 18)
+                    {
+                        if (r < 13) { p = 14; h = 16 + (1 - (r / 13) * (r / 13)) * 2; }
+                        else { p = 16; h = 14 + 12 * Math.Sin((18 - r) / 5.0 * Math.PI); }
+                    }
+                    // the cog: a thick copper wheel, twelve teeth, five windows, an axle boss
+                    du = u - cX; dv = v - cY; r = Math.Sqrt(du * du + dv * dv);
+                    double th = Math.Atan2(dv, du);
+                    double tooth = Clamp(Math.Cos(12 * (th + 0.13)) * 2.6 + 0.3, 0, 1);
+                    double rEdge = 14 + 4 * tooth;
+                    bool window = r > 6.8 && r < 11 && Math.Cos(5 * (th - 0.4)) > 0.42;
+                    if (r < rEdge)
+                    {
+                        p = 6;
+                        if (window) h = 4;
+                        else
+                        {
+                            h = 14 + 7 * Bulge(rEdge - r, 2.0);
+                            if (r < 5) h += 6 * Math.Sqrt(1 - (r / 5) * (r / 5));
+                        }
+                    }
+                    // the grille: seven deep slots in the channel
+                    if (v > 471 && v < 494)
+                        for (int k = -3; k <= 3; k++)
+                        {
+                            double sd = Math.Max(Math.Abs(u - (256 + k * 15)) - 3.0, Math.Abs(v - 482) - 9);
+                            if (sd < 0) { p = 9; h -= 12 * Clamp(-sd * 1.5, 0, 1); }
+                        }
+                }
+                part[x, y] = p; hgt[x, y] = h;
+            }
+
+        // light from up-left, fairly low so the relief reads strongly
+        double lx = -0.55, ly = -0.62, lz = 0.58;
+        { double ll = Math.Sqrt(lx * lx + ly * ly + lz * lz); lx /= ll; ly /= ll; lz /= ll; }
+        double lh = Math.Sqrt(lx * lx + ly * ly), rise = lz / lh, dxl = lx / lh, dyl = ly / lh;
+        double hxv = lx, hyv = ly, hzv = lz + 1; { double hl = Math.Sqrt(hxv * hxv + hyv * hyv + hzv * hzv); hxv /= hl; hyv /= hl; hzv /= hl; }
+
+        // soft cast shadows: march towards the light; anything standing above the ray shades this point
+        var lit = new double[W, H];
+        int maxSteps = (int)(80 * S);
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double h0 = hgt[x, y] + 0.3, occ = 0;
+                for (int i = 2; i < maxSteps; i++)
+                {
+                    int sx = (int)(x + dxl * i), sy = (int)(y + dyl * i);
+                    if (sx < 0 || sy < 0 || sx >= W || sy >= H) break;
+                    double du = i / S;
+                    double over = hgt[sx, sy] - (h0 + du * rise);
+                    if (over > 0) occ = Math.Max(occ, Clamp(over / (0.30 * du + 0.6), 0, 1));
+                    if (occ >= 1) break;
+                }
+                lit[x, y] = 1 - occ;
+            }
+        // ambient occlusion: lower than the average round it = in a crevice (summed-area table, two sizes)
+        var sat = new double[W + 1, H + 1];
+        for (int y = 0; y < H; y++)
+        {
+            double row = 0;
+            for (int x = 0; x < W; x++) { row += hgt[x, y]; sat[x + 1, y + 1] = sat[x + 1, y] + row; }
+        }
+        Func<int, int, int, double> Avg = (x, y, rr) =>
+        {
+            int x0 = Math.Max(0, x - rr), y0 = Math.Max(0, y - rr), x1 = Math.Min(W, x + rr + 1), y1 = Math.Min(H, y + rr + 1);
+            return (sat[x1, y1] - sat[x0, y1] - sat[x1, y0] + sat[x0, y0]) / ((x1 - x0) * (y1 - y0));
+        };
+        var big = new double[W, H, 4];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double u = (x + 0.5) / S, v = (y + 0.5) / S;
+                double d = dist[x, y], ds = dScr[x, y];
+                int p = part[x, y];
+                double nX, nY, nZ; Normal(hgt, x, y, S * 1.3, out nX, out nY, out nZ);
+                double ndl = Clamp(nX * lx + nY * ly + nZ * lz, 0, 1);
+                double ndh = Clamp(nX * hxv + nY * hyv + nZ * hzv, 0, 1);
+                double h0 = hgt[x, y];
+                double ao = Clamp(1 - Math.Max(0, Avg(x, y, (int)(5 * S)) - h0) / 8.0 - Math.Max(0, Avg(x, y, (int)(16 * S)) - h0) / 20.0, 0.2, 1);
+                double sh = lit[x, y];
+                double r, g, b;
+                if (p == 2)
+                {
+                    double nx = (u - (sL + sR) / 2) / ((sR - sL) / 2), ny = (v - (sT + sB) / 2) / ((sB - sT) / 2);
+                    double vig = 1 - Clamp(Math.Pow(nx * nx * nx * nx + ny * ny * ny * ny, 0.5), 0, 1);
+                    double k = (0.40 + 0.60 * sh) * (0.50 + 0.50 * ao);
+                    r = (0.030 + 0.030 * vig) * k; g = (0.050 + 0.058 * vig) * k; b = (0.042 + 0.040 * vig) * k;
+                    double refl = Math.Exp(-((nx + 0.42) * (nx + 0.42) / 0.10 + (ny + 0.62) * (ny + 0.62) / 0.018)) * 0.07 * sh;
+                    double grain = (Value(u * 1.3, v * 1.3, 303) - 0.5) * 0.010;
+                    r += refl + grain; g += refl * 1.05 + grain; b += refl + grain;
+                }
+                else
+                {
+                    // edgy (user: "edgy in vibe terms"): the plates are blackened gunmetal, rubbed through to brass only
+                    // on their raised edges and ridges (convex = higher than the average round it); brass only on the
+                    // washers and gem settings; hazard stripes on the lower brackets; red warning crystals
+                    bool plate = p == 10 || p == 11 || p == 12 || p == 13;
+                    bool brass = p == 4 || p == 8 || p == 16;
+                    double convex = h0 - Avg(x, y, (int)(2.5 * S));
+                    double rub = plate ? Clamp(convex * 0.9 - 0.25 + (Fbm(u / 5.0, v / 5.0, 3, 341) - 0.5) * 0.5, 0, 1) * Clamp((Fbm(u / 18.0, v / 18.0, 2, 349) - 0.30) * 3, 0, 1) : 0;
+                    double br, bg, bb, shine, rough;
+                    if (brass) { br = 0.80; bg = 0.58; bb = 0.26; shine = 1.20; rough = 0.35; }
+                    else if (plate) { br = 0.27 + 0.55 * rub; bg = 0.27 + 0.33 * rub; bb = 0.30 - 0.02 * rub; shine = 1.10 + 0.25 * rub; rough = 0.35; }
+                    else if (p == 5) { br = 0.62; bg = 0.62; bb = 0.66; shine = 1.20; rough = 0.30; }      // steel studs
+                    else if (p == 6) { br = 0.55; bg = 0.30; bb = 0.18; shine = 0.70; rough = 0.50; }      // a rusting copper cog
+                    else if (p == 3) { br = 0.30; bg = 0.30; bb = 0.33; shine = 1.00; rough = 0.30; }      // black iron bolt
+                    else if (p == 1 || p == 9) { br = 0.10; bg = 0.10; bb = 0.11; shine = 0.40; rough = 0.55; }
+                    else if (p == 14) { br = 0.86; bg = 0.80; bb = 0.64; shine = 0.25; rough = 0.80; }     // yellowed ivory
+                    else { br = 0.13; bg = 0.14; bb = 0.17; shine = 0.60; rough = 0.45; }                  // near-black iron channel
+                    // hazard stripes painted on the lower brackets, chipped
+                    if (p == 12 && v > 440)
+                    {
+                        double stripe = ((u + v) / 14.0) % 2.0;
+                        double chip = Clamp((Fbm(u / 4.0, v / 4.0, 3, 342) - 0.62) * 5 + rub * 1.2, 0, 1);
+                        if (stripe < 1.0 && chip < 0.5) { br = 0.88; bg = 0.66; bb = 0.08; rough = 0.7; shine = 0.5; }
+                        else if (chip < 0.5) { br = 0.07; bg = 0.07; bb = 0.07; rough = 0.7; shine = 0.5; }
+                    }
+                    double wear = 1 + (Fbm(u / 26.0, v / 26.0, 3, 322) - 0.5) * 0.30;
+                    // diffuse in the light, a cool sky reflected on upward-facing slopes
+                    double sky = Clamp(0.5 - nY * 0.5, 0, 1) * 0.20 * (1 - rough);
+                    double diff = (0.06 + 1.00 * ndl * sh) * ao * wear;                 // hard contrast between facets
+                    r = br * (diff + sky * 0.9); g = bg * (diff + sky); b = bb * (diff + sky * 1.15);
+                    // highlights: a tight hot one and a broad sheen, tinted by the metal
+                    double spec = (Math.Pow(ndh, 90) * 1.7 + Math.Pow(ndh, 16) * 0.30) * shine * sh * (0.6 + 0.4 * ao);   // crisp glints
+                    double warm = brass ? 1 : rub;
+                    double tr = 0.85 + 0.15 * warm, tg = 0.88 + 0.02 * warm, tb = 0.95 - 0.33 * warm;
+                    if (p == 6) { tr = 1.00; tg = 0.75; tb = 0.55; }
+                    if (p == 14) { tr = tg = tb = 1; }
+                    r += spec * tr; g += spec * tg; b += spec * tb;
+                    // scratches gouged through the black to bright metal
+                    if (plate || p == 0)
+                    {
+                        double sc = Math.Pow(1 - Math.Abs(Math.Sin((u * 0.93 - v * 0.37) / 2.2 + Fbm(u / 60.0, v / 60.0, 2, 343) * 26)), 80)
+                            * Clamp((Fbm(u / 30.0, v / 30.0, 2, 344) - 0.55) * 5, 0, 1);
+                        r += sc * 0.30 * sh; g += sc * 0.28 * sh; b += sc * 0.26 * sh;
+                    }
+                    // oil and grime running down from every joint, rust in the crevices
+                    double streak = Clamp((Fbm(u / 2.5, v / 45.0, 3, 345) - 0.58) * 3, 0, 1) * Clamp((Fbm(u / 40.0, v / 40.0, 2, 346) - 0.45) * 3, 0, 1);
+                    double grime = Clamp(streak * 0.55 + (1 - ao) * 0.6, 0, 0.75);
+                    r *= 1 - grime * 0.55; g *= 1 - grime * 0.58; b *= 1 - grime * 0.62;
+                    if (p == 6 || p == 0 || p == 3)
+                    {
+                        double rust = Clamp((Fbm(u / 6.0, v / 6.0, 3, 347) - 0.60) * 4 + (1 - ao) * 0.8 - 0.3, 0, 1) * 0.6;
+                        r += (0.40 - r) * rust; g += (0.17 - g) * rust; b += (0.07 - b) * rust;
+                    }
+                    // scorched round the vents: soot blown out of the grille
+                    double soot = Math.Exp(-((u - 256) * (u - 256) / (70.0 * 70.0) + (v - 478) * (v - 478) / (22.0 * 22.0)))
+                        * (0.6 + 0.4 * Fbm(u / 9.0, v / 9.0, 3, 348));
+                    r *= 1 - soot * 0.70; g *= 1 - soot * 0.72; b *= 1 - soot * 0.72;
+                    if (p == 7)
+                    {
+                        // a glowing crystal: lit from inside (no shadow dims it), facets, a hot highlight
+                        int gi = 0; double best = 1e9;
+                        for (int i = 0; i < gems.Length; i++) { double dd = Math.Abs(u - gems[i][0]) + Math.Abs(v - gems[i][1]); if (dd < best) { best = dd; gi = i; } }
+                        double hx = Hex(u - gems[gi][0], v - gems[gi][1], gems[gi][2], Math.PI / 6);
+                        double c = Clamp(1 - hx / gems[gi][2], 0, 1);
+                        double fac = 0.10 * Math.Sign(Math.Sin(6 * Math.Atan2(v - gems[gi][1], u - gems[gi][0])));
+                        double hot = Math.Pow(ndh, 40) * 1.2;
+                        // a red warning crystal: blood red at the facets, burning orange-white in the core
+                        r = 0.85 + 0.15 * (1 - c) + hot + fac * 0.6; g = 0.10 + 0.55 * (1 - c) * (1 - c) + hot + fac * 0.4; b = 0.06 + 0.25 * (1 - c) * (1 - c) * (1 - c) + hot * 0.8 + fac * 0.3;
+                    }
+                    if (p == 14)
+                    {
+                        double du = u - gX, dv = v - gY, rr = Math.Sqrt(du * du + dv * dv);
+                        double th = Math.Atan2(dv, du);
+                        double rel = th - 0.75 * Math.PI; while (rel < 0) rel += 2 * Math.PI;
+                        if (rr > 9 && rr < 12 && rel <= 1.5 * Math.PI + 0.05)
+                        {
+                            double step = 1.5 * Math.PI / 8, m = rel / step, frac = Math.Abs(m - Math.Round(m)) * step * rr;
+                            if (frac < 0.6) { r *= 0.25; g *= 0.22; b *= 0.20; }
+                        }
+                        if (rr > 9 && rr < 12 && rel > 1.5 * Math.PI * 0.78 && rel <= 1.5 * Math.PI) { r = r * 0.6 + 0.35; g *= 0.55; b *= 0.5; }
+                        double na = 0.75 * Math.PI + 1.5 * Math.PI * 0.97;                      // pegged in the red
+                        double along = du * Math.Cos(na) + dv * Math.Sin(na), across = Math.Abs(-du * Math.Sin(na) + dv * Math.Cos(na));
+                        if (along > -2 && along < 11 && across < 1.2 - along * 0.07) { r = 0.75; g = 0.12; b = 0.08; }
+                        if (rr < 2) { r = 0.20; g = 0.18; b = 0.16; }
+                        double glass = Math.Exp(-((du + 4) * (du + 4) + (dv + 5) * (dv + 5)) / 14.0) * 0.45;
+                        r += glass; g += glass; b += glass;
+                    }
+                    if (p == 9) { r *= 0.35; g *= 0.35; b *= 0.35; }
+                    foreach (var gm in gems)
+                    {
+                        double gd2 = (u - gm[0]) * (u - gm[0]) + (v - gm[1]) * (v - gm[1]);
+                        double glow = Math.Exp(-gd2 / (gm[2] * gm[2] * 5.0)) * 0.30;   // red light spilling on the metal
+                        r += glow; g += glow * 0.18; b += glow * 0.08;
+                    }
+                }
+                big[x, y, 0] = r; big[x, y, 1] = g; big[x, y, 2] = b;
+                big[x, y, 3] = Clamp(d * S / 1.2, 0, 1);
+            }
+        var img = new double[size, size, 4];
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                double sr = 0, sg = 0, sb = 0, sa = 0;
+                for (int j = 0; j < SS; j++)
+                    for (int i = 0; i < SS; i++)
+                    {
+                        double aa = big[x * SS + i, y * SS + j, 3];
+                        sr += big[x * SS + i, y * SS + j, 0] * aa; sg += big[x * SS + i, y * SS + j, 1] * aa;
+                        sb += big[x * SS + i, y * SS + j, 2] * aa; sa += aa;
+                    }
+                img[x, y, 3] = sa / (SS * SS);
+                if (sa > 0) { img[x, y, 0] = sr / sa; img[x, y, 1] = sg / sa; img[x, y, 2] = sb / sa; }
+            }
+        Save(img, tga, png);
+    }
+
+    // ---------------------------------------------------------------- the dwarven runestone
+    // A dwarf's stone tablet (user request, Nov 2026: "a dwarven stone tablet theme with the font locked into a
+    // runic style ... carved into the stone"): a thick slab of warm grey granite, corners struck off at an angle,
+    // chiselled bevels with chips knocked out of the edge, a carved border of two V-grooves with a zigzag band
+    // between (squared corner panels with a carved diamond, a diamond mark at the top centre), a crack or two,
+    // mica and quartz flecks, lichen near the edges. Built as a height field and lit like Terminal (cast shadows,
+    // ambient occlusion, matte stone). The words are carved in game (style.carve). 512 grid, drawn at 2x.
+    // The face inside the border: x, y 48..464 (P.STYLES DWARVEN inset).
+    public static void Tablet(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        int SS = 2, W = size * SS, H = size * SS;
+        double S = W / 512.0;
+        var dist = new double[W, H];
+        var hgt = new double[W, H];
+        var groove = new double[W, H];
+        Func<double, double, double> Vee = (dd, half) => Clamp(1 - Math.Abs(dd) / half, 0, 1);   // a V-cut's depth profile
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double u = (x + 0.5) / S, v = (y + 0.5) / S;
+                double d0 = CutCorners(u, v, 8, 8, 504, 504, 34);
+                // a hewn outline: a little out of true, chips knocked out of the edge
+                double d = d0 + (Fbm(u / 40.0, v / 40.0, 2, 401) - 0.5) * 4
+                           - Clamp(Fbm(u / 11.0, v / 11.0, 3, 402) - 0.70, 0, 1) * 30;
+                dist[x, y] = d;
+                // chiselled bevel up to the face; the face itself slightly uneven
+                double h = 24 * Clamp(d / 14.0, 0, 1) + (Fbm(u / 7.0, v / 7.0, 2, 403) - 0.5) * 2.4 * Clamp(1 - d / 14.0, 0, 1);
+                h += (Fbm(u / 90.0, v / 90.0, 3, 404) - 0.5) * 3 + (Value(u * 0.9, v * 0.9, 405) - 0.5) * 0.5;
+                // the carved border: two V-grooves (inner face distance 20 and 40) and a zigzag cut between them
+                double g = 0;
+                g = Math.Max(g, Vee(d0 - 20, 2.6));
+                g = Math.Max(g, Vee(d0 - 40, 2.6));
+                if (d0 > 22 && d0 < 38)
+                {
+                    // where along the border: the nearest edge decides which coordinate runs along it
+                    double el = u - 8, er = 504 - u, et = v - 8, eb = 504 - v;
+                    double m = Math.Min(Math.Min(el, er), Math.Min(et, eb));
+                    double s = (m == et || m == eb) ? u : v;
+                    bool corner = (el < 52 || er < 52) && (et < 52 || eb < 52);
+                    bool mark = Math.Abs(u - 256) < 18 && et < 52;
+                    double t = (d0 - 22) / 16.0;
+                    if (corner)
+                    {
+                        // a squared corner panel with a carved diamond
+                        double cx = el < 52 ? 38 : 474, cy = et < 52 ? 38 : 474;
+                        double dm = Math.Abs(u - cx) + Math.Abs(v - cy);
+                        g = Math.Max(g, Math.Max(Vee(dm - 9, 2.2), Vee(dm - 3, 1.8)));
+                    }
+                    else if (mark)
+                    {
+                        double dm = Math.Abs(u - 256) + Math.Abs(v - 38) * 1.4;
+                        g = Math.Max(g, Math.Max(Vee(dm - 10, 2.2), Vee(dm - 4, 1.8)));
+                    }
+                    else
+                    {
+                        double tri = Math.Abs(((s / 13.0) % 2 + 2) % 2 - 1);      // a triangle wave along the border
+                        g = Math.Max(g, Vee((t - tri) * 13, 2.2));
+                    }
+                }
+                // cracks: thin dark fissures wandering across
+                double ck = Math.Pow(Clamp(1 - Math.Abs(Fbm(u / 90.0, v / 90.0, 4, 406) - 0.5) * 2, 0, 1), 140)
+                            * Clamp((Fbm(u / 80.0, v / 80.0, 2, 407) - 0.66) * 4, 0, 1) * Clamp((50 - d0) / 10.0, 0, 1);   // only in the rim and border: a crack by the writing read as a scribble
+                g = Math.Max(g, ck * 0.8);
+                groove[x, y] = g;
+                hgt[x, y] = h - g * 5;
+            }
+        double lx = -0.55, ly = -0.62, lz = 0.58;
+        { double ll = Math.Sqrt(lx * lx + ly * ly + lz * lz); lx /= ll; ly /= ll; lz /= ll; }
+        double lh = Math.Sqrt(lx * lx + ly * ly), rise = lz / lh, dxl = lx / lh, dyl = ly / lh;
+        var lit = new double[W, H];
+        int maxSteps = (int)(40 * S);
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double h0 = hgt[x, y] + 0.2, occ = 0;
+                for (int i = 2; i < maxSteps; i++)
+                {
+                    int sx = (int)(x + dxl * i), sy = (int)(y + dyl * i);
+                    if (sx < 0 || sy < 0 || sx >= W || sy >= H) break;
+                    double du = i / S;
+                    double over = hgt[sx, sy] - (h0 + du * rise);
+                    if (over > 0) occ = Math.Max(occ, Clamp(over / (0.30 * du + 0.5), 0, 1));
+                    if (occ >= 1) break;
+                }
+                lit[x, y] = 1 - occ;
+            }
+        var sat = new double[W + 1, H + 1];
+        for (int y = 0; y < H; y++)
+        {
+            double row = 0;
+            for (int x = 0; x < W; x++) { row += hgt[x, y]; sat[x + 1, y + 1] = sat[x + 1, y] + row; }
+        }
+        Func<int, int, int, double> Avg = (x, y, rr) =>
+        {
+            int x0 = Math.Max(0, x - rr), y0 = Math.Max(0, y - rr), x1 = Math.Min(W, x + rr + 1), y1 = Math.Min(H, y + rr + 1);
+            return (sat[x1, y1] - sat[x0, y1] - sat[x1, y0] + sat[x0, y0]) / ((x1 - x0) * (y1 - y0));
+        };
+        var big = new double[W, H, 4];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double u = (x + 0.5) / S, v = (y + 0.5) / S;
+                double d = dist[x, y];
+                double nX, nY, nZ; Normal(hgt, x, y, S * 1.2, out nX, out nY, out nZ);
+                double ndl = Clamp(nX * lx + nY * ly + nZ * lz, 0, 1);
+                double h0 = hgt[x, y];
+                double ao = Clamp(1 - Math.Max(0, Avg(x, y, (int)(4 * S)) - h0) / 5.0 - Math.Max(0, Avg(x, y, (int)(14 * S)) - h0) / 16.0, 0.25, 1);
+                // warm grey granite: broad tone drift, dark mica and pale quartz flecks
+                double tone = 0.92 + (Fbm(u / 60.0, v / 60.0, 4, 410) - 0.5) * 0.30;
+                double r = 0.53 * tone, g = 0.50 * tone, b = 0.46 * tone;
+                double fl = Value(u * 1.6, v * 1.6, 411), fq = Value(u * 1.3 + 40, v * 1.3 + 40, 412);
+                if (fl > 0.86) { r *= 0.45; g *= 0.45; b *= 0.47; }
+                if (fq < 0.10) { r += 0.16; g += 0.15; b += 0.14; }
+                // lichen creeping in from the edges, moss in the deepest cuts
+                double lich = Clamp((Fbm(u / 9.0, v / 9.0, 3, 413) - 0.62) * 4, 0, 1) * Clamp(1 - (d - 4) / 30.0, 0, 1);
+                r += (0.70 - r) * lich * 0.55; g += (0.62 - g) * lich * 0.55; b += (0.30 - b) * lich * 0.55;
+                double moss = Clamp(groove[x, y] * 1.2 - 0.4, 0, 1) * Clamp((Fbm(u / 6.0, v / 6.0, 2, 414) - 0.5) * 3, 0, 1);
+                r += (0.20 - r) * moss * 0.5; g += (0.28 - g) * moss * 0.5; b += (0.14 - b) * moss * 0.5;
+                // the inside of a cut is rougher and a shade darker (fresh, unweathered stone)
+                double gr = groove[x, y];
+                r *= 1 - gr * 0.18; g *= 1 - gr * 0.18; b *= 1 - gr * 0.16;
+                double light = (0.16 + 0.95 * ndl * lit[x, y]) * ao;
+                r *= light * 1.15; g *= light * 1.15; b *= light * 1.15;
+                big[x, y, 0] = r; big[x, y, 1] = g; big[x, y, 2] = b;
+                big[x, y, 3] = Clamp(d * S / 1.2, 0, 1);
+            }
+        var img = new double[size, size, 4];
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                double sr = 0, sg = 0, sb = 0, sa = 0;
+                for (int j = 0; j < SS; j++)
+                    for (int i = 0; i < SS; i++)
+                    {
+                        double aa = big[x * SS + i, y * SS + j, 3];
+                        sr += big[x * SS + i, y * SS + j, 0] * aa; sg += big[x * SS + i, y * SS + j, 1] * aa;
+                        sb += big[x * SS + i, y * SS + j, 2] * aa; sa += aa;
+                    }
+                img[x, y, 3] = sa / (SS * SS);
+                if (sa > 0) { img[x, y, 0] = sr / sa; img[x, y, 1] = sg / sa; img[x, y, 2] = sb / sa; }
+            }
+        Save(img, tga, png);
+    }
+
+    // ---------------------------------------------------------------- the tally's compass
+    // Our own 3D compass (user choice, Nov 2026, after researching WoW's own: the archaeology survey tool, the
+    // minimap ring, compass doodads): four layers drawn in game over each other, lit like the Magic Box (gunmetal
+    // rubbed through to brass, cast shadows, ambient occlusion) from the top-left:
+    //   compass_dial   (256) the compass card, turned in game so its north points north: a dark blued-steel face,
+    //                  an engraved ring and ticks, a raised 8-point brass rose (ridged points: one face lit, one in
+    //                  shade), its north point red enamel
+    //   compass_needle (128) pointing up, turned in game to the target: a ridged diamond, red enamel tip, steel tail
+    //                  (drawn twice: once tinted black and nudged down-right as its shadow on the dial)
+    //   compass_bezel  (256) static, over both: a chunky chamfered ring (8 steel pyramid studs, a pale crystal set in
+    //                  the top: the distance lamp, tinted in game), a domed hub, a recessed window for the distance;
+    //                  inside the ring only the ring's shadow on the dial and a glint on the glass (alpha)
+    //   compass_glow   (64)  a soft white glow, tinted and added over the crystal in game
+    // Layout on the 256 grid: centre 128; ring outer radius 124, inner 86; the dial's disc radius 92 (under the
+    // ring); studs at radius 105; the crystal at (128, 22); the window centred at (128, 170), 56 x 18.
+    static double[,] CastShadows(double[,] hgt, double S, double lx, double ly, double lz, double reach)
+    {
+        int W = hgt.GetLength(0), H = hgt.GetLength(1);
+        double lh = Math.Sqrt(lx * lx + ly * ly), rise = lz / lh, dxl = lx / lh, dyl = ly / lh;
+        var lit = new double[W, H];
+        int maxSteps = (int)(reach * S);
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double h0 = hgt[x, y] + 0.2, occ = 0;
+                for (int i = 2; i < maxSteps; i++)
+                {
+                    int sx = (int)(x + dxl * i), sy = (int)(y + dyl * i);
+                    if (sx < 0 || sy < 0 || sx >= W || sy >= H) break;
+                    double du = i / S;
+                    double over = hgt[sx, sy] - (h0 + du * rise);
+                    if (over > 0) occ = Math.Max(occ, Clamp(over / (0.30 * du + 0.5), 0, 1));
+                    if (occ >= 1) break;
+                }
+                lit[x, y] = 1 - occ;
+            }
+        return lit;
+    }
+    static double[,] Occlusion(double[,] hgt, double S, double r1, double k1, double r2, double k2)
+    {
+        int W = hgt.GetLength(0), H = hgt.GetLength(1);
+        var sat = new double[W + 1, H + 1];
+        for (int y = 0; y < H; y++)
+        {
+            double row = 0;
+            for (int x = 0; x < W; x++) { row += hgt[x, y]; sat[x + 1, y + 1] = sat[x + 1, y] + row; }
+        }
+        Func<int, int, int, double> Avg = (x, y, rr) =>
+        {
+            int x0 = Math.Max(0, x - rr), y0 = Math.Max(0, y - rr), x1 = Math.Min(W, x + rr + 1), y1 = Math.Min(H, y + rr + 1);
+            return (sat[x1, y1] - sat[x0, y1] - sat[x1, y0] + sat[x0, y0]) / ((x1 - x0) * (y1 - y0));
+        };
+        var ao = new double[W, H];
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double h0 = hgt[x, y];
+                ao[x, y] = Clamp(1 - Math.Max(0, Avg(x, y, (int)(r1 * S)) - h0) / k1 - Math.Max(0, Avg(x, y, (int)(r2 * S)) - h0) / k2, 0.2, 1);
+            }
+        return ao;
+    }
+    static void Downsample(double[,,] big, int SS, string tga, string png)
+    {
+        int size = big.GetLength(0) / SS;
+        var img = new double[size, size, 4];
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                double sr = 0, sg = 0, sb = 0, sa = 0;
+                for (int j = 0; j < SS; j++)
+                    for (int i = 0; i < SS; i++)
+                    {
+                        double aa = big[x * SS + i, y * SS + j, 3];
+                        sr += big[x * SS + i, y * SS + j, 0] * aa; sg += big[x * SS + i, y * SS + j, 1] * aa;
+                        sb += big[x * SS + i, y * SS + j, 2] * aa; sa += aa;
+                    }
+                img[x, y, 3] = sa / (SS * SS);
+                if (sa > 0) { img[x, y, 0] = sr / sa; img[x, y, 1] = sg / sa; img[x, y, 2] = sb / sa; }
+            }
+        Save(img, tga, png);
+    }
+    static void CompassLight(out double lx, out double ly, out double lz)
+    {
+        lx = -0.55; ly = -0.62; lz = 0.62;
+        double ll = Math.Sqrt(lx * lx + ly * ly + lz * lz); lx /= ll; ly /= ll; lz /= ll;
+    }
+
+    public static void CompassBezel(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        int SS = 2, W = size * SS;
+        double S = W / 256.0, c = 128;
+        double Ro = 124, Ri = 86;
+        double gX = 128, gY = 22, gR = 8.5;              // the crystal
+        double wX = 128, wY = 170;                       // the distance window
+        // part: 0 nothing (the dial shows through), 1 ring, 2 stud, 3 crystal, 4 setting, 5 hub, 6 window
+        var part = new int[W, W];
+        var hgt = new double[W, W];
+        for (int y = 0; y < W; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double u = (x + 0.5) / S, v = (y + 0.5) / S;
+                double du = u - c, dv = v - c, r = Math.Sqrt(du * du + dv * dv);
+                int p = 0;
+                double h = 0;                                                    // the dial's level
+                if (r < Ro && r > Ri)
+                {
+                    // a chamfered ring: a steep cut up from the outside, a flat top, a chamfer down to the inner wall
+                    p = 1;
+                    double a = Ro - r, b = r - Ri;
+                    h = Math.Min(Math.Min(a / 6.0, 1) * 20, 12 + Math.Min(b / 9.0, 1) * 8);
+                    h += (Fbm(u / 5.0, v / 5.0, 2, 501) - 0.5) * 0.5;
+                }
+                // studs: eight steel pyramids round the ring (none at the top: the crystal sits there)
+                for (int k = 0; k < 8; k++)
+                {
+                    double an = (22.5 + 45 * k) * Math.PI / 180;
+                    double sx = c + Math.Sin(an) * 105, sy = c - Math.Cos(an) * 105;
+                    double md = Math.Abs(u - sx) + Math.Abs(v - sy);
+                    if (md < 6.5) { p = 2; h = Math.Max(h, 20 + 6 * (1 - md / 6.5)); }
+                }
+                // the crystal in its setting at the top
+                {
+                    double gd = Math.Sqrt((u - gX) * (u - gX) + (v - gY) * (v - gY));
+                    double hx = Hex(u - gX, v - gY, gR, Math.PI / 6);
+                    if (hx > 0) { p = 3; h = 22 + 8 * Clamp(hx / (gR * 0.85), 0, 1); }
+                    else if (gd < gR + 5) { p = 4; h = 20 + 5 * Math.Min(1, Math.Min(gR + 5 - gd, gd - gR + 1) / 2.0); }
+                }
+                // the hub: a domed brass cap over the needle's pivot
+                if (r < 12) { p = 5; h = 10 + 9 * Math.Sqrt(Math.Max(0, 1 - (r / 12) * (r / 12))); }
+                // the distance window: a recessed slot with a bevelled frame
+                {
+                    double wd = RoundRect(u, v, wX - 30, wY - 11, wX + 30, wY + 11, 5);
+                    if (wd > 0) { p = 6; h = wd < 3 ? 4 + 3 * Math.Min(wd, 3 - wd) : 1.5; }
+                }
+                part[x, y] = p; hgt[x, y] = h;
+            }
+        double lx, ly, lz; CompassLight(out lx, out ly, out lz);
+        var lit = CastShadows(hgt, S, lx, ly, lz, 40);
+        var ao = Occlusion(hgt, S, 4, 6, 12, 14);
+        double hxv = lx, hyv = ly, hzv = lz + 1; { double hl = Math.Sqrt(hxv * hxv + hyv * hyv + hzv * hzv); hxv /= hl; hyv /= hl; hzv /= hl; }
+        var big = new double[W, W, 4];
+        for (int y = 0; y < W; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double u = (x + 0.5) / S, v = (y + 0.5) / S;
+                double du = u - c, dv = v - c, r = Math.Sqrt(du * du + dv * dv);
+                int p = part[x, y];
+                double nX, nY, nZ; Normal(hgt, x, y, S * 1.3, out nX, out nY, out nZ);
+                double ndl = Clamp(nX * lx + nY * ly + nZ * lz, 0, 1), ndh = Clamp(nX * hxv + nY * hyv + nZ * hzv, 0, 1);
+                double sh = lit[x, y], o = ao[x, y];
+                if (p == 0)
+                {
+                    // over the dial: only the ring's shadow and a glint on the glass; outside the ring: nothing
+                    double shadow = r < Ri + 1 ? (1 - sh) * 0.62 + (1 - o) * 0.45 : 0;
+                    double gl = r < Ri ? Math.Exp(-(Math.Pow((du + 30) / 26, 2) + Math.Pow((dv + 38) / 12, 2))) * 0.22 : 0;
+                    double a = Clamp(shadow + gl, 0, 1);
+                    double wv = a > 0 ? gl / a : 0;
+                    big[x, y, 0] = wv; big[x, y, 1] = wv; big[x, y, 2] = wv; big[x, y, 3] = a * Clamp((Ro - r) * S / 1.2, 0, 1);
+                    continue;
+                }
+                double convex = 0;
+                if (p == 1)     // brass shows through only along the ring's two top edges, worn by handling
+                    convex = Math.Max(Math.Exp(-Math.Pow((r - 118) / 1.8, 2)), Math.Exp(-Math.Pow((r - 95) / 1.8, 2)))
+                             * Clamp((Fbm(u / 6.0, v / 6.0, 3, 502) - 0.25) * 2.0, 0, 1);
+                double br, bg, bb, shine;
+                if (p == 1) { br = 0.27 + 0.55 * convex; bg = 0.27 + 0.33 * convex; bb = 0.30 - 0.02 * convex; shine = 1.1 + 0.3 * convex; }
+                else if (p == 2) { br = 0.62; bg = 0.62; bb = 0.66; shine = 1.2; }
+                else if (p == 3) { br = 0.90; bg = 0.92; bb = 0.95; shine = 1.4; }        // a pale crystal: the glow tints it
+                else if (p == 4 || p == 5) { br = 0.82; bg = 0.60; bb = 0.27; shine = 1.2; }
+                else { br = 0.07; bg = 0.07; bb = 0.08; shine = 0.5; }                     // the window's dark slot
+                double diff = (0.08 + 1.0 * ndl * sh) * o;
+                double sky = Clamp(0.5 - nY * 0.5, 0, 1) * 0.18;
+                double rr = br * (diff + sky), gg = bg * (diff + sky), bb2 = bb * (diff + sky * 1.1);
+                double spec = (Math.Pow(ndh, 80) * 1.6 + Math.Pow(ndh, 14) * 0.3) * shine * sh;
+                double warm = (p == 4 || p == 5) ? 1 : convex;
+                rr += spec * (0.85 + 0.15 * warm); gg += spec * 0.9; bb2 += spec * (0.95 - 0.33 * warm);
+                if (p == 1)
+                {
+                    double sc = Math.Pow(1 - Math.Abs(Math.Sin((u * 0.9 - v * 0.4) / 1.8 + Fbm(u / 30.0, v / 30.0, 2, 503) * 20)), 70)
+                        * Clamp((Fbm(u / 20.0, v / 20.0, 2, 504) - 0.55) * 5, 0, 1);
+                    rr += sc * 0.25 * sh; gg += sc * 0.24 * sh; bb2 += sc * 0.22 * sh;
+                }
+                big[x, y, 0] = rr; big[x, y, 1] = gg; big[x, y, 2] = bb2;
+                big[x, y, 3] = Clamp((Ro - r) * S / 1.2, 0, 1);
+            }
+        Downsample(big, SS, tga, png);
+    }
+
+    public static void CompassDial(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        int SS = 2, W = size * SS;
+        double S = W / 256.0, c = 128, Rd = 92;
+        var hgt = new double[W, W];
+        var rose = new int[W, W];             // 0 face, 1 brass rose, 2 red (north) point, 3 brass tick / ring
+        for (int y = 0; y < W; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double u = (x + 0.5) / S, v = (y + 0.5) / S;
+                double du = u - c, dv = v - c, r = Math.Sqrt(du * du + dv * dv);
+                double h = (Fbm(r / 1.5, Math.Atan2(dv, du) * 40, 2, 511) - 0.5) * 0.35;   // a turned, brushed face
+                int p = 0;
+                // an engraved ring and ticks near the edge (every 22.5 degrees, the cardinal ones longer)
+                if (Math.Abs(r - 70) < 1.0) { h -= 1.2; p = 3; }
+                double an = Math.Atan2(du, -dv);                                      // 0 = up (north), clockwise
+                for (int k = 0; k < 16; k++)
+                {
+                    double a = k * Math.PI / 8;
+                    double d = Math.Abs(Math.IEEERemainder(an - a, 2 * Math.PI)) * r;
+                    double inner = (k % 4 == 0) ? 72 : 76;
+                    if (d < 1.3 && r > inner && r < 84) { h -= 1.4; p = 3; }
+                }
+                // the rose: eight ridged points (four long, four short), each a pyramid ridge along its axis
+                for (int k = 0; k < 8; k++)
+                {
+                    double a = k * Math.PI / 4;
+                    bool lng = k % 2 == 0;
+                    double len = lng ? 60 : 38, hw = lng ? 12 : 9;
+                    double ax = Math.Sin(a), ay = -Math.Cos(a);                       // the point's direction
+                    double along = du * ax + dv * ay, across = Math.Abs(-du * ay + dv * ax);
+                    if (along > -2 && along < len)
+                    {
+                        double w = hw * (1 - Math.Max(0, along) / len);
+                        if (across < w)
+                        {
+                            double ph = 7 * (1 - across / w) * (lng ? 1 : 0.8);
+                            if (ph > h) { h = ph; p = (k == 0) ? 2 : 1; }
+                        }
+                    }
+                }
+                if (r < 9) { h = Math.Max(h, 6 + 2 * (1 - r / 9)); p = 1; }        // the boss under the hub
+                hgt[x, y] = h; rose[x, y] = p;
+            }
+        double lx, ly, lz; CompassLight(out lx, out ly, out lz);
+        var lit = CastShadows(hgt, S, lx, ly, lz, 16);
+        var ao = Occlusion(hgt, S, 3, 3, 8, 6);
+        double hxv = lx, hyv = ly, hzv = lz + 1; { double hl = Math.Sqrt(hxv * hxv + hyv * hyv + hzv * hzv); hxv /= hl; hyv /= hl; hzv /= hl; }
+        var big = new double[W, W, 4];
+        for (int y = 0; y < W; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double u = (x + 0.5) / S, v = (y + 0.5) / S;
+                double du = u - c, dv = v - c, r = Math.Sqrt(du * du + dv * dv);
+                double nX, nY, nZ; Normal(hgt, x, y, S * 1.3, out nX, out nY, out nZ);
+                double ndl = Clamp(nX * lx + nY * ly + nZ * lz, 0, 1), ndh = Clamp(nX * hxv + nY * hyv + nZ * hzv, 0, 1);
+                double sh = lit[x, y], o = ao[x, y];
+                int p = rose[x, y];
+                double br, bg, bb, shine;
+                if (p == 1 || p == 3) { br = 0.84; bg = 0.62; bb = 0.28; shine = 1.2; }
+                else if (p == 2) { br = 0.92; bg = 0.89; bb = 0.80; shine = 1.0; }                 // north: ivory enamel (the needle is the red)
+                else { br = 0.17; bg = 0.19; bb = 0.24; shine = 0.6; }
+                double diff = (0.14 + 0.95 * ndl * sh) * o;
+                double rr = br * diff, gg = bg * diff, bb2 = bb * diff;
+                double spec = (Math.Pow(ndh, 70) * 1.3 + Math.Pow(ndh, 12) * 0.25) * shine * sh;
+                rr += spec; gg += spec * 0.9; bb2 += spec * (p == 0 ? 0.95 : 0.65);
+                big[x, y, 0] = rr; big[x, y, 1] = gg; big[x, y, 2] = bb2;
+                big[x, y, 3] = Clamp((Rd - r) * S / 1.2, 0, 1);
+            }
+        Downsample(big, SS, tga, png);
+    }
+
+    public static void CompassNeedle(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        int SS = 4, W = size * SS;
+        double S = W / 128.0, c = 64;
+        double tipLen = 50, tailLen = 34, hw = 6.5;
+        var hgt = new double[W, W];
+        var red = new bool[W, W];
+        var inside = new double[W, W];
+        for (int y = 0; y < W; y++)
+            for (int x = 0; x < W; x++)
+            {
+                double u = (x + 0.5) / S, v = (y + 0.5) / S;
+                double a = c - v, across = Math.Abs(u - c);                     // a > 0 towards the tip (up)
+                double w = a >= 0 ? hw * (1 - a / tipLen) : hw * (1 + a / tailLen);
+                if (w > 0 && across < w)
+                {
+                    hgt[x, y] = 5 * (1 - across / w);                             // a ridge down the middle: two facets
+                    red[x, y] = a > 0;
+                    inside[x, y] = Clamp((w - across) * S / 1.5, 0, 1);
+                }
+            }
+        double lx, ly, lz; CompassLight(out lx, out ly, out lz);
+        double hxv = lx, hyv = ly, hzv = lz + 1; { double hl = Math.Sqrt(hxv * hxv + hyv * hyv + hzv * hzv); hxv /= hl; hyv /= hl; hzv /= hl; }
+        var big = new double[W, W, 4];
+        for (int y = 0; y < W; y++)
+            for (int x = 0; x < W; x++)
+            {
+                if (inside[x, y] <= 0) continue;
+                double nX, nY, nZ; Normal(hgt, x, y, S * 1.6, out nX, out nY, out nZ);
+                double ndl = Clamp(nX * lx + nY * ly + nZ * lz, 0, 1), ndh = Clamp(nX * hxv + nY * hyv + nZ * hzv, 0, 1);
+                double br = red[x, y] ? 0.86 : 0.70, bg = red[x, y] ? 0.15 : 0.72, bb = red[x, y] ? 0.11 : 0.76;
+                double diff = 0.22 + 0.9 * ndl;
+                double spec = Math.Pow(ndh, 50) * (red[x, y] ? 0.9 : 1.3) + Math.Pow(ndh, 10) * 0.2;
+                big[x, y, 0] = br * diff + spec; big[x, y, 1] = bg * diff + spec * 0.95; big[x, y, 2] = bb * diff + spec * 0.95;
+                big[x, y, 3] = inside[x, y];
+            }
+        Downsample(big, SS, tga, png);
+    }
+
+    public static void CompassGlow(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        var img = new double[size, size, 4];
+        double c = size / 2.0;
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                double r = Math.Sqrt((x + 0.5 - c) * (x + 0.5 - c) + (y + 0.5 - c) * (y + 0.5 - c)) / c;
+                img[x, y, 0] = 1; img[x, y, 1] = 1; img[x, y, 2] = 1;
+                img[x, y, 3] = Clamp(Math.Exp(-r * r * 5) * 1.1 - 0.02, 0, 1);
+            }
+        Save(img, tga, png);
+    }
+
+    // The terminal's phosphor glow (white; tinted with the writing colour and added in game, stretched over the
+    // screen's opening): the opening's rounded shape, brightest in the middle, fading to the corners.
+    public static void CrtGlow(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        var img = new double[size, size, 4];
+        double rad = size * 0.08;
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                double u = x + 0.5, v = y + 0.5;
+                double d = RoundRect(u, v, 0, 0, size, size, rad);
+                double nx = u / size * 2 - 1, ny = v / size * 2 - 1;
+                double fall = 1 - Clamp(Math.Pow(nx * nx * nx * nx + ny * ny * ny * ny, 0.5), 0, 1);
+                img[x, y, 0] = 1; img[x, y, 1] = 1; img[x, y, 2] = 1;
+                img[x, y, 3] = Clamp(d / (size * 0.03), 0, 1) * (0.25 + 0.75 * fall);
+            }
+        Save(img, tga, png);
+    }
+
+    // The terminal's scanlines: a dark line every 4 rows (soft, so they hold up at any UI scale), black on
+    // alpha. Tiled one texel per pixel over the screen in game.
+    public static void Scanlines(string tga, string png, int size, int seed)
+    {
+        Seed = seed;
+        double[] row = { 0.0, 0.22, 1.0, 0.22 };
+        var img = new double[size, size, 4];
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+                img[x, y, 3] = row[y % 4];
+        Save(img, tga, png);
+    }
+
+    // ---------------------------------------------------------------- the magic box's click sounds
+    // A radar / sonar ping for picking a quest on the Gnomish Magic Box (user feedback: the first chirps were
+    // "too bouncy or kind of squeaky"). up = select: a clean sine ping (settling a touch in pitch as it rings),
+    // a faint bell-like overtone, a long soft decay into a small dark reverb, and a quiet "return" ping a third
+    // of a second later. Else deselect: lower, shorter, no return. 16-bit mono 44.1 kHz WAV, peak about -6 dBFS.
+    public static void Chirp(string wav, bool up, int seed)
+    {
+        Seed = seed;
+        int sr = 44100;
+        double dur = up ? 1.10 : 0.60;
+        int n = (int)(sr * dur);
+        var dry = new double[n];
+        double f0 = up ? 1240.0 : 830.0, tau = up ? 0.20 : 0.10;
+        // one ping: fundamental gliding down ~4% in its first 60 ms, an inharmonic overtone fading fast
+        System.Action<double, double> Ping = (start, amp) =>
+        {
+            double ph = 0, ph2 = 0;
+            for (int i = (int)(start * sr); i < n; i++)
+            {
+                double t = i / (double)sr - start;
+                double f = f0 * (1 + 0.04 * Math.Exp(-t / 0.02));
+                ph += 2 * Math.PI * f / sr; ph2 += 2 * Math.PI * f * 2.76 / sr;
+                double env = Math.Min(1, t / 0.004) * Math.Exp(-t / tau);
+                dry[i] += amp * env * (Math.Sin(ph) + 0.10 * Math.Exp(-t / 0.03) * Math.Sin(ph2));
+            }
+        };
+        Ping(0.0, 1.0);
+        if (up) { Ping(0.34, 0.16); Ping(0.52, 0.06); }    // the return: an echo coming back off something far away
+        // a small dark room: four damped feedback combs in parallel, then two allpasses (Schroeder)
+        int[] cd = { 1277, 1493, 1621, 1867 };
+        double fb = up ? 0.72 : 0.60, damp = 0.45;
+        var wet = new double[n];
+        foreach (int dl in cd)
+        {
+            var buf = new double[dl]; int k = 0; double lp = 0;
+            for (int i = 0; i < n; i++)
+            {
+                double o = buf[k];
+                lp = o * (1 - damp) + lp * damp;
+                buf[k] = dry[i] + lp * fb;
+                k = (k + 1) % dl;
+                wet[i] += o * 0.25;
+            }
+        }
+        foreach (int dl in new[] { 225, 556 })
+        {
+            var buf = new double[dl]; int k = 0;
+            for (int i = 0; i < n; i++)
+            {
+                double bo = buf[k], x = wet[i];
+                double y = -0.5 * x + bo;
+                buf[k] = x + 0.5 * y;
+                k = (k + 1) % dl;
+                wet[i] = y;
+            }
+        }
+        var s = new double[n];
+        double peak = 1e-9;
+        for (int i = 0; i < n; i++) { s[i] = dry[i] * 0.8 + wet[i] * 0.45; peak = Math.Max(peak, Math.Abs(s[i])); }
+        int fade = (int)(0.08 * sr);
+        using (var fs = new FileStream(wav, FileMode.Create))
+        using (var bw = new BinaryWriter(fs))
+        {
+            bw.Write(System.Text.Encoding.ASCII.GetBytes("RIFF")); bw.Write(36 + n * 2);
+            bw.Write(System.Text.Encoding.ASCII.GetBytes("WAVEfmt ")); bw.Write(16);
+            bw.Write((short)1); bw.Write((short)1); bw.Write(sr); bw.Write(sr * 2); bw.Write((short)2); bw.Write((short)16);
+            bw.Write(System.Text.Encoding.ASCII.GetBytes("data")); bw.Write(n * 2);
+            for (int i = 0; i < n; i++)
+            {
+                double g = Math.Min(1, (n - 1 - i) / (double)fade);
+                bw.Write((short)Math.Round(Clamp(s[i] / peak * 0.50 * g, -1, 1) * 32767));
+            }
+        }
+    }
+
+    // A TGA as a PNG that keeps its transparency (the usual previews sit on a green backdrop): for compositing layers
+    public static void PngWithAlpha(string tgaPath, string pngPath)
+    {
+        var img = LoadTga(tgaPath);
+        int W = img.GetLength(0), H = img.GetLength(1);
+        using (var bmp = new Bitmap(W, H, PixelFormat.Format32bppArgb))
+        {
+            for (int y = 0; y < H; y++)
+                for (int x = 0; x < W; x++)
+                    bmp.SetPixel(x, y, Color.FromArgb((int)(Clamp(img[x, y, 3], 0, 1) * 255), (int)(Clamp(img[x, y, 0], 0, 1) * 255),
+                        (int)(Clamp(img[x, y, 1], 0, 1) * 255), (int)(Clamp(img[x, y, 2], 0, 1) * 255)));
+            bmp.Save(pngPath, ImageFormat.Png);
+        }
+    }
+
     // ---------------------------------------------------------------- sheet edges (the quick tabs)
     static double[,,] LoadTga(string path)
     {

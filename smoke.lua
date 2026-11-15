@@ -69,6 +69,12 @@ Fire("ADDON_LOADED", "Handkerquest")
 Fire("PLAYER_ENTERING_WORLD")
 for _, t in ipairs(TIMERS or {}) do t() end; TIMERS = {}
 
+-- "Tasks apart" is on by default (user decision, Nov 2026); the older checks were written with it off
+check(CFQ.parchmentOpts.tallySeparate == true, "tasks apart is on by default")
+CFQ.parchmentOpts.tallySeparate = false
+-- the compass is on by default (tested on its own further down); off here so the older layout checks hold
+check(CFQ.parchmentOpts.compass == true and CFQ.parchmentOpts.compassRight == false, "the compass is on by default, top-left")
+CFQ.parchmentOpts.compass = false
 -- "For me" (your own tasks) is tested on its own near the end: off here so the older checks keep their room
 CFQ.parchmentOpts.forMe = false; P.OnTallyChoiceChanged()
 local f = QRF_ClusterShoppingList
@@ -318,8 +324,10 @@ CFQ.nearRadiusPercent = 10; Fire("ZONE_CHANGED")
 local before = CFQ.parchmentFont
 P.CycleFontStyle()
 check(CFQ.parchmentFont ~= before, "handwriting style cycles")
-for _ = 1, #P.FONT_STYLES - 1 do P.CycleFontStyle() end
-check(CFQ.parchmentFont == before, "handwriting style cycles back around")
+local pickable = 0
+for _, fs in ipairs(P.FONT_STYLES) do if not fs.hidden then pickable = pickable + 1 end end
+for _ = 1, pickable - 1 do P.CycleFontStyle() end
+check(CFQ.parchmentFont == before, "handwriting style cycles back around (skipping a look's own lettering)")
 
 -- 4c) Item-only wording fallback (untyped objectives)
 check(CFQ.IsCollectItemObjective(nil, "Scout's Report"), "possessive 'Scout's Report' stays an item")
@@ -897,10 +905,336 @@ do
     P.LayoutStamp(f)
 end
 
+-- phosphor terminal: green phosphor on a dark screen in a steel case (after the courier dispatch)
+do
+    local TEX = "Interface\\AddOns\\Handkerquest\\textures\\"
+    P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
+    local st = P.GetStyle()
+    check(CFQ.parchmentStyle == "TERMINAL" and st.label == "Gnomish Magic Box" and f.topSheet.body.__tex == TEX .. "phosphor_terminal",
+        "courier dispatch -> the Gnomish Magic Box, with its texture")
+    check(st.rigid and f.visibleBackSheets == 0 and f.shadowSheet.__shown and P.EffectiveFont().key == "TYPEWRITER"
+        and f.titleFS.inkKey:find("^TYPEWRITER:"), "phosphor terminal: one solid screen (no pile, a shadow, rigid), typed not written")
+    local C = f.crt
+    check(f.crtOn and C and C.glow.__shown and C.glow.__tex == TEX .. "crt_glow" and C.lines.__shown and C.lines.__tex == TEX .. "crt_scanlines",
+        "phosphor terminal: the phosphor's glow and the scanlines are up")
+    local w, h = f:GetWidth(), f:GetHeight()
+    local scr = st.crt.screen
+    check(math.abs(C.w - w * (1 - scr[1] - scr[3])) < 0.01 and math.abs(C.h - h * (1 - scr[2] - scr[4])) < 0.01 and math.abs(C.lines.__tc[2] - C.w / 32) < 1e-6
+        and math.abs(C.lines.__tc[4] - C.h / 32) < 1e-6, "phosphor terminal: scanlines tile one texel a pixel over the screen's opening")
+    check(f.padL == math.floor(w * 0.115 + 0.5) and f.padB == math.floor(h * 0.145 + 0.5) and st.inset[1] > scr[1] + 6 / 512
+        and st.inset[2] > scr[2] + 6 / 512, "phosphor terminal: the writing stays on the glass, clear of the brackets")
+    P.AnimateCrt(f, 1.0)
+    check(C.rollA.__shown or C.rollB.__shown, "phosphor terminal: a band of light rolls down the screen")
+    P.AnimateCrt(f, 5.0)
+    check(not C.rollA.__shown and not C.rollB.__shown, "...then the screen rests until the next one")
+    P.AnimateCrt(f, 0.1)
+    local _, _, _, cx = C.cursor:GetPoint(1)
+    local cursorOn = C.cursor.__shown and cx and cx > 0
+    P.AnimateCrt(f, 0.7)
+    check(cursorOn and not C.cursor.__shown, "phosphor terminal: a block cursor blinks after the heading")
+    local th = f.titleFS.halo
+    check(th and th[1].__shown and th[1].haloCol[2] == 1.00 and th[1].haloCol[1] < 0.5, "phosphor terminal: a green glow round the heading")
+    local fl = {}
+    for k = 0, 600 do fl[#fl + 1] = P.CrtFlicker(k / 60) end
+    table.sort(fl)
+    check(fl[1] < 0.7 and fl[#fl] <= 1.0 and fl[math.floor(#fl / 2)] > 0.85, "phosphor terminal: a faint flicker, now and then a dip")
+    P.UpdateCorner(f); f.corner.drawnKey = nil; P.DrawCorner(f.corner)
+    check(not anyShown(f.corner.flap) and f.corner.foldEdge.__shown, "phosphor terminal: a corner mark in light, glass doesn't fold")
+    -- Screen colour (like Arcane script's runes): the phosphor, and the words unless the box has its own writing colour
+    local Same = P.SameColor
+    local amber, pink, white = P.TERMINAL_SCREEN_COLORS[2].c, P.TERMINAL_SCREEN_COLORS[5].c, { 1, 1, 1 }
+    P.SetTallyColor("screen", amber)
+    st = P.GetStyle()
+    check(Same(CFQ.terminalScreenColor, amber) and Same(QRF_SavedState.terminalScreenColor, amber) and Same(st.halo.color, amber)
+        and Same(st.crt.color, amber) and Same(st.ink, amber) and Same(P.INK, amber) and math.abs(st.wash[2] - 0.70) < 1e-6
+        and Same(C.glow.__vc, amber) and Same(C.cursor.__vc, amber), "magic box: an amber screen turns the glow, cursor, highlights and words amber")
+    check(Same(P.GetTallyColor("ink"), amber) and CFQ.inkColors.TERMINAL == nil, "magic box: its own writing colour is now the screen's")
+    P.SetTallyColor("ink", white)
+    check(Same(st.ink, white) and Same(st.halo.color, amber) and Same(st.crt.color, amber), "magic box: white words on an amber glow")
+    P.SetTallyColor("screen", pink)
+    check(Same(st.ink, white) and Same(st.halo.color, pink), "magic box: a new screen colour keeps the box's own writing colour")
+    P.SetTallyColor("ink", nil); P.SetTallyColor("screen", nil)
+    check(Same(st.halo.color, st.crt.color) and st.halo.color[2] == 1.00 and math.abs(st.wash[1] - 0.36) < 1e-6
+        and math.abs(st.corner.edge[1] - 0.36) < 1e-6 and Same(st.ink, P.StyleDefaults(st).ink), "magic box: back to its own green")
+    QRF_SavedState.terminalScreenColor = { 0.20, 0.95, 1.00 }
+    Fire("ADDON_LOADED", "Handkerquest")
+    check(Same(CFQ.terminalScreenColor, { 0.20, 0.95, 1.00 }), "magic box: the screen colour loads")
+    P.SetTallyColor("screen", nil)
+    -- picking a quest beeps: the box's own chirp (the first file this client plays), Blizzard's sound on other looks
+    local played, kits = {}, {}
+    local oldFile, oldKit = PlaySoundFile, PlaySound
+    PlaySoundFile = function(path) played[#played + 1] = path; return path:find("%.wav$") ~= nil end
+    PlaySound = function(kit) kits[#kits + 1] = kit end
+    local got = P.PlayLookSound("on", 111)
+    check(got == "Interface\\AddOns\\Handkerquest\\sounds\\box_select.wav" and #played == 2 and played[1]:find("%.ogg$") and #kits == 0,
+        "magic box: picking a quest plays its ping (.ogg, then .wav, then .mp3)")
+    PlaySoundFile = function(path) played[#played + 1] = path; return false end
+    check(P.PlayLookSound("off", 222) == 222 and kits[1] == 222, "magic box: no file it can play = the usual sound")
+    CFQ.parchmentStyle = "RAG"; P.ApplyStyle()
+    played, kits = {}, {}
+    P.PlayLookSound("on", 333)
+    check(#played == 0 and kits[1] == 333, "other looks: the usual waypoint sound")
+    -- /hanky ping: tries the box's sound on any look and says which file played
+    local said = {}
+    local oldPrint = print
+    print = function(s) said[#said + 1] = s end
+    PlaySoundFile = function(path) played[#played + 1] = path; return path:find("%.mp3$") ~= nil end
+    SlashCmdList["HANDKERQUEST"]("ping")
+    PlaySoundFile = function() return false end
+    SlashCmdList["HANDKERQUEST"]("ping off")
+    print = oldPrint
+    check(said[1] and said[1]:find("box_select%.mp3") and said[2] and said[2]:find("wouldn't play") and said[2]:find("start it again"),
+        "/hanky ping says which file played, or why nothing did")
+    PlaySoundFile, PlaySound = oldFile, oldKit
+    for _, name in ipairs({ "box_select", "box_deselect" }) do
+        local fh = io.open(here .. "/sounds/" .. name .. ".mp3", "rb")
+        local head = fh and fh:read(3)
+        if fh then fh:close() end
+        check(head == "ID3" or (head and head:byte(1) == 0xFF), "magic box: sounds/" .. name .. ".mp3 is an MP3")
+    end
+    CFQ.parchmentStyle = "TERMINAL"; P.ApplyStyle(); Fire("ZONE_CHANGED")
+    for _, name in ipairs({ "select", "deselect" }) do
+        local fh = io.open(here .. "/sounds/box_" .. name .. ".wav", "rb")
+        local head = fh and fh:read(12)
+        if fh then fh:close() end
+        check(head and head:sub(1, 4) == "RIFF" and head:sub(9, 12) == "WAVE", "magic box: sounds/box_" .. name .. ".wav is a WAV")
+    end
+    check(P.SHEET_EDGES.TERMINAL and #P.SHEET_EDGES.TERMINAL.b == 21 and #P.SHEET_EDGES.TERMINAL.r == 21, "phosphor terminal: its edge is measured for the tabs")
+    for _, name in ipairs({ "terminal", "phosphor", "crt", "screen", "monitor", "computer", "wasteland", "box", "magicbox", "magic box",
+        "gnome", "gnomish", "cyber", "cyberpunk" }) do
+        CFQ.parchmentStyle = "RAG"; SlashCmdList["HANDKERQUEST"]("look " .. name)
+        check(CFQ.parchmentStyle == "TERMINAL", "/hanky look " .. name)
+    end
+    CFQ.parchmentStyle = "RAG"; SlashCmdList["HANDKERQUEST"]("look magic")
+    check(CFQ.parchmentStyle == "ARCANE", "/hanky look magic is still arcane script")
+    for name, size in pairs({ phosphor_terminal = 512, crt_glow = 256, crt_scanlines = 32 }) do
+        local fh = io.open(here .. "/textures/" .. name .. ".tga", "rb")
+        local head = fh and fh:read(18)
+        if fh then fh:close() end
+        check(head and head:byte(3) == 2 and head:byte(13) + head:byte(14) * 256 == size and head:byte(15) + head:byte(16) * 256 == size
+            and head:byte(17) == 32, "phosphor terminal: textures/" .. name .. ".tga is a " .. size .. "x" .. size .. " 32-bit TGA")
+    end
+    -- other looks put it all away
+    CFQ.parchmentStyle = "DISPATCH"; P.ApplyStyle(); Fire("ZONE_CHANGED")
+    check(not f.crtOn and not C.glow.__shown and not C.lines.__shown and not C.cursor.__shown, "phosphor terminal: other looks have no screen")
+    CFQ.parchmentStyle = "TERMINAL"; P.ApplyStyle(); Fire("ZONE_CHANGED")
+end
+
+-- dwarven runestone: a granite slab, the list carved in (after the magic box)
+do
+    local TEX = "Interface\\AddOns\\Handkerquest\\textures\\"
+    P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
+    local st = P.GetStyle()
+    check(CFQ.parchmentStyle == "DWARVEN" and st.label == "Dwarven runestone" and f.topSheet.body.__tex == TEX .. "dwarven_tablet",
+        "magic box -> dwarven runestone, with its texture")
+    check(st.rigid and f.visibleBackSheets > 0 and P.EffectiveFont().key == st.font and f.titleFS.inkKey:find("^" .. st.font .. ":"),
+        "dwarven runestone: rigid stone, tablets piled underneath, its own locked lettering")
+    local cc = f.titleFS.carveCopy
+    local sh = f.titleFS.__shadow
+    local gf = P.EffectiveFont()
+    check(cc and cc.__shown and cc.__font and cc.__font[1] == gf.lit and f.titleFS.__font[1] == gf.path and cc.__textColor[1] > 0.75
+        and cc.__textColor[4] > 0.9 and cc.__points[1][4] == 0 and cc.__points[1][5] == 0 and cc.__text == P.PlainText(f.titleFS.__text),
+        "dwarven runestone: V-cut letters: the shaded walls are the words, the lit walls laid exactly over them in pale stone")
+    check(sh and sh[1] < 0.1 and sh[4] > 0.3 and f.titleFS.__shadowOff[1] == -1 and f.titleFS.__shadowOff[2] == 1,
+        "dwarven runestone: ...and a little shadow at each cut's upper-left edge")
+    check(f.inkGrain and f.inkGrain.__shown and f.inkGrain.tex.__tex == TEX .. "granite_grain", "dwarven runestone: granite grain roughens the cuts")
+    check(P.BLEED and P.BLEED[1] > 0.8, "dwarven runestone: ticks and boxes get the same pale lip")
+    local lineFS = f.chrome:CreateFontString(nil, "OVERLAY")
+    P.SetInkFont(lineFS, "item")
+    P.SetHalo(lineFS, "|cFFFF0000Gnoll|r Paw", P.INK)
+    check(lineFS.carveCopy and lineFS.carveCopy.__shown and lineFS.carveCopy.__text == "Gnoll Paw", "dwarven runestone: list lines are carved the same way (colour codes left out of the lip)")
+    P.UpdateCorner(f); f.corner.drawnKey = nil; P.DrawCorner(f.corner)
+    check(not anyShown(f.corner.flap) and f.corner.foldEdge.__shown, "dwarven runestone: a carved corner mark, stone doesn't fold")
+    P.SetTallyColor("ink", { 0.55, 0.20, 0.12 })
+    check(P.SameColor(st.ink, { 0.55, 0.20, 0.12 }) and f.titleFS.carveCopy.__textColor[1] > 0.75, "dwarven runestone: painted runes keep the stone's lit wall")
+    P.SetTallyColor("ink", nil)
+    check(P.SHEET_EDGES.DWARVEN and #P.SHEET_EDGES.DWARVEN.b == 21 and #P.SHEET_EDGES.DWARVEN.r == 21, "dwarven runestone: its edge is measured for the tabs")
+    -- Runecut: our own straight-stroke rune font (tools\RuneFont.cs); the angular built-in face if the client won't load it
+    local sc = P.EffectiveFont()
+    check(st.font == "RUNEGROOVE" and sc.key == "RUNEGROOVE" and sc.hidden and sc.path == "Interface\\AddOns\\Handkerquest\\fonts\\RunecutShade.ttf"
+        and sc.lit == "Interface\\AddOns\\Handkerquest\\fonts\\RunecutLit.ttf" and sc.fallback == "RUNECUT" and f.titleFS.__font[1] == sc.path,
+        "dwarven runestone: cut in the V-grooved Runecut (shaded and lit walls)")
+    for _, name in ipairs({ "Runecut", "RunecutShade", "RunecutLit" }) do
+        local fh = io.open(here .. "/fonts/" .. name .. ".ttf", "rb")
+        local ttf = fh and fh:read("*a") or ""
+        if fh then fh:close() end
+        check(ttf:sub(1, 4) == "\0\1\0\0" and ttf:find("glyf", 1, true) and ttf:find("cmap", 1, true) and #ttf > 10000,
+            "Runecut: fonts/" .. name .. ".ttf is there (a TrueType file with outlines and a character map)")
+    end
+    local fbFS = f.chrome:CreateFontString(nil, "OVERLAY")
+    local realSF = fbFS.SetFont
+    fbFS.SetFont = function(self, path, size, flags)
+        if path == sc.path then return false end
+        return realSF(self, path, size, flags)
+    end
+    P.SetInkFont(fbFS, "item")
+    check(fbFS.__font[1] == "Interface\\AddOns\\Handkerquest\\fonts\\Runecut.ttf", "Runecut: without the V-groove fonts, plain Runecut")
+    local fb2 = f.chrome:CreateFontString(nil, "OVERLAY")
+    local realSF2 = fb2.SetFont
+    fb2.SetFont = function(self, path, size, flags)
+        if path:find("Runecut", 1, true) then return false end
+        return realSF2(self, path, size, flags)
+    end
+    P.SetInkFont(fb2, "item")
+    check(fb2.__font[1] == "Fonts\\SKURRI.TTF", "Runecut: a client that can't load any of them carves in the angular Rough scrawl, not plain print")
+    for _, name in ipairs({ "dwarf", "dwarven", "runestone", "runic", "granite", "carving" }) do
+        CFQ.parchmentStyle = "RAG"; SlashCmdList["HANDKERQUEST"]("look " .. name)
+        check(CFQ.parchmentStyle == "DWARVEN", "/hanky look " .. name)
+    end
+    for name, size in pairs({ dwarven_tablet = 512, granite_grain = 128 }) do
+        local fh = io.open(here .. "/textures/" .. name .. ".tga", "rb")
+        local head = fh and fh:read(18)
+        if fh then fh:close() end
+        check(head and head:byte(13) + head:byte(14) * 256 == size and head:byte(17) == 32, "dwarven runestone: textures/" .. name .. ".tga is " .. size .. "px, 32-bit")
+    end
+    -- the Items / Tasks headings are cut as deep as the lines (full ink, line size), and their copies go with them
+    CFQ.parchmentStyle = "DWARVEN"; P.ApplyStyle()
+    st = P.GetStyle()
+    P.DrawKindHeading(f, 1, "Items", -10, 200, st)
+    local kh = f.kindHeads[1]
+    check(kh.fs.__shown and kh.fs.carveCopy and kh.fs.carveCopy.__shown and P.SameColor(kh.fs.__textColor, st.ink)
+        and kh.fs.inkKind == "item", "dwarven runestone: the Items / Tasks headings are carved in full ink at line size")
+    P.HideKindHeadings(f)
+    check(not kh.fs.__shown and not kh.fs.carveCopy.__shown, "dwarven runestone: a hidden heading takes its carved lip with it")
+    CFQ.parchmentStyle = "RAG"; P.ApplyStyle()
+    P.DrawKindHeading(f, 1, "Items", -10, 200, P.GetStyle())
+    check(kh.fs.inkKind == "small" and P.SameColor(kh.fs.__textColor, P.GetStyle().sub), "other looks: the headings stay small, in the sub ink")
+    P.HideKindHeadings(f)
+    Fire("ZONE_CHANGED")
+    check(not (f.titleFS.carveCopy and f.titleFS.carveCopy.__shown), "dwarven runestone: other looks aren't carved")
+    CFQ.parchmentStyle = "DWARVEN"; P.ApplyStyle(); Fire("ZONE_CHANGED")
+end
+
+-- the compass: over the top-left (or top-right) corner, pointing at the nearest thing to do
+do
+    local look0 = CFQ.parchmentStyle
+    CFQ.parchmentStyle = "RAG"; P.ApplyStyle(); Fire("ZONE_CHANGED")
+    CFQ.parchmentOpts.compass = true; P.CompassChanged()
+    local c = f.compass
+    local pt, rel, relPt, cx, cy
+    if c then pt, rel, relPt, cx, cy = c:GetPoint(1) end
+    local _, _, _, tx = f.titleFS:GetPoint(1)
+    check(c and c.__shown and rel == f.chrome and relPt == "TOPLEFT" and cx > 0 and cy < 0
+        and tx >= cx + P.CMP_SIZE / 2, "compass: over the top-left corner, the heading starts past it")
+    check(QRF_SavedState.parchmentOpts.compass == true, "compass: switching it on is saved")
+
+    -- the needle: the mock's world position is the map position x 4000 (X = north, Y = west); you stand at 0.55, 0.60
+    local pwx, pwy = 0.55 * 4000, 0.60 * 4000
+    PLAYER_FACING = 0
+    P.cmpTargets = {
+        { questID = 901, title = "Up north", c = 1, wx = pwx + 100, wy = pwy },
+        { questID = 902, title = "Far west", c = 1, wx = pwx, wy = pwy + 300, what = "Gnoll Paw" },
+        { questID = 903, title = "Another continent", c = 2, wx = pwx + 5, wy = pwy },
+    }
+    local TEXC = "Interface\\AddOns\\Handkerquest\\textures\\compass_"
+    check(c.dial.__tex == TEXC .. "dial" and c.needle.__tex == TEXC .. "needle" and c.shadow.__tex == TEXC .. "needle"
+        and c.bezel.__tex == TEXC .. "bezel" and c.lamp.__tex == TEXC .. "glow" and c.canRotate and c:GetWidth() == P.CMP_SIZE,
+        "compass: our own 3D layers (dial, needle and its shadow, bezel, the crystal's glow)")
+    for _, name in ipairs({ "dial", "needle", "bezel", "glow" }) do
+        local fh = io.open(here .. "/textures/compass_" .. name .. ".tga", "rb")
+        local head = fh and fh:read(18)
+        if fh then fh:close() end
+        check(head and head:byte(3) == 2 and head:byte(17) == 32, "compass: textures/compass_" .. name .. ".tga is a 32-bit TGA")
+    end
+    c.ang = nil
+    P.UpdateCompass(f); P.AnimateCompass(f, 0)
+    check(c.target and c.target.questID == 901 and math.abs(c.needle.__rotation) < 1e-6 and math.abs(c.shadow.__rotation) < 1e-6
+        and c.dist.__text == "100 yd" and c.needle.__shown and math.abs(c.dial.__rotation) < 1e-6,
+        "compass: the nearest target (100 yd due north) straight up while you face north, the dial's north up")
+    check(c.lamp.__shown and c.lamp.__vc[1] > 0.9 and c.lamp.__vc[2] > 0.6 and c.band.blink > 0, "compass: 100 yd = the crystal blinks yellow")
+    PLAYER_FACING = math.pi / 2                                  -- facing west: north is now to your right
+    P.UpdateCompass(f)
+    check(math.abs(c.goal + math.pi / 2) < 1e-6 and math.abs(c.dial.__rotation + math.pi / 2) < 1e-6,
+        "compass: turn west: the needle's goal swings right, the dial turns its north to your right")
+    P.AnimateCompass(f, 0.03)
+    check(c.ang < 0 and c.ang > -math.pi / 2 + 0.1, "compass: ...the needle eases round, not jumping (" .. string.format("%.2f", c.ang) .. ")")
+    P.AnimateCompass(f, 5)
+    check(math.abs(c.needle.__rotation + math.pi / 2) < 1e-6, "compass: ...and settles on the bearing")
+    local _, _, _, nx = c.north:GetPoint(1)
+    check(nx > 0, "compass: ...and the N swings round with the dial")
+    c.ang = 3.0; c.goal = -3.0                                   -- across the back: the short way round
+    P.AnimateCompass(f, 0.05)
+    check(c.ang > 3.0, "compass: the needle swings the short way round")
+    local realST = C_SuperTrack.GetSuperTrackedQuestID
+    C_SuperTrack.GetSuperTrackedQuestID = function() return 902 end
+    PLAYER_FACING = 0
+    P.UpdateCompass(f); P.AnimateCompass(f, 5)
+    check(c.target.questID == 902 and c.target.tracked and math.abs(c.needle.__rotation - math.pi / 2) < 1e-6 and c.dist.__text == "300 yd"
+        and c.lamp.__vc[2] < 0.4 and c.band.blink == 0, "compass: a tracked quest wins over the nearest (300 yd west: needle left, the crystal steady red)")
+    -- "...point at the quest you track" off: always the nearest, whatever you track
+    check(CFQ.parchmentOpts.compassTracked == true, "compass: points at the quest you track by default")
+    CFQ.parchmentOpts.compassTracked = false
+    P.UpdateCompass(f); P.AnimateCompass(f, 5)
+    check(c.target.questID == 901 and not c.target.tracked and math.abs(c.needle.__rotation) < 1e-6,
+        "compass: set to always the nearest, it ignores the tracked quest (needle back north to the nearest)")
+    CFQ.parchmentOpts.compassTracked = true
+    C_SuperTrack.GetSuperTrackedQuestID = realST
+    P.cmpTargets[1].wx = pwx + 30
+    P.UpdateCompass(f); P.AnimateCompass(f, 0)
+    check(c.lamp.__vc[2] > 0.9 and c.band.blink > 2, "compass: within 50 yd the crystal blinks green, fast")
+    local sets, realSet = 0, c.dist.SetText
+    c.dist.SetText = function(self, s) sets = sets + 1; return realSet(self, s) end
+    P.UpdateCompass(f); P.UpdateCompass(f)
+    c.dist.SetText = realSet
+    check(sets == 0, "compass: the distance is only re-written when it changes")
+    PLAYER_FACING = nil
+    P.UpdateCompass(f); P.AnimateCompass(f, 0)
+    check(not c.needle.__shown and not c.lamp.__shown and c.dist.__text == "30 yd", "compass: no facing (some instances) = no needle, just the distance")
+    PLAYER_FACING = 0
+    P.cmpTargets = {}
+    P.UpdateCompass(f); P.AnimateCompass(f, 0)
+    check(not c.needle.__shown and c.target == nil and not c.lamp.__shown, "compass: nothing to point at = no needle, the crystal dark")    check(P.CompassDistText(4) == "here" and P.CompassDistText(2345) == "2.3k yd", "compass: distances read 'here', yards, thousands")
+
+    -- targets come from the tally's quests: objective areas and loot spots of unfinished items
+    P.BuildCompassTargets({ { questID = 911, title = "Q", mapID = 57, x = 0.5, y = 0.5,
+        itemObjectives = { { progKey = "911_1", itemName = "Paw", finished = false }, { progKey = "911_2", itemName = "Done", finished = true } } } })
+    local realSpots = CFQ.huntSpots["911_1"]
+    CFQ.huntSpots["911_1"] = { { m = 57, x = 0.52, y = 0.61, n = 2 } }
+    CFQ.huntSpots["911_2"] = { { m = 57, x = 0.1, y = 0.1, n = 1 } }
+    P.BuildCompassTargets({ { questID = 911, title = "Q", mapID = 57, x = 0.5, y = 0.5,
+        itemObjectives = { { progKey = "911_1", itemName = "Paw", finished = false }, { progKey = "911_2", itemName = "Done", finished = true } } } })
+    check(#P.cmpTargets == 2 and P.cmpTargets[2].what == "Paw", "compass: aims at objective areas and loot spots of unfinished items")
+    CFQ.huntSpots["911_1"], CFQ.huntSpots["911_2"] = realSpots, nil
+
+    -- the other corner: the close button and gear make room
+    c:GetScript("OnClick")(c, "RightButton")
+    pt, rel, relPt, cx, cy = c:GetPoint(1)
+    local _, _, _, closeX = f.closeBtn:GetPoint(1)
+    _, _, _, tx = f.titleFS:GetPoint(1)
+    check(CFQ.parchmentOpts.compassRight and relPt == "TOPRIGHT" and cx < 0 and closeX <= cx - P.CMP_SIZE / 2
+        and tx == 10 + f.padL, "compass: right-click moves it to the top-right; the close button steps aside, the heading goes back")
+    P.cmpTargets = { { questID = 901, title = "Up north", c = 1, wx = pwx + 100, wy = pwy } }
+    c.target = P.CompassTarget()
+    local tracked
+    local realToggle = CFQ.ToggleSuperTrack
+    CFQ.ToggleSuperTrack = function(id) tracked = id end
+    c:GetScript("OnClick")(c, "LeftButton")
+    CFQ.ToggleSuperTrack = realToggle
+    check(tracked == 901, "compass: clicking it tracks the quest it points at")
+    SlashCmdList["HANDKERQUEST"]("compass left")
+    check(CFQ.parchmentOpts.compass and not CFQ.parchmentOpts.compassRight, "/hanky compass left")
+    SlashCmdList["HANDKERQUEST"]("compass nearest")
+    check(CFQ.parchmentOpts.compass and not CFQ.parchmentOpts.compassTracked and QRF_SavedState.parchmentOpts.compassTracked == false,
+        "/hanky compass nearest (saved)")
+    SlashCmdList["HANDKERQUEST"]("compass tracked")
+    check(CFQ.parchmentOpts.compassTracked, "/hanky compass tracked")
+    -- the options: on / off, the corner, and what it points at (greyed while the compass is off)
+    local tc, rc = CFQ.compassTrackedCheck, CFQ.compassRightCheck
+    CFQ.RefreshOptionsPanel()
+    check(tc and rc and tc.__alpha == 1 and rc.__alpha == 1, "compass options: its corner and target switches are live while it's on")
+    SlashCmdList["HANDKERQUEST"]("compass off")
+    check(not CFQ.parchmentOpts.compass and not c.__shown, "/hanky compass off hides it")
+    CFQ.RefreshOptionsPanel()
+    check(tc.__alpha == 0.45 and rc.__alpha == 0.45, "compass options: greyed while the compass is off")
+    _, _, _, tx = f.titleFS:GetPoint(1)
+    check(tx == 10 + f.padL, "compass off: the heading back at the margin")
+    CFQ.parchmentStyle = look0; P.ApplyStyle(); Fire("ZONE_CHANGED")
+end
+
 -- arcane script: words of light in the air, a turning rune circle, drifting motes, no pile
 P.CycleStyle(); P.ApplyStyle(); Fire("ZONE_CHANGED")
 check(CFQ.parchmentStyle == "ARCANE" and f.arcaneOn and f.arcane.ring.__shown
-    and f.arcane.ring.__tex == "Interface\\AddOns\\Handkerquest\\textures\\arcane_ring", "courier dispatch -> arcane script: the rune circle is up")
+    and f.arcane.ring.__tex == "Interface\\AddOns\\Handkerquest\\textures\\arcane_ring", "dwarven runestone -> arcane script: the rune circle is up")
 check(f.visibleBackSheets == 0 and not f.shadowSheet.__shown, "arcane script: no pile of pages, no shadow")
 local th = f.titleFS.halo
 check(th and th[1].__shown and th[1].__vc == nil and th[1].haloCol[3] == 1.0 and th[1].haloCol[1] < 0.7,
@@ -1084,6 +1418,21 @@ check(apPage.look and apPage.font and apPage.look.w ~= apMain.look.w and CFQ.app
     "options: ...and the same controls on the Appearance page")
 check(CFQ.inkColorRow and CFQ.runeColorRow and CFQ.runeColorRow.__shown ~= false and CFQ.runeColorRow.__alpha == 0.45
     and CFQ.textSizeRow, "options: writing colour, rune colour (greyed unless Arcane script) and text size with them")
+check(CFQ.screenColorRow and CFQ.screenColorRow.__alpha == 0.45 and #CFQ.screenColorRow.swatches == #P.TERMINAL_SCREEN_COLORS
+    and CFQ.screenColorRow.__points[1][5] < CFQ.runeColorRow.__points[1][5], "options: screen colour under the runes, greyed unless the magic box")
+if CFQ.parchmentStyle ~= "TERMINAL" then
+    local keep = CFQ.parchmentStyle
+    CFQ.parchmentStyle = "TERMINAL"; P.ApplyStyle(); CFQ.RefreshOptionsPanel()
+    local row = CFQ.screenColorRow
+    check(row.__alpha == 1 and row.swatches[1].selected, "options: the screen colour is live on the magic box, its own green picked")
+    row.swatches[4]:GetScript("OnClick")(row.swatches[4])
+    check(P.SameColor(CFQ.terminalScreenColor, P.TERMINAL_SCREEN_COLORS[4].c) and row.swatches[4].selected
+        and P.SameColor(CFQ.inkColorRow.swatches[1].fill.__color, P.TERMINAL_SCREEN_COLORS[4].c),
+        "options: neon cyan screen (and the writing's first swatch shows the box's cyan)")
+    row.swatches[1]:GetScript("OnClick")(row.swatches[1])
+    check(CFQ.terminalScreenColor == nil, "options: back to the box's own green")
+    CFQ.parchmentStyle = keep; P.ApplyStyle(); CFQ.RefreshOptionsPanel()
+end
 CFQ.OpenAppearance()
 check(OPENED_SETTINGS == 100 and CFQ.appearancePanel:IsShown(), "options: CFQ.OpenAppearance opens the Appearance page")
 SlashCmdList["HANDKERQUEST"]("options")
@@ -1094,7 +1443,9 @@ local fontBtn = apMain.font and apMain.font.w
 check(fontBtn ~= nil and fontBtn.__text == "Handwriting: Quill script", "handwriting button shows Quill script by default")
 if fontBtn then
     local fl = fontBtn.list
-    check(fl and fl == CFQ.fontDropDown and not fl.__shown and #fl.rows == #P.FONT_STYLES, "handwriting drop-down: one row per hand, closed")
+    local pickableHands = 0
+    for _, fs in ipairs(P.FONT_STYLES) do if not fs.hidden then pickableHands = pickableHands + 1 end end
+    check(fl and fl == CFQ.fontDropDown and not fl.__shown and #fl.rows == pickableHands, "handwriting drop-down: one row per hand you can pick, closed")
     fontBtn:GetScript("OnClick")(fontBtn)
     check(fl.__shown and fl.rows[1].tick.__shown and not fl.rows[2].tick.__shown, "handwriting drop-down: opens with the current hand ticked")
     check(fl.rows[1].label.__font[1] == "Fonts\\MORPHEUS.TTF" and fl.rows[2].label.__font[1] == "Fonts\\SKURRI.TTF",
@@ -1111,7 +1462,7 @@ local lookBtn = apMain.look and apMain.look.w      -- the main page's (the Appea
 check(lookBtn ~= nil and lookBtn.__text == "Look: Handkerchief notes", "options show Look: Handkerchief notes")
 if lookBtn then
     local list = lookBtn.list
-    check(list and not list.__shown and #list.rows == #P.STYLES and #P.STYLES == 14, "look drop-down: one row per look (14), closed")
+    check(list and not list.__shown and #list.rows == #P.STYLES and #P.STYLES == 16, "look drop-down: one row per look (16), closed")
     lookBtn:GetScript("OnClick")(lookBtn)
     check(list.__shown and list.rows[1].tick.__shown and not list.rows[2].tick.__shown, "clicking the button opens the list, the handkerchief ticked")
     check(list.rows[4].swatch.__tex == "Interface\\AddOns\\Handkerquest\\textures\\torn_rag" and list.rows[1].swatch.__color ~= nil,
@@ -1121,9 +1472,17 @@ if lookBtn then
         for _, row in ipairs(list.rows) do if row.key == key then row:GetScript("OnClick")(row) end end
     end
     Pick("PARCHMENT")
-    check(lookBtn.__text == "Look: Parchment" and f.styleKey == "PARCHMENT" and not list.__shown, "picking Parchment switches the look and closes the list")
-    lookBtn:GetScript("OnClick")(lookBtn); lookBtn:GetScript("OnClick")(lookBtn)
+    check(lookBtn.__text == "Look: Parchment" and f.styleKey == "PARCHMENT" and list.__shown and list.catcher.__shown,
+        "picking Parchment switches the look and the list stays open (to click through the looks)")
+    local tickedNow
+    for _, row in ipairs(list.rows) do if row.tick.__shown then tickedNow = row.key end end
+    check(tickedNow == "PARCHMENT", "...with Parchment ticked now")
+    Pick("RAG")
+    check(f.styleKey == "RAG" and list.__shown, "...and the next look applies straight away, still open")
+    lookBtn:GetScript("OnClick")(lookBtn)
     check(not list.__shown, "clicking the button again closes the list")
+    lookBtn:GetScript("OnClick")(lookBtn); list.catcher:GetScript("OnClick")(list.catcher)
+    check(not list.__shown, "a click outside closes it")
     do  -- in game, Settings re-parents our panel, which drops the list to the window's layer (HIGH), under the catcher
         local ORDER = { BACKGROUND = 1, LOW = 2, MEDIUM = 3, HIGH = 4, DIALOG = 5, FULLSCREEN = 6, FULLSCREEN_DIALOG = 7, TOOLTIP = 8 }
         local catcher = list.catcher
@@ -1137,8 +1496,9 @@ if lookBtn then
         row.IsMouseOver = function() return true end
         catcher:GetScript("OnClick")(catcher)
         row.IsMouseOver = nil
-        check(CFQ.parchmentStyle == "CRUMPLED" and f.styleKey == "CRUMPLED" and not list.__shown and not catcher.__shown,
-            "a click caught over a look still picks it (crumpled paper)")
+        check(CFQ.parchmentStyle == "CRUMPLED" and f.styleKey == "CRUMPLED" and list.__shown and catcher.__shown,
+            "a click caught over a look still picks it (crumpled paper), the list stays open")
+        list:Hide()
         lookBtn:GetScript("OnClick")(lookBtn)
         catcher:GetScript("OnClick")(catcher)
         check(CFQ.parchmentStyle == "CRUMPLED" and not list.__shown, "a click anywhere else just closes the list")
@@ -1155,7 +1515,7 @@ if lookBtn then
     Pick("NATIVE")
     check(lookBtn.__text == "Look: Transparent window" and fontBtn.__alpha == 1 and not fontBtn.__text:find("set by the look"),
         "window look: the handwriting button stays live (no lock to plain print)")
-    lookBtn:GetScript("OnClick")(lookBtn)
+    list:Hide(); lookBtn:GetScript("OnClick")(lookBtn)
     check(list.__shown, "list open again")
     CFQ.optionsPanel:Show(); CFQ.optionsPanel:Hide()
     check(not list.__shown, "closing the options page closes its list")
@@ -1266,7 +1626,7 @@ do
     check(ib and tb and sb and f.titleFS.__points[2][2] == ib and sb.__points[1][2] == f.optBtn,
         "items, tasks and tasks-apart toggles sit left of the gear; the heading stops at them")
     check(ib.on and tb.on and not sb.on and ib.strokes[1].main.__color[4] == 1 and sb.strokes[1].main.__color[4] < 0.5,
-        "on = full ink, off = faded (tasks apart starts off)")
+        "on = full ink, off = faded (tasks apart switched off for these checks)")
     check(ib.__w == P.QUICK_SIZE and P.QUICK_SIZE >= 16 and ib.__points[1][4] == -P.QUICK_GAP and tb.__points[1][4] == -P.QUICK_GAP
         and sb.__points[1][4] == -P.QUICK_GEAR_GAP and P.QUICK_GAP >= 5, "toggles are 16px with room between them")
     check(#ib.strokes == 13 and #tb.strokes == 4, "items = a basket, tasks = a sword")
@@ -1465,6 +1825,8 @@ do
     check(CFQ.parchmentFont == "BLOTTED", "quill -> scrawl -> plain -> blotted")
     P.CycleFontStyle()
     check(CFQ.parchmentFont == "TYPEWRITER", "blotted -> typewriter")
+    P.CycleFontStyle()
+    check(CFQ.parchmentFont == "RUNECUT", "typewriter -> runecut")
     P.CycleFontStyle()
     check(CFQ.parchmentFont == "QUILL", "...and back round to the quill")
 
@@ -2508,7 +2870,7 @@ do  -- Tabs: the two quick tabs, cut from the sheet itself (Near me above Journa
     frames(60)
 
     -- every look: image looks cut from their image; drawn looks in their paper colour
-    for _, look in ipairs({ "CRUMPLED", "STONE", "BARK", "LEAF", "LEATHER", "MARBLE", "GILDED", "VELLUM", "DISPATCH", "ARCANE" }) do
+    for _, look in ipairs({ "CRUMPLED", "STONE", "BARK", "LEAF", "LEATHER", "MARBLE", "GILDED", "VELLUM", "DISPATCH", "TERMINAL", "DWARVEN", "ARCANE" }) do
         CFQ.parchmentStyle = look; P.ApplyStyle(); redraw()
         local s2 = P.GetStyle()
         check(near.__shown and near.tex.__tex == s2.image and near.edgeX > 0 and near.edgeX <= f:GetWidth(), "Tabs: " .. look .. " cut from its own image")

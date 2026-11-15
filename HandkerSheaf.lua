@@ -65,8 +65,11 @@ local CFQ = {
         minimapPins = true,             -- looted-here spots of the super-tracked quest's items on the minimap
         tallyLoot = true,               -- the tally lists quest items to gather...
         tallyTasks = true,              -- ...and tasks: enemies to slay / other quest steps
-        tallySeparate = false,          -- tasks under their own heading, after the items
+        tallySeparate = true,           -- tasks under their own heading, after the items (on by default: user decision, Nov 2026)
         forMe = true,                   -- "For me": your own tasks at the bottom of the "Near me" page
+        compass = true,                 -- a compass over the tally's corner pointing at the nearest thing to do
+        compassRight = false,           -- ...over the top-right corner instead of the top-left
+        compassTracked = true,          -- ...pointing at the quest you track (click a line) instead of the nearest
         autoAchievements = false,       -- the Journal writes down the achievements you earn (only if this client has them)
         autoQuests = false,             -- the Journal writes down the quests you turn in, and what they gave you
         autoLevels = true,              -- the Journal writes down each level you reach (glowing gold; on by default, as agreed)
@@ -74,13 +77,14 @@ local CFQ = {
         shareJournal = false,           -- the Journal shared by every character on the account (off: each its own)
     },
     parchmentFont = "QUILL",            -- handwriting on the parchment: "QUILL", "SCRAWL", "PLAIN" or "BLOTTED" (P.FONT_STYLES)
-    parchmentStyle = "RAG",             -- the tally's look: "RAG", "CRUMPLED", "STONE", "BARK", "LEAF", "LEATHER", "MARBLE", "GILDED", "VELLUM", "DISPATCH", "ARCANE", "HANDKERCHIEF", "PARCHMENT" or "NATIVE"
+    parchmentStyle = "RAG",             -- the tally's look: "RAG", "CRUMPLED", "STONE", "BARK", "LEAF", "LEATHER", "MARBLE", "GILDED", "VELLUM", "DISPATCH", "TERMINAL", "DWARVEN", "ARCANE", "HANDKERCHIEF", "PARCHMENT" or "NATIVE"
     huntSpots = {},                     -- [progKey] = { { m = mapID, x, y, a = subzone }, ... } where the item was looted
     learnedDroppers = {},               -- ["npc:ID"] = { label = name, loots = n, tries = {}, [progKey] = times the item dropped }
     pageRadiusPercent = 16,             -- "Clusters" pages: own cluster size (% of the zone map) when not following the tracker
     nearRadiusPercent = 10,             -- "Near me" page: how close (% of the zone map) the items must be
     tallyTextScale = 100,               -- the tally's writing size, % of the usual (options slider, 80-150)
     arcaneRuneColor = nil,              -- Arcane script: { r, g, b } of the rune circle & its glow (nil = the look's violet)
+    terminalScreenColor = nil,          -- Gnomish Magic Box: { r, g, b } of the screen's phosphor (nil = the look's green)
     inkColors = {},                     -- [look key] = { r, g, b } writing colour chosen for that look (missing = its own)
     pageGrouping = "AREA",              -- other pages by "AREA" (map areas), "ZONE" or "RADIUS" (clusters)
     learnedQuestAreas = {},             -- [questID] = "Subzone name" where the quest's objectives were last worked
@@ -382,6 +386,7 @@ local function SaveState()
     QRF_SavedState.nearRadiusPercent = CFQ.nearRadiusPercent
     QRF_SavedState.tallyTextScale = CFQ.tallyTextScale
     QRF_SavedState.arcaneRuneColor = CFQ.arcaneRuneColor
+    QRF_SavedState.terminalScreenColor = CFQ.terminalScreenColor
     QRF_SavedState.inkColors = CFQ.inkColors
     QRF_SavedState.arcaneInkColor = nil    -- an earlier test build: now inkColors.ARCANE
     QRF_SavedState.pageGrouping = CFQ.pageGrouping
@@ -453,6 +458,7 @@ local function LoadState()
             CFQ.tallyTextScale = math.max(80, math.min(150, math.floor(QRF_SavedState.tallyTextScale + 0.5)))   -- P.TEXT_SCALE_MIN/MAX
         end
         CFQ.arcaneRuneColor = CFQ.ValidColor(QRF_SavedState.arcaneRuneColor)
+        CFQ.terminalScreenColor = CFQ.ValidColor(QRF_SavedState.terminalScreenColor)
         CFQ.inkColors = {}
         if type(QRF_SavedState.inkColors) == "table" then
             for k, c in pairs(QRF_SavedState.inkColors) do
@@ -2321,7 +2327,8 @@ CFQ.ResetShoppingListPosition = ResetShoppingListPosition
 -- ----------------------------------------------------------------------------
 -- INK & QUILL HELPERS
 -- ----------------------------------------------------------------------------
--- Handwriting faces: built into the client, except the typewriter (fonts/SpecialElite-Regular.ttf).
+-- Handwriting faces: built into the client, except the typewriter (fonts/SpecialElite-Regular.ttf) and Runecut
+-- (fonts/Runecut.ttf, our own: tools/RuneFont.cs).
 -- Morpheus is the calligraphic face Blizzard uses for books & letters.
 -- EDIT: item / title / small are font sizes for the list rows, the page heading and the footer.
 P.FONT_STYLES = {
@@ -2338,6 +2345,19 @@ P.FONT_STYLES = {
     -- P.SetInkFont falls back to plain print.
     { key = "TYPEWRITER", label = "Typewriter", path = "Interface\\AddOns\\Handkerquest\\fonts\\SpecialElite-Regular.ttf",
       item = 12, title = 14, small = 10 },
+    -- runes cut with a chisel (user request, for the dwarven runestone: "carving straight is much more effective in
+    -- stone ... viking like runes"): our own font, straight strokes only, drawn by tools\RuneFont.cs into
+    -- fonts\Runecut.ttf. If the client won't load it, P.SetInkFont uses the fallback (the angular Rough scrawl).
+    { key = "RUNECUT", label = "Runecut", path = "Interface\\AddOns\\Handkerquest\\fonts\\Runecut.ttf",
+      item = 12, title = 14, small = 10, fallback = "SCRAWL" },
+    -- the same runes cut with a V-shaped chisel (user request): two fonts, one per wall of the V (tools\RuneFont.cs
+    -- BuildGrooved): the words are drawn in the shaded walls (path) and P.SetCarve lays the lit walls (lit) over
+    -- them in pale stone, so every stroke shows a dark upper-left wall and a lit lower-right one meeting along its
+    -- middle. Heavier strokes and a size up so each wall shows. Only the runestone uses it (hidden: not in the
+    -- handwriting list); without the fonts, plain Runecut.
+    { key = "RUNEGROOVE", label = "Runecut (chiselled)", path = "Interface\\AddOns\\Handkerquest\\fonts\\RunecutShade.ttf",
+      lit = "Interface\\AddOns\\Handkerquest\\fonts\\RunecutLit.ttf", item = 14, title = 16, small = 11,
+      fallback = "RUNECUT", hidden = true },
 }
 
 -- The handwriting actually used: carved bark brings its own lettering (style.font)
@@ -2362,7 +2382,10 @@ function P.CycleFontStyle()
     for i, st in ipairs(P.FONT_STYLES) do
         if st.key == CFQ.parchmentFont then idx = i end
     end
-    CFQ.parchmentFont = P.FONT_STYLES[(idx % #P.FONT_STYLES) + 1].key
+    for k = 1, #P.FONT_STYLES do                                -- the next hand you can pick (not a look's own)
+        local nxt = P.FONT_STYLES[((idx + k - 1) % #P.FONT_STYLES) + 1]
+        if not nxt.hidden then CFQ.parchmentFont = nxt.key; return end
+    end
 end
 
 -- Text size (options slider, % of the usual): the list's lines and notes. The heading grows by half
@@ -2382,6 +2405,17 @@ function P.SetInkFont(fs, kind, flags)
     local cacheKey = st.key .. ":" .. look.key .. ":" .. scale
     if fs.inkKey == cacheKey and fs.inkKind == kind then return end
     local ok = st.path and fs:SetFont(st.path, math.floor((st[kind] or st.item) * scale + 0.5), flags or "")
+    -- a shipped font this client won't load: down its stand-ins (V-cut Runecut -> Runecut -> Rough scrawl), else
+    -- plain print below
+    local cur, hops = st, 0
+    while st.path and ok == false and cur.fallback and hops < 4 do
+        hops = hops + 1
+        local nxt
+        for _, fb in ipairs(P.FONT_STYLES) do if fb.key == cur.fallback then nxt = fb end end
+        if not nxt then break end
+        cur = nxt
+        if cur.path then ok = fs:SetFont(cur.path, math.floor((cur[kind] or cur.item) * scale + 0.5), flags or "") end
+    end
     if not st.path or ok == false then
         fs:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", math.floor((P.FONT_STYLES[3][kind] or 11) * scale + 0.5), flags or "")   -- [3] = Plain print
     end
@@ -2456,8 +2490,39 @@ function P.SetBold(fs, text, color)
     c:Show()
 end
 
+-- Carved letters (style.carve, the dwarven runestone): the words' own shadow (style.inkShadow) is the dark
+-- upper-left wall of each cut; this is the lit lower-right wall: a pale copy of the words just under them,
+-- nudged down-right, so the letters read as cut into the stone rather than written on it
+function P.SetCarve(fs, text)
+    local cv = P.GetStyle().carve
+    if not cv or not text or text == "" then
+        if fs.carveCopy then fs.carveCopy:Hide() end
+        return
+    end
+    local c = fs.carveCopy
+    if not c then
+        c = fs:GetParent():CreateFontString(nil, "ARTWORK", nil, 5)
+        c:SetJustifyH("LEFT")
+        c:SetJustifyV("TOP")
+        fs.carveCopy = c
+    end
+    local path, size, flags = fs:GetFont()
+    -- V-grooved lettering: the lit walls' font exactly over the shaded walls (the words); otherwise a pale copy of
+    -- the words nudged down-right. If the lit font won't load, the plain copy.
+    local litPath = (path == P.EffectiveFont().path) and P.EffectiveFont().lit
+    local grooved = litPath and c:SetFont(litPath, size or 12, flags or "") ~= false
+    if not grooved then c:SetFont(path or STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", size or 12, flags or "") end
+    if c.SetShadowColor then c:SetShadowColor(0, 0, 0, 0) end
+    if grooved then P.MatchCopy(c, fs, 0, 0) else P.MatchCopy(c, fs, cv.x or 1, cv.y or -1) end
+    c:SetText(P.PlainText(text))
+    local l = grooved and (cv.wall or cv.light) or cv.light
+    c:SetTextColor(l[1], l[2], l[3], l[4] or 0.5)
+    c:Show()
+end
+
 function P.SetHalo(fs, text, color)
     P.SetBold(fs, text, color)
+    P.SetCarve(fs, text)
     local hl = P.GetStyle().halo
     if not hl or not text or text == "" then
         if fs.halo then for _, c in ipairs(fs.halo) do c:Hide() end end
@@ -2618,7 +2683,7 @@ end
 
 -- ----------------------------------------------------------------------------
 -- LOOKS: a torn rag (default), crumpled paper, chalked stone, carved bark, a pipe-weed leaf, etched leather, the
--- paladin looks (marble, gilded plate, illuminated vellum), a courier's dispatch, arcane
+-- paladin looks (marble, gilded plate, illuminated vellum), a courier's dispatch, a phosphor terminal, a dwarven runestone, arcane
 -- script (glowing mage writing in the air), handkerchief notes, the parchment pile, or a
 -- see-through WoW window
 -- Every colour the tally draws with comes from here.
@@ -2918,6 +2983,83 @@ P.STYLES = {
                    shadow = { 0.10, 0.08, 0.05 } },
     },
     {
+        -- a retro-futuristic terminal (user request, Nov 2026: "a sort of Fallout like theme"; kept generic: no
+        -- maker's name, badge or mascot; the case redone twice at the user's request, "more like WoW tech", "even
+        -- more WOW", "bulky three dimensional", "edgy in vibe terms": blackened gunmetal worn through to brass on its
+        -- edges, ridged corner brackets, red warning crystals, hazard stripes, a scorched grille, a gauge pegged in
+        -- the red): round a dark glass screen, the list in
+        -- glowing green phosphor. The glow, scanlines, a band of light rolling down now and then, a faint flicker
+        -- and a block cursor blinking after the heading are drawn in game (style.crt, P.LayoutCrt / P.AnimateCrt).
+        -- Typed, not written: it brings its own lettering (the typewriter). Rigid (a corner mark in light) and
+        -- one screen, no pile: the footer says which page. Named by the user's request for something cheeky: a
+        -- gnome swears it's engineering, everyone else calls it the magic box. Its own Screen colour (options,
+        -- CFQ.terminalScreenColor, like Arcane script's rune colour) turns the phosphor amber, cyan, pink...:
+        -- the glow, highlights, rolling band, cursor, and the words unless it has a writing colour of its own.
+        -- Clicking a line pings like a radar (style.sounds, P.PlayLookSound) instead of the waypoint sound.
+        key = "TERMINAL", label = "Gnomish Magic Box",
+        image = "Interface\\AddOns\\Handkerquest\\textures\\phosphor_terminal",
+        paper = { 1, 1, 1, 1 }, depth = 1, rigid = true,
+        back = { { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, { 0, 0, 0, 0 } },
+        imageCorner = { 0.110, 0.135 },        -- inside the screen's bottom-right
+        shadowAlpha = 0.45, pile = false,
+        font = "TYPEWRITER",
+        halo = { color = { 0.36, 1.00, 0.50 }, alpha = 0.32, radius = 1.1, pulse = true, flicker = true },   -- colour: the screen's
+        bleedWidth = 2.4, bleedAlpha = 0.35,                               -- strokes glow in the writing colour
+        -- clicking a line (super-track on / off): synthesized radar pings (TexGen.Chirp), .ogg first, then .wav
+        sounds = { on = "Interface\\AddOns\\Handkerquest\\sounds\\box_select", off = "Interface\\AddOns\\Handkerquest\\sounds\\box_deselect" },
+        ink = { 0.36, 1.00, 0.50 }, inkRed = { 0.86, 1.00, 0.78 }, inkGreen = { 0.30, 0.88, 0.84 },
+        title = { 0.62, 1.00, 0.70 }, faded = { 0.16, 0.46, 0.24 }, footer = { 0.28, 0.78, 0.40 },
+        sub = { 0.25, 0.70, 0.36 }, close = { 0.36, 1.00, 0.50 }, gear = { 0.36, 1.00, 0.50 },
+        wash = { 0.36, 1.00, 0.50, 0.07 }, washFlash = { 0.62, 1.00, 0.70, 0.35 },
+        divider = { 0.36, 1.00, 0.50, 0.18 }, highlight = { 0.36, 1.00, 0.50, 0.10 },
+        grip = { 0.30, 0.86, 0.44, 0.85 }, pad = 8,
+        inset = { 0.115, 0.115, 0.115, 0.145 },  -- on the glass, clear of the corner brackets and the crest
+        -- screen = the opening in the housing (fractions: left, top, right, bottom; TexGen.Terminal), glow = the
+        -- phosphor's light over it, lines = scanlines tiled 1 texel/px, roll = a band of light rolling down
+        -- (height = of the screen, sweep = seconds, every = seconds), cursor = blink period (s)
+        crt = { screen = { 0.0898, 0.0898, 0.0898, 0.1133 },
+                glow = "Interface\\AddOns\\Handkerquest\\textures\\crt_glow", glowAlpha = 0.13,
+                lines = "Interface\\AddOns\\Handkerquest\\textures\\crt_scanlines", linesSize = 32, linesAlpha = 0.32,
+                roll = { alpha = 0.07, height = 0.22, sweep = 2.6, every = 9 }, cursor = 1.06 },
+        corner = { u1 = { 0.05, 0.20, 0.09 }, u2 = { 0.12, 0.45, 0.20 }, tip = { 0.36, 1.00, 0.50 },
+                   crease = { 0.36, 1.00, 0.50 }, edge = { 0.36, 1.00, 0.50, 0.90 }, cut = { 0.36, 1.00, 0.50, 0.90 },
+                   shadow = { 0.36, 1.00, 0.50 } },
+    },
+    {
+        -- a dwarf's runestone (user request, Nov 2026: "a dwarven stone tablet theme with the font locked into a
+        -- runic style and the font given depth like it is really carved into the stone"): a thick granite slab,
+        -- corners struck off, chiselled and chipped edges, a carved zigzag border (TexGen.Tablet). The words are cut
+        -- in: the letters are the dark floor of the cut, their shadow the dark upper-left wall (inkShadow), and a
+        -- pale copy nudged down-right the lit lower wall (style.carve, P.SetCarve); a granite grain over them
+        -- roughens the cuts (inkGrain). Ticks and boxes get the same pale lip (bleed). Locked lettering: Runecut cut
+        -- with a V-shaped chisel (RUNEGROOVE: the shaded walls are the words, P.SetCarve lays the lit walls over them;
+        -- plain Runecut, then Rough scrawl, if the client won't load them). Rigid (a carved corner mark), tablets
+        -- piled underneath.
+        key = "DWARVEN", label = "Dwarven runestone",
+        image = "Interface\\AddOns\\Handkerquest\\textures\\dwarven_tablet",
+        paper = { 1, 1, 1, 1 }, depth = 1, rigid = true,
+        back = { { 0.86, 0.86, 0.86, 1 }, { 0.76, 0.76, 0.76, 1 }, { 0.66, 0.66, 0.66, 1 } },
+        imageCorner = { 0.11, 0.11 },          -- inside the carved border
+        shadowAlpha = 0.45, pile = true,
+        font = "RUNEGROOVE",                                    -- runes cut with a V-shaped chisel (our own fonts)
+        inkShadow = { 0.06, 0.05, 0.04, 0.40, -1, 1 },          -- a little shadow at the cut's upper-left edge
+        -- the cut's lit lower-right wall: with the V-groove fonts, the lit walls laid over the words (wall); else a pale
+        -- copy of the words nudged down-right (light)
+        carve = { light = { 0.88, 0.85, 0.79, 0.55 }, wall = { 0.80, 0.77, 0.71, 0.95 }, x = 1, y = -1 },
+        bleed = { 0.88, 0.85, 0.79, 0.45 },                     -- the same lip along ticks, boxes and strikes
+        inkGrain = { path = "Interface\\AddOns\\Handkerquest\\textures\\granite_grain", size = 128, alpha = 0.25 },   -- light: heavy grain blurred the letters
+        ink = { 0.19, 0.17, 0.15 }, inkRed = { 0.56, 0.20, 0.12 }, inkGreen = { 0.22, 0.34, 0.18 },
+        title = { 0.16, 0.14, 0.12 }, faded = { 0.36, 0.34, 0.31 }, footer = { 0.24, 0.22, 0.19 },
+        sub = { 0.29, 0.27, 0.24 }, close = { 0.20, 0.18, 0.16 }, gear = { 0.20, 0.18, 0.16 },
+        wash = { 0.30, 0.28, 0.25, 0.06 }, washFlash = { 0.95, 0.72, 0.20, 0.40 },
+        divider = { 0.15, 0.13, 0.11, 0.18 }, highlight = { 1.00, 0.95, 0.85, 0.08 },
+        grip = { 0.22, 0.20, 0.18, 0.85 }, pad = 8,
+        inset = { 0.11, 0.11, 0.11, 0.11 },    -- inside the carved border
+        corner = { u1 = { 0.30, 0.28, 0.25 }, u2 = { 0.45, 0.43, 0.40 }, tip = { 0.19, 0.17, 0.15 },
+                   crease = { 0.19, 0.17, 0.15 }, edge = { 0.19, 0.17, 0.15, 0.95 }, cut = { 0.19, 0.17, 0.15, 0.95 },
+                   shadow = { 0.88, 0.85, 0.79 } },
+    },
+    {
         -- a mage's writing hanging in the air: words of violet-white light over a faint haze, a rune circle
         -- turning slowly behind them (arcane.ring, added light) and motes drifting up. Nothing to fold, so the
         -- page corner is a glowing mark (rigid), and there's no pile: the footer says which page.
@@ -2991,6 +3133,17 @@ P.ARCANE_RUNE_COLORS = {
     { label = "Crimson",    c = { 1.00, 0.20, 0.25 } },
     { label = "Rose",       c = { 1.00, 0.42, 0.80 } },
     { label = "Silver",     c = { 0.82, 0.86, 0.95 } },
+}
+-- Screen colour (Gnomish Magic Box only): the phosphor. The first swatch is the box's own green.
+P.TERMINAL_SCREEN_COLORS = {
+    { label = "Green phosphor", c = { 0.36, 1.00, 0.50 } },
+    { label = "Amber",          c = { 1.00, 0.70, 0.20 } },
+    { label = "Paper white",    c = { 0.86, 0.92, 1.00 } },
+    { label = "Neon cyan",      c = { 0.20, 0.95, 1.00 } },
+    { label = "Neon pink",      c = { 1.00, 0.25, 0.75 } },
+    { label = "Ultraviolet",    c = { 0.66, 0.40, 1.00 } },
+    { label = "Acid yellow",    c = { 0.90, 1.00, 0.20 } },
+    { label = "Warning red",    c = { 1.00, 0.24, 0.20 } },
 }
 -- the first swatch is the current look's own ink (filled in by the options panel)
 P.INK_COLORS = {
@@ -3083,8 +3236,11 @@ function P.ApplyTallyColors()
             end
         end
         -- writing (every look)
+        -- the magic box's screen colour: its phosphor, and its writing too unless it has a writing colour of its own
+        local scr = st.crt and P.ScreenColor(st)
         local w = CFQ.ValidColor(CFQ.inkColors and CFQ.inkColors[st.key])
-        if w and P.SameColor(w, d.ink) then w = nil end
+        if w and P.SameColor(w, scr or d.ink) then w = nil end
+        w = w or scr
         for _, k in ipairs(P.INK_FIELDS) do
             if d[k] then st[k] = w and P.ShiftColor(d[k], d.ink, w) or P.CopyTable(d[k]) end
         end
@@ -3092,14 +3248,51 @@ function P.ApplyTallyColors()
         if not st.arcane and d.bleed then
             st.bleed = (w and st.bleedFollowsInk) and P.ShiftColor(d.bleed, d.ink, w) or P.CopyTable(d.bleed)
         end
+        -- the screen's light (the phosphor): the glow round the words, highlights, washes, the corner mark, and
+        -- in game the screen's glow, rolling band and cursor (st.crt.color)
+        if st.crt then
+            local ph = scr or d.ink
+            for _, k in ipairs(P.ARCANE_RUNE_FIELDS) do
+                if d[k] then st[k] = scr and P.ShiftTree(d[k], d.ink, scr) or P.CopyTable(d[k]) end
+            end
+            st.crt.color = { ph[1], ph[2], ph[3] }
+            if st.halo then st.halo.color = { ph[1], ph[2], ph[3] } end
+        end
     end
 end
 
--- Options: the rune colour, or the current look's writing colour; nil = the look's own
+-- The magic box's chosen screen colour, or nil = its own green (options: Screen colour)
+function P.ScreenColor(st)
+    local c = CFQ.ValidColor(CFQ.terminalScreenColor)
+    if c and st and P.SameColor(c, P.StyleDefaults(st).ink) then return nil end
+    return c
+end
+
+-- A look's own writing colour (the first Writing colour swatch): the magic box writes in its screen colour
+function P.LookOwnInk(st)
+    return (st.crt and P.ScreenColor(st)) or P.StyleDefaults(st).ink
+end
+
+-- P.ShiftColor over a colour or a table of colours (the corner's u1, u2, tip...)
+function P.ShiftTree(t, from, to)
+    if type(t) ~= "table" then return t end
+    if type(t[1]) == "number" then return P.ShiftColor(t, from, to) end
+    local o = {}
+    for k, v in pairs(t) do o[k] = P.ShiftTree(v, from, to) end
+    return o
+end
+
+function P.StyleByKey(key)
+    for _, st in ipairs(P.STYLES) do if st.key == key then return st end end
+end
+
+-- Options: the rune colour, the magic box's screen colour, or the current look's writing colour; nil = the look's own
 function P.SetTallyColor(which, c)
     c = CFQ.ValidColor(c)
     if which == "rune" then
         CFQ.arcaneRuneColor = c
+    elseif which == "screen" then
+        CFQ.terminalScreenColor = c
     else
         CFQ.inkColors = CFQ.inkColors or {}
         CFQ.inkColors[P.GetStyle().key] = c
@@ -3115,12 +3308,14 @@ function P.GetTallyColor(which)
         local d = P.STYLE_DEFAULTS and P.STYLE_DEFAULTS.ARCANE
         return CFQ.arcaneRuneColor or (d and d.ringColor) or P.ARCANE_RUNE_COLORS[1].c
     end
-    return (CFQ.inkColors and CFQ.inkColors[st.key]) or P.StyleDefaults(st).ink
+    if which == "screen" then return CFQ.terminalScreenColor or P.TERMINAL_SCREEN_COLORS[1].c end
+    return (CFQ.inkColors and CFQ.inkColors[st.key]) or P.LookOwnInk(st)
 end
 
 -- What's stored (nil = the look's own), to put back when the colour picker is cancelled
 function P.GetStoredTallyColor(which)
     if which == "rune" then return CFQ.arcaneRuneColor end
+    if which == "screen" then return CFQ.terminalScreenColor end
     return CFQ.inkColors and CFQ.inkColors[P.GetStyle().key]
 end
 
@@ -3203,6 +3398,7 @@ function P.ApplyStyle(f)
     P.LayoutArcane(f)
     P.LayoutSheen(f)
     P.LayoutStamp(f)
+    P.LayoutCrt(f)
     if f.corner then f.corner.drawnKey = nil; P.DrawCorner(f.corner) end
     P.ApplyStackLayout(f)
 end
@@ -3309,7 +3505,7 @@ end
 function P.PulseHalo(f, now)
     local hl = P.GetStyle().halo
     if not (hl and hl.pulse) then return end
-    local k = 0.75 + 0.25 * math.sin(now * (hl.pulseSpeed or 2.1))
+    local k = hl.flicker and P.CrtFlicker(now) or (0.75 + 0.25 * math.sin(now * (hl.pulseSpeed or 2.1)))   -- flicker: the terminal's tube
     local function Pulse(fs)
         if not fs or not fs.halo then return end
         for _, cp in ipairs(fs.halo) do
@@ -3471,6 +3667,115 @@ function P.AnimateSheen(f, now)
     Half(S.b, xc, xc + bw / 2)
 end
 
+-- Phosphor terminal (style.crt): the screen's light (crt.glow, added, on the top page behind the words),
+-- scanlines over everything on the glass (a tiled texture one texel per pixel, on a frame above the rows like
+-- the slate's chalk grain), a band of light rolling down now and then (two gradient halves, like the gilded
+-- plate's sheen turned on its side) and a block cursor blinking after the heading. All in the screen colour;
+-- the tube flickers faintly (P.CrtFlicker, shared with the glow round the words). P.AnimateCrt runs it.
+function P.CrtFlicker(now)
+    local k = 0.93 + 0.05 * math.sin(now * 9.1) * math.sin(now * 2.3)
+    if P.Hash01(math.floor(now * 12), 7, 91) < 0.025 then k = k * 0.6 end   -- now and then the tube dips a moment
+    return k
+end
+
+function P.LayoutCrt(f)
+    if not f or not f.topSheet or not f.chrome then return end
+    local st = P.GetStyle()
+    local crt, C = st.crt, f.crt
+    if not crt then
+        if C then
+            C.glow:Hide(); C.lines:Hide(); C.rollA:Hide(); C.rollB:Hide(); C.cursor:Hide()
+        end
+        f.crtOn = false
+        return
+    end
+    if not C then
+        C = {}
+        C.glow = f.topSheet:CreateTexture(nil, "BACKGROUND", nil, 6)
+        C.rollA = f.topSheet:CreateTexture(nil, "BACKGROUND", nil, 7)
+        C.rollB = f.topSheet:CreateTexture(nil, "BACKGROUND", nil, 7)
+        for _, t in ipairs({ C.glow, C.rollA, C.rollB }) do
+            if t.SetBlendMode then t:SetBlendMode("ADD") end
+        end
+        local fr = CreateFrame("Frame", nil, f.chrome)          -- above the rows, below corner & grip
+        fr:SetAllPoints(f.chrome)
+        fr:SetFrameLevel((f.baseLevel or 30) + 20)
+        C.lines = fr:CreateTexture(nil, "OVERLAY")
+        C.cursor = f.chrome:CreateTexture(nil, "OVERLAY")
+        C.cursor:SetColorTexture(1, 1, 1, 1)
+        f.crt = C
+    end
+    local w, h = f:GetWidth() or 230, f:GetHeight() or 175
+    local s = crt.screen
+    C.l, C.t = w * s[1], h * s[2]
+    C.w, C.h = math.max(1, w * (1 - s[1] - s[3])), math.max(1, h * (1 - s[2] - s[4]))
+    local c = crt.color or st.ink                              -- the screen colour (P.ApplyTallyColors)
+    C.glow:SetTexture(crt.glow)
+    C.glow:ClearAllPoints()
+    C.glow:SetPoint("TOPLEFT", f.topSheet, "TOPLEFT", C.l, -C.t)
+    C.glow:SetSize(C.w, C.h)
+    C.glow:SetVertexColor(c[1], c[2], c[3], crt.glowAlpha or 0.13)
+    C.glow:Show()
+    local n = crt.linesSize or 32
+    C.lines:SetTexture(crt.lines, "REPEAT", "REPEAT")            -- texcoords past 1 repeat the tile
+    C.lines:ClearAllPoints()
+    C.lines:SetPoint("TOPLEFT", f.chrome, "TOPLEFT", C.l, -C.t)
+    C.lines:SetSize(C.w, C.h)
+    C.lines:SetTexCoord(0, C.w / n, 0, C.h / n)
+    C.lines:SetVertexColor(1, 1, 1, crt.linesAlpha or 0.3)
+    C.lines:Show()
+    -- the rolling band: the upper half brightens downwards, the lower half fades (bottom colour first)
+    ApplyTwoColorVerticalGradient(C.rollA, c[1], c[2], c[3], 1, c[1], c[2], c[3], 0)
+    ApplyTwoColorVerticalGradient(C.rollB, c[1], c[2], c[3], 0, c[1], c[2], c[3], 1)
+    C.cursor:SetVertexColor(c[1], c[2], c[3], 0.85)
+    f.crtOn = true
+end
+
+function P.AnimateCrt(f, now)
+    local st = P.GetStyle()
+    local crt, C = st.crt, f.crt
+    if not (crt and C and C.w) then return end
+    local fl = P.CrtFlicker(now)
+    local c = crt.color or st.ink
+    C.glow:SetVertexColor(c[1], c[2], c[3], (crt.glowAlpha or 0.13) * fl)
+    local ro = crt.roll
+    local p = ro and (now % (ro.every or 9)) / (ro.sweep or 2.6) or 1
+    if p >= 1 then
+        C.rollA:Hide(); C.rollB:Hide()
+    else
+        local bh = C.h * (ro.height or 0.2)
+        local yc = -bh / 2 + p * (C.h + bh)                      -- the band's middle, down from the screen's top
+        local alpha = (ro.alpha or 0.07) * fl
+        local function Half(tex, y0, y1)
+            y0, y1 = math.max(y0, 0), math.min(y1, C.h)
+            if y1 - y0 < 1 then tex:Hide(); return end
+            tex:ClearAllPoints()
+            tex:SetPoint("TOPLEFT", f.topSheet, "TOPLEFT", C.l, -(C.t + y0))
+            tex:SetSize(C.w, y1 - y0)
+            tex:SetAlpha(alpha)
+            tex:Show()
+        end
+        Half(C.rollA, yc - bh / 2, yc)
+        Half(C.rollB, yc, yc + bh / 2)
+    end
+    -- the cursor: a block just after the heading's words, on half of each beat
+    local period = crt.cursor or 1.06
+    local tf = f.titleFS
+    local text = tf and tf:IsShown() and tf:GetText()
+    if text and text ~= "" and (now % period) < period / 2 then
+        local _, size = tf:GetFont()
+        size = size or 14
+        local x = math.min(tf:GetStringWidth() or 0, tf:GetWidth() or 0) + 2
+        C.cursor:ClearAllPoints()
+        C.cursor:SetPoint("TOPLEFT", tf, "TOPLEFT", x, -math.floor(size * 0.12 + 0.5))
+        C.cursor:SetSize(math.max(3, math.floor(size * 0.5 + 0.5)), math.max(4, math.floor(size * 0.8 + 0.5)))
+        C.cursor:SetAlpha(fl)
+        C.cursor:Show()
+    else
+        C.cursor:Hide()
+    end
+end
+
 -- Space between the window's edge and the writing on each side (left, top, right, bottom).
 -- Texture looks stretch with the window, so their margins are fractions of it (style.inset: the
 -- largest rectangle on the material, measured by TexGen.SafeRect); drawn looks use a fixed pad.
@@ -3489,17 +3794,22 @@ function P.LayoutPads(f)
     if not f or not f.chrome then return end
     local l, t, r, b = P.GetPads(f)
     local extra = f.headerExtra or 0          -- the Near me page's distance row under the heading
+    local cmpOn = P.CompassOn()
+    local cmpRight, cmpX, cmpY, cmpReach = P.CompassPlace(l, t, r)
     local key = P.GetStyle().key .. ":" .. l .. ":" .. t .. ":" .. r .. ":" .. b .. ":" .. extra
+        .. ":" .. tostring(cmpOn) .. tostring(cmpRight)
     if f.padKey == key then return end
     f.padKey = key
     f.pad, f.padL, f.padT, f.padR, f.padB = math.min(l, t, r, b), l, t, r, b
+    -- the compass over a corner: the heading (left) or the close button and gear (right) make room for it
+    P.LayoutCompass(f, cmpOn, cmpRight, cmpX, cmpY)
     if f.closeBtn then
         f.closeBtn:ClearAllPoints()
-        f.closeBtn:SetPoint("TOPRIGHT", f.chrome, "TOPRIGHT", -5 - r, -5 - t)
+        f.closeBtn:SetPoint("TOPRIGHT", f.chrome, "TOPRIGHT", -((cmpOn and cmpRight) and math.max(5 + r, cmpReach) or (5 + r)), -5 - t)
     end
     if f.titleFS then
         f.titleFS:ClearAllPoints()
-        f.titleFS:SetPoint("TOPLEFT", f.chrome, "TOPLEFT", 10 + l, -6 - t)
+        f.titleFS:SetPoint("TOPLEFT", f.chrome, "TOPLEFT", (cmpOn and not cmpRight) and math.max(10 + l, cmpReach) or (10 + l), -6 - t)
         f.titleFS:SetPoint("RIGHT", f.itemsBtn or f.optBtn, "LEFT", -6, 0)
     end
     if f.content then
@@ -3963,6 +4273,7 @@ function P.OnUpdate(f, elapsed)
         P.PulseHalo(f, GetTime())
     end
     if f.sheenOn then P.AnimateSheen(f, GetTime()) end
+    if f.crtOn then P.AnimateCrt(f, GetTime()) end
     if next(P.glowing) then P.PulseGlow(GetTime()) end         -- a level reached, glowing gold in the Journal
     if f.fly then P.AnimateFly(f, dt) end
     if f.tabsMoving then P.AnimateTabs(f, dt) end
@@ -4593,6 +4904,7 @@ local function EnsureShoppingListFrame()
         P.LayoutInkGrain(self)
         P.LayoutArcane(self)
         P.LayoutStamp(self)
+        P.LayoutCrt(self)
         P.ApplyStackLayout(self)
     end)
     f:SetScript("OnHide", function(self)
@@ -4869,13 +5181,18 @@ function P.DrawKindHeading(f, idx, text, y, w, st)
         h.fs:SetWordWrap(false)
         f.kindHeads[idx] = h
     end
-    P.SetInkFont(h.fs, "small")
-    local c = st.sub or st.faded
+    -- carved looks (the runestone) cut the heading as deep as the lines: full ink, line size (user feedback: the
+    -- small pale heading read faint next to the carved lines). Every look gives it its own ink effect (wet ink,
+    -- glow, the carve) through P.SetHalo.
+    local carved = st.carve ~= nil
+    P.SetInkFont(h.fs, carved and "item" or "small")
+    local c = carved and st.ink or (st.sub or st.faded)
     h.fs:SetTextColor(c[1], c[2], c[3], 1)
     h.fs:SetText(text)
     h.fs:ClearAllPoints()
     h.fs:SetPoint("TOPLEFT", f.content, "TOPLEFT", 2, y - 2)
     h.fs:Show()
+    P.SetHalo(h.fs, text, c)
     local tw = h.fs:GetStringWidth() or 60
     local ry = y - 8
     if tw + 20 < w then
@@ -4890,6 +5207,7 @@ function P.HideKindHeadings(f, from)
     for k = from or 1, #(f.kindHeads or {}) do
         local h = f.kindHeads[k]
         h.fs:Hide(); h.rule.main:Hide(); h.rule.bleed:Hide()
+        P.SetHalo(h.fs, "")                                   -- its wet ink / glow / carved lip go with it
     end
 end
 
@@ -5270,6 +5588,7 @@ end
 
 function P.BuildAreas()
     local nearSet, eligible, here = P.CollectQuests()
+    P.BuildCompassTargets(eligible)
     -- Page 1 is always "Near me": what you can gather or do from where you stand
     local current = { key = P.CURRENT_KEY, title = "Near me", subtitle = here, isCurrent = true, quests = {} }
     local areas = { current }
@@ -8025,6 +8344,8 @@ P.SHEET_EDGES = {
     GILDED = { b = { 0.998, 0.998, 0.066, 0.061, 0.063, 0.063, 0.063, 0.063, 0.063, 0.061, 0.061, 0.061, 0.057, 0.059, 0.059, 0.061, 0.061, 0.059, 0.063, 0.998, 0.998 }, r = { 0.998, 0.998, 0.068, 0.063, 0.063, 0.061, 0.063, 0.063, 0.061, 0.061, 0.061, 0.059, 0.061, 0.063, 0.063, 0.061, 0.059, 0.059, 0.063, 0.998, 0.998 } },
     VELLUM = { b = { 0.998, 0.086, 0.049, 0.049, 0.049, 0.051, 0.051, 0.051, 0.051, 0.051, 0.053, 0.053, 0.053, 0.053, 0.053, 0.053, 0.053, 0.051, 0.051, 0.242, 0.998 }, r = { 0.998, 0.051, 0.051, 0.051, 0.051, 0.051, 0.053, 0.055, 0.053, 0.051, 0.053, 0.053, 0.051, 0.049, 0.051, 0.051, 0.053, 0.053, 0.053, 0.055, 0.998 } },
     DISPATCH = { b = { 0.998, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.045, 0.047, 0.045, 0.045, 0.998 }, r = { 0.998, 0.998, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.041, 0.998 } },
+    TERMINAL = { b = { 0.998, 0.033, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.031, 0.998 }, r = { 0.998, 0.033, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.012, 0.031, 0.998 } },
+    DWARVEN = { b = { 0.998, 0.049, 0.018, 0.016, 0.016, 0.018, 0.018, 0.018, 0.014, 0.014, 0.016, 0.018, 0.018, 0.018, 0.016, 0.016, 0.018, 0.020, 0.018, 0.043, 0.998 }, r = { 0.998, 0.049, 0.016, 0.018, 0.018, 0.016, 0.014, 0.018, 0.016, 0.016, 0.018, 0.018, 0.016, 0.014, 0.018, 0.016, 0.016, 0.016, 0.016, 0.045, 0.998 } },
 }
 
 -- The material's edge at frac (0-1) along a profile, from the nearest measured samples that have material
@@ -8752,19 +9073,30 @@ function CFQ.ToggleSuperTrack(questID)
         ActivateQuestTarget(questID)          -- very old clients: the addon's own tracking
     elseif IsQuestSuperTracked(questID) and ST.GetSuperTrackedQuestID and ST.GetSuperTrackedQuestID() == questID then
         pcall(ST.SetSuperTrackedQuestID, 0)
-        if PlaySound and SOUNDKIT and SOUNDKIT.UI_MAP_WAYPOINT_SUPER_TRACK_OFF then
-            pcall(PlaySound, SOUNDKIT.UI_MAP_WAYPOINT_SUPER_TRACK_OFF)
-        end
+        P.PlayLookSound("off", SOUNDKIT and SOUNDKIT.UI_MAP_WAYPOINT_SUPER_TRACK_OFF)
     else
         pcall(ST.SetSuperTrackedQuestID, questID)
         lastSelectedQuestID = questID
         SaveState()
-        if PlaySound and SOUNDKIT and SOUNDKIT.UI_MAP_WAYPOINT_SUPER_TRACK_ON then
-            pcall(PlaySound, SOUNDKIT.UI_MAP_WAYPOINT_SUPER_TRACK_ON)
-        end
+        P.PlayLookSound("on", SOUNDKIT and SOUNDKIT.UI_MAP_WAYPOINT_SUPER_TRACK_ON)
     end
     if LayoutObjectiveTrackerWithStacks then LayoutObjectiveTrackerWithStacks() end
     if shoppingListFrame and shoppingListFrame:IsShown() then P.Render(shoppingListFrame) end
+end
+
+-- The click sound for a tally line (kind "on" / "off"): the look's own (style.sounds, the magic box's pings;
+-- .ogg first, then .wav (this client plays it: checked in a recording), then .mp3), else Blizzard's sound kit
+function P.PlayLookSound(kind, kit)
+    local snd = P.GetStyle().sounds
+    local path = snd and snd[kind]
+    if path and PlaySoundFile then
+        for _, ext in ipairs({ ".ogg", ".wav", ".mp3" }) do
+            local ok, willPlay = pcall(PlaySoundFile, path .. ext, "SFX")
+            if ok and willPlay then return path .. ext end
+        end
+    end
+    if kit and PlaySound then pcall(PlaySound, kit) end
+    return kit
 end
 
 -- The map an item is gathered on: where you've looted it most, else the quest's zone, else yours
@@ -9322,6 +9654,280 @@ function CFQ.EnsureMinimapDriver()
         end
     end)
     CFQ.mmDriver = drv
+end
+
+-- ----------------------------------------------------------------------------
+-- THE COMPASS (user request, Nov 2026): a small compass over the tally's top-left (or top-right) corner. Its
+-- needle points at the nearest thing to do: the closest tally quest's objective area, or a spot where one of its
+-- unfinished items was looted (CFQ.huntSpots); while you track a quest (click a line), at that quest instead. It
+-- turns as you turn (GetPlayerFacing), a small N on its rim keeps north, the distance in yards is under the
+-- needle. Click = track the quest it points at; right-click = the other corner. Its look is our own 3D compass
+-- (below), designed once the function was confirmed in game.
+-- World positions: X runs north, Y runs west (as for the minimap pins); bearings and the facing are radians
+-- counter-clockwise from north.
+-- ----------------------------------------------------------------------------
+P.CMP_SIZE = 58            -- px across
+P.CMP_EVERY = 0.05         -- seconds between needle updates
+P.cmpTargets = {}
+
+function P.CompassOn() return CFQ.parchmentOpts.compass and true or false end
+
+-- Where the compass sits for these margins: right corner?, its middle (px in from the corner's side, px down) and
+-- how far in from that side it reaches (the heading / close button start beyond it)
+function P.CompassPlace(l, t, r)
+    local right = CFQ.parchmentOpts.compassRight and true or false
+    local cx, cy = 4 + (right and r or l) * 0.5, 4 + t * 0.5
+    return right, cx, cy, cx + P.CMP_SIZE / 2 + 4
+end
+
+-- Every place the needle could point at, worked out when the tally gathers its quests (P.BuildAreas) as world
+-- positions, so each tick only needs your own: each quest's objective area, and its unfinished items' loot spots
+function P.BuildCompassTargets(eligible)
+    local list = {}
+    for _, q in ipairs(eligible or {}) do
+        local function Add(m, x, y, what)
+            local c, wx, wy = CFQ.MapPosToWorld(m, x, y)
+            if c then list[#list + 1] = { questID = q.questID, title = q.title, what = what, c = c, wx = wx, wy = wy } end
+        end
+        if q.mapID and q.x and q.y then Add(q.mapID, q.x, q.y, nil) end
+        for _, obj in ipairs(q.itemObjectives or {}) do
+            if not obj.finished then
+                for _, sp in ipairs(CFQ.huntSpots[obj.progKey] or {}) do Add(sp.m, sp.x, sp.y, obj.itemName) end
+            end
+        end
+    end
+    P.cmpTargets = list
+end
+
+-- The target now: the tracked quest's nearest spot if it has one on your continent, else the nearest of all.
+-- Returns the target with .north / .west (yards from you) and .d (yards), or nil.
+function P.CompassTarget()
+    local pMap, px, py = GetPlayerMapPositionSafe()
+    if not (pMap and px and py) then return nil end
+    local pc, pwx, pwy = CFQ.MapPosToWorld(pMap, px, py)
+    if not pc then return nil end
+    local tracked = CFQ.parchmentOpts.compassTracked and P.GetSuperTrackedID() or nil   -- off: always the nearest
+    local best, bestD, bestTracked = nil, nil, false
+    for _, t in ipairs(P.cmpTargets) do
+        if t.c == pc then
+            local north, west = t.wx - pwx, t.wy - pwy
+            local d = math.sqrt(north * north + west * west)
+            local isT = tracked ~= nil and t.questID == tracked
+            local better
+            if isT ~= bestTracked then better = isT else better = (bestD == nil) or d < bestD end
+            if better then
+                best, bestD, bestTracked = t, d, isT
+                t.north, t.west, t.d = north, west, d
+            end
+        end
+    end
+    if best then best.tracked = bestTracked end
+    return best
+end
+
+function P.CompassDistText(d)
+    if not d then return "" end
+    if d < 8 then return "here" end
+    if d < 1000 then return string.format("%d yd", math.floor(d + 0.5)) end
+    return string.format("%.1fk yd", d / 1000)
+end
+
+-- The compass's own 3D art (tools\TexGen.cs: CompassDial / CompassNeedle / CompassBezel / CompassGlow, user choice
+-- after researching WoW's own compasses): the dial turns so its north points north, the needle (with a shadow
+-- nudged down-right) eases onto the target, the bezel sits still over both, and the crystal in its top glows by
+-- distance like the archaeology survey tool: red far off, a slow yellow blink nearer, a fast green blink close.
+P.CMP_TEX = "Interface\\AddOns\\Handkerquest\\textures\\compass_"
+P.CMP_BANDS = {                      -- distance (yd) at or under which a band starts, its colour, blinks a second
+    { d = 50,  color = { 0.35, 1.00, 0.40 }, blink = 3.2 },
+    { d = 100, color = { 1.00, 0.80, 0.20 }, blink = 1.1 },
+    { d = math.huge, color = { 1.00, 0.25, 0.15 }, blink = 0 },
+}
+P.CMP_EASE = 9                       -- how fast the needle swings onto its bearing (per second)
+
+function P.CompassBand(d)
+    if not d then return nil end
+    for _, b in ipairs(P.CMP_BANDS) do
+        if d <= b.d then return b end
+    end
+end
+
+function P.EnsureCompass(f)
+    if f.compass then return f.compass end
+    local c = CreateFrame("Button", nil, f.chrome)
+    local S = P.CMP_SIZE
+    c:SetSize(S, S)
+    c:SetFrameLevel((f.baseLevel or 30) + 24)
+    if c.RegisterForClicks then c:RegisterForClicks("LeftButtonUp", "RightButtonUp") end
+    c.dial = c:CreateTexture(nil, "BACKGROUND")
+    c.dial:SetAllPoints()
+    c.dial:SetTexture(P.CMP_TEX .. "dial")
+    c.shadow = c:CreateTexture(nil, "BORDER")
+    c.shadow:SetSize(S, S)
+    c.shadow:SetPoint("CENTER", c, "CENTER", S * 0.02, -S * 0.025)
+    c.shadow:SetTexture(P.CMP_TEX .. "needle")
+    c.shadow:SetVertexColor(0, 0, 0, 0.45)
+    c.needle = c:CreateTexture(nil, "ARTWORK")
+    c.needle:SetSize(S, S)
+    c.needle:SetPoint("CENTER")
+    c.needle:SetTexture(P.CMP_TEX .. "needle")
+    c.bezel = c:CreateTexture(nil, "OVERLAY")
+    c.bezel:SetAllPoints()
+    c.bezel:SetTexture(P.CMP_TEX .. "bezel")
+    c.lamp = c:CreateTexture(nil, "OVERLAY", nil, 1)
+    c.lamp:SetSize(S * 0.20, S * 0.20)
+    c.lamp:SetPoint("CENTER", c, "CENTER", 0, S * (128 - 22) / 256)       -- the crystal in the bezel's top
+    c.lamp:SetTexture(P.CMP_TEX .. "glow")
+    if c.lamp.SetBlendMode then c.lamp:SetBlendMode("ADD") end
+    c.north = c:CreateFontString(nil, "OVERLAY", nil, 2)
+    c.north:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", 7, "OUTLINE")
+    c.north:SetTextColor(0.95, 0.92, 0.82, 0.95)
+    c.north:SetText("N")
+    c.dist = c:CreateFontString(nil, "OVERLAY", nil, 2)
+    c.dist:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", 7, "")
+    c.dist:SetTextColor(0.95, 0.88, 0.66, 1)
+    c.dist:SetPoint("CENTER", c, "CENTER", 0, -S * (170 - 128) / 256)       -- in the bezel's window
+    -- a client that can't turn textures: the plain drawn needle instead
+    c.canRotate = c.needle.SetRotation and c.dial.SetRotation and true or false
+    if not c.canRotate then
+        c.shadow:Hide()
+        c.needle:Hide()
+        c.line = c:CreateLine(nil, "ARTWORK", nil, 1)
+        c.line:SetThickness(2.5)
+        c.line:SetColorTexture(0.88, 0.20, 0.12, 1)
+    end
+    c:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Compass", 1, 0.82, 0)
+        local t = self.target
+        if t then
+            GameTooltip:AddLine((t.tracked and "Tracked: " or "Nearest: ") .. (t.title or "a quest"), 1, 1, 1, true)
+            if t.what then GameTooltip:AddLine("Where you've looted " .. t.what, 0.8, 0.8, 0.8, true) end
+            GameTooltip:AddLine(P.CompassDistText(t.d) .. " away", 0.8, 0.8, 0.8)
+        else
+            GameTooltip:AddLine("Nothing to point at here (no quest positions on this map).", 0.8, 0.8, 0.8, true)
+        end
+        GameTooltip:AddLine("The crystal glows red far off, blinks yellow nearer and green when you're close.", 0.6, 0.6, 0.6, true)
+        GameTooltip:AddLine("Click: track this quest.  Right-click: the other corner.", 0.6, 0.6, 0.6, true)
+        GameTooltip:Show()
+    end)
+    c:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    c:SetScript("OnClick", function(self, button)
+        if button == "RightButton" then
+            CFQ.parchmentOpts.compassRight = not CFQ.parchmentOpts.compassRight
+            P.CompassChanged()
+        elseif self.target and self.target.questID then
+            CFQ.ToggleSuperTrack(self.target.questID)
+        end
+    end)
+    c.acc = 0
+    c:SetScript("OnUpdate", function(self, elapsed)
+        local ok, err = pcall(function()
+            self.acc = self.acc + (elapsed or 0)
+            if self.acc >= P.CMP_EVERY then
+                self.acc = 0
+                P.UpdateCompass(f)
+            end
+            P.AnimateCompass(f, elapsed or 0)
+        end)
+        if not ok then
+            CFQ.ReportError(err)
+            self:SetScript("OnUpdate", nil)
+        end
+    end)
+    f.compass = c
+    return c
+end
+
+-- Places (or hides) the compass for the current margins (from P.LayoutPads)
+function P.LayoutCompass(f, on, right, cx, cy)
+    if not on then
+        if f.compass then f.compass:Hide() end
+        return
+    end
+    local c = P.EnsureCompass(f)
+    c:ClearAllPoints()
+    if right then c:SetPoint("CENTER", f.chrome, "TOPRIGHT", -cx, -cy)
+    else c:SetPoint("CENTER", f.chrome, "TOPLEFT", cx, -cy) end
+    c:Show()
+    P.UpdateCompass(f)
+    P.AnimateCompass(f, 0)
+end
+
+-- What the compass shows (every P.CMP_EVERY s): the target, the dial's turn, where the needle is heading, the
+-- distance (re-set only when the words change) and the lamp's band
+function P.UpdateCompass(f)
+    local c = f and f.compass
+    if not (c and c:IsShown()) then return end
+    local fa
+    if type(GetPlayerFacing) == "function" then
+        local ok, v = pcall(GetPlayerFacing)
+        if ok and type(v) == "number" then fa = v end
+    end
+    c.facing = fa
+    local R = P.CMP_SIZE * 0.30
+    local thN = -(fa or 0)                                     -- north, as seen facing your way
+    c.north:ClearAllPoints()
+    c.north:SetPoint("CENTER", c, "CENTER", -math.sin(thN) * R, math.cos(thN) * R)
+    if c.canRotate then c.dial:SetRotation(thN) end
+    local t = P.CompassTarget()
+    c.target = t
+    local words = t and P.CompassDistText(t.d) or ""
+    if c.distWords ~= words then
+        c.distWords = words
+        c.dist:SetText(words)
+    end
+    c.band = t and fa and P.CompassBand(t.d) or nil
+    if not (t and fa) then
+        c.goal = nil
+        return
+    end
+    c.goal = math.atan2(t.west, t.north) - fa                  -- the target's bearing, turned with you
+    if not c.ang then c.ang = c.goal end                       -- first sight: straight there
+end
+
+-- Every frame: the needle eases onto its bearing the short way round; the lamp glows / blinks by distance
+function P.AnimateCompass(f, dt)
+    local c = f and f.compass
+    if not (c and c:IsShown()) then return end
+    if not c.goal then
+        c.ang = nil
+        c.needle:Hide(); c.shadow:Hide()
+        if c.line then c.line:Hide() end
+    else
+        local d = math.fmod(c.goal - c.ang + math.pi, 2 * math.pi)
+        if d < 0 then d = d + 2 * math.pi end
+        d = d - math.pi
+        c.ang = c.ang + d * math.min(1, (dt or 0) * P.CMP_EASE)
+        if c.canRotate then
+            c.needle:SetRotation(c.ang); c.shadow:SetRotation(c.ang)
+            c.needle:Show(); c.shadow:Show()
+        else
+            local L = P.CMP_SIZE / 2 - 12
+            c.line:SetStartPoint("CENTER", c, 0, 0)
+            c.line:SetEndPoint("CENTER", c, -math.sin(c.ang) * L, math.cos(c.ang) * L)
+            c.line:Show()
+        end
+    end
+    local b = c.band
+    if not b then
+        c.lamp:Hide()
+        return
+    end
+    local a = 0.85
+    if b.blink > 0 then a = 0.25 + 0.75 * (0.5 + 0.5 * math.sin(GetTime() * b.blink * 2 * math.pi)) end
+    c.lamp:SetVertexColor(b.color[1], b.color[2], b.color[3], a)
+    c.lamp:Show()
+end
+
+-- The compass switched on / off or moved: save and lay the tally out again
+function P.CompassChanged()
+    SaveState()
+    local f = shoppingListFrame
+    if f then
+        f.padKey = nil
+        P.LayoutPads(f)
+    end
+    if CFQ.RefreshOptionsPanel then CFQ.RefreshOptionsPanel() end
 end
 
 -- ============================================================================
@@ -12321,6 +12927,7 @@ function CFQ.BuildOptionsPanel()
     -- beside the Look button, only while that look is chosen) or "ink" (the writing, every look; each
     -- look remembers its own). The first swatch is always the look's own colour.
     local function IsArcane() return P.GetStyle().key == "ARCANE" end
+    local function IsMagicBox() return P.GetStyle().key == "TERMINAL" end
     local function OpenColorPicker(which)
         if not ColorPickerFrame then return end
         local before = CFQ.ValidColor(P.GetStoredTallyColor(which))
@@ -12362,8 +12969,8 @@ function CFQ.BuildOptionsPanel()
             GameTooltip:Show()
         end
         local function OwnColor()
-            if which == "rune" then return presets[1].c end
-            return P.StyleDefaults(P.GetStyle()).ink
+            if which == "rune" or which == "screen" then return presets[1].c end
+            return P.LookOwnInk(P.GetStyle())
         end
         row.swatches = {}
         for k, pr in ipairs(presets) do
@@ -12431,6 +13038,8 @@ function CFQ.BuildOptionsPanel()
         GILDED = "A plate of beaten gold, the list engraved; light glints across it now and then.",
         VELLUM = "A page of a holy book with a gold-leaf border, the heading in red.",
         DISPATCH = "A courier's message torn off a field pad, folded in four, in copying pencil; stamped with your guild's name if you have one.",
+        TERMINAL = "A gnome swears it's engineering. Blackened gunmetal worn through to brass, red warning lights, hazard stripes, a scorched grille and a gauge stuck in the red, round a glowing screen: the list typed out in green, scanlines, flicker, a blinking cursor, and a radar ping when you pick a quest. Screen colour changes the glow.",
+        DWARVEN = "A slab of granite from the mountain halls, the list cut into it in angular runes: the letters really sit in the stone.",
         ARCANE = "A mage's words of light hanging in the air, a rune circle turning behind them.",
         NATIVE = "A see-through WoW-style panel, in the handwriting you pick.",
     }
@@ -12441,6 +13050,7 @@ function CFQ.BuildOptionsPanel()
         PLAIN = "The game's plain interface print.",
         BLOTTED = "A rough hand, drops of ink shaken off the quill here and there.",
         TYPEWRITER = "Typed on a worn field typewriter: uneven, inky keys. Made for the courier dispatch.",
+        RUNECUT = "Runes cut with a chisel: straight strokes only, no curves. Made for the dwarven runestone.",
     }
 
     -- A drop-down list under a button: one row per entry (the current one ticked, an optional swatch, the
@@ -12449,7 +13059,9 @@ function CFQ.BuildOptionsPanel()
     -- still above the Settings window). Set again every time the list opens: when Settings shows our panel
     -- it re-parents it, which pulls the list back down to the window's layer, under the catcher, and every
     -- click on a row then only closed the list.
-    local function DropList(btn, entries, width, getCur, onPick, tipTitle, host)
+    -- keepOpen (the Look list, user request): picking a row applies it and the list stays open, so you can click
+    -- through the looks; a click outside (or the button again) closes it
+    local function DropList(btn, entries, width, getCur, onPick, tipTitle, host, keepOpen)
         local ROW_H = 20
         btn.arrow = btn:CreateTexture(nil, "OVERLAY")
         btn.arrow:SetSize(16, 16)
@@ -12528,9 +13140,10 @@ function CFQ.BuildOptionsPanel()
             row.label:SetText(en.label)
             row.key = en.key
             row:SetScript("OnClick", function(self)
-                list:Hide()
+                if not keepOpen then list:Hide() end
                 onPick(self.key)
                 CFQ.RefreshOptionsPanel()
+                if keepOpen and list:IsShown() then list:Refresh() end
             end)
             row:SetScript("OnEnter", function(self)
                 GameTooltip:SetOwner(list, "ANCHOR_RIGHT")
@@ -12584,11 +13197,13 @@ function CFQ.BuildOptionsPanel()
             SaveState()
             P.ApplyStyle()
             RefreshParchment()
-        end, "Look of the Field Tally", host)
+        end, "Look of the Field Tally", host, true)
         local fontEntries = {}
         for _, fst in ipairs(P.FONT_STYLES) do
-            table.insert(fontEntries, { key = fst.key, label = fst.label, font = fst.path or STANDARD_TEXT_FONT,
-                fontSize = (fst.item or 12) + 2, blurb = FONT_BLURBS[fst.key] or fst.blurb })
+            if not fst.hidden then                                  -- a look's own lettering (the runestone's V-cut) isn't a hand to pick
+                table.insert(fontEntries, { key = fst.key, label = fst.label, font = fst.path or STANDARD_TEXT_FONT,
+                    fontSize = (fst.item or 12) + 2, blurb = FONT_BLURBS[fst.key] or fst.blurb })
+            end
         end
         W.fontBtn = Button("Handwriting: Quill script", 240, 244, ToggleList, function(self)
             -- some looks bring their own lettering (carved bark: knife-cut letters)
@@ -12615,6 +13230,11 @@ function CFQ.BuildOptionsPanel()
         W.runes = ColorRow(24, y, "Rune colour", 110, "rune", P.ARCANE_RUNE_COLORS,
             "Arcane script only: the colour of the rune circle and its light (the glow round the words, the motes, ticks and strikes, the corner mark).",
             nil, IsArcane)
+        y = y - 26
+        -- the same for the Gnomish Magic Box's screen
+        W.screen = ColorRow(24, y, "Screen colour", 110, "screen", P.TERMINAL_SCREEN_COLORS,
+            "Gnomish Magic Box only: the colour of the screen's phosphor (its glow, the light round the words, the rolling band, the cursor). The words take it too, unless you gave the box a writing colour of its own.",
+            nil, IsMagicBox)
         y = y - 28
         W.size = RadiusSlider("Text size", "Text size",
             "How big the tally's writing is, as % of the usual size. The page heading grows by half as much.",
@@ -12629,6 +13249,7 @@ function CFQ.BuildOptionsPanel()
     local mainAp = BuildAppearance(outer)
     CFQ.lookDropDown, CFQ.fontDropDown = mainAp.lookList, mainAp.fontList
     CFQ.inkColorRow, CFQ.runeColorRow, CFQ.textSizeRow = mainAp.ink, mainAp.runes, mainAp.size
+    CFQ.screenColorRow = mainAp.screen
 
     -- The tally ---------------------------------------------------------------
     Section("Field Tally")
@@ -12693,6 +13314,28 @@ function CFQ.BuildOptionsPanel()
         "When you enter a new area, the pile turns back to the Near me page and its heading is written in fresh red ink.",
         function() return CFQ.parchmentOpts.autoFrontOnAreaChange end,
         function(v) CFQ.parchmentOpts.autoFrontOnAreaChange = v end, 280)
+    local compassChecks = {}
+    Check("Compass",
+        "A small compass over the tally's corner. Its needle points at the nearest thing to do: the closest quest objective area, or a spot where you've looted one of its items (or at the quest you track: see below). It turns as you turn; the distance is in its window, and the crystal on top glows red far off, blinks yellow nearer and green when you're close.\n\nClick the compass: track the quest it points at. Right-click: move it to the other corner.",
+        function() return CFQ.parchmentOpts.compass end,
+        function(v) CFQ.parchmentOpts.compass = v; P.CompassChanged() end, 0, true)
+    compassChecks[#compassChecks + 1] = Check("...in the top-right corner",
+        "Off: the compass sits over the top-left corner. On: the top-right (the close button and gear make room).",
+        function() return CFQ.parchmentOpts.compassRight end,
+        function(v) CFQ.parchmentOpts.compassRight = v; P.CompassChanged() end, 280)
+    CFQ.compassTrackedCheck = Check("...point at the quest you track",
+        "On: while you track a quest (click a line on the tally, or its icon in the quest tracker), the needle points at that quest; with none tracked, at the nearest thing to do. Off: the needle always points at the nearest thing to do, whatever you track.",
+        function() return CFQ.parchmentOpts.compassTracked end,
+        function(v) CFQ.parchmentOpts.compassTracked = v; P.CompassChanged() end, 24)
+    compassChecks[#compassChecks + 1] = CFQ.compassTrackedCheck
+    CFQ.compassRightCheck = compassChecks[1]
+    for _, cb in ipairs(compassChecks) do
+        local base = cb.Refresh
+        cb.Refresh = function(self)
+            base(self)
+            self:SetAlpha(CFQ.parchmentOpts.compass and 1 or 0.45)     -- part of the compass
+        end
+    end
     y = y - 4
 
     -- "For me" & the Journal -----------------------------------------------------
@@ -13080,14 +13723,47 @@ SlashCmdList["HANDKERQUEST"] = function(msg)
             gold = "GILDED", gilded = "GILDED", plate = "GILDED", golden = "GILDED",
             vellum = "VELLUM", illuminated = "VELLUM", manuscript = "VELLUM", libram = "VELLUM", book = "VELLUM",
             dispatch = "DISPATCH", courier = "DISPATCH", message = "DISPATCH", despatch = "DISPATCH", orders = "DISPATCH",
+            terminal = "TERMINAL", phosphor = "TERMINAL", crt = "TERMINAL", screen = "TERMINAL", monitor = "TERMINAL",
+            dwarf = "DWARVEN", dwarven = "DWARVEN", runestone = "DWARVEN", runic = "DWARVEN", granite = "DWARVEN", carving = "DWARVEN",
+            computer = "TERMINAL", wasteland = "TERMINAL", box = "TERMINAL", magicbox = "TERMINAL",
+            gnome = "TERMINAL", gnomish = "TERMINAL", cyber = "TERMINAL", cyberpunk = "TERMINAL",
             arcane = "ARCANE", mage = "ARCANE", magic = "ARCANE", rune = "ARCANE", runes = "ARCANE",
             window = "NATIVE", transparent = "NATIVE", native = "NATIVE" }
+        if string.find(cmd, "^%a+%s+magic%s*box") then want = "magicbox" end      -- "magic" alone is arcane script
         if want and alias[want] then CFQ.parchmentStyle = alias[want] else P.CycleStyle() end
         SaveState()
         P.ApplyStyle()
         UpdateShoppingListUI()
         CFQ.RefreshOptionsPanel()
         print("|cFFFFD100HandkerSheaf:|r Field Tally look: " .. P.GetStyle().label)
+    elseif cmd == "compass" or string.find(cmd, "^compass ") then
+        -- /hanky compass [on | off | left | right | nearest | tracked]: no word = on/off
+        local word = string.match(cmd, "^compass%s+(%a+)")
+        local po = CFQ.parchmentOpts
+        if word == "left" or word == "right" then po.compass, po.compassRight = true, (word == "right")
+        elseif word == "on" or word == "off" then po.compass = (word == "on")
+        elseif word == "nearest" or word == "tracked" then po.compass, po.compassTracked = true, (word == "tracked")
+        else po.compass = not po.compass end
+        P.CompassChanged()
+        print("|cFFFFD100" .. CONFIG.DISPLAY_NAME .. ":|r compass " .. (po.compass and ("on, top-" .. (po.compassRight and "right" or "left")
+            .. " corner, pointing at " .. (po.compassTracked and "the quest you track (else the nearest)" or "the nearest thing to do")) or "off") .. ".")
+    elseif cmd == "ping" or cmd == "sound" or cmd == "ping off" then
+        -- tries the Magic Box's click sound and says which file this client played (WoW may play only some
+        -- formats, and only sees files that were there when the game started)
+        local st, kind = P.StyleByKey("TERMINAL"), (cmd == "ping off") and "off" or "on"
+        local path = st and st.sounds and st.sounds[kind]
+        local played
+        if path and PlaySoundFile then
+            for _, ext in ipairs({ ".ogg", ".wav", ".mp3" }) do
+                local ok, willPlay = pcall(PlaySoundFile, path .. ext, "SFX")
+                if ok and willPlay then played = ext; break end
+            end
+        end
+        if played then
+            print("|cFFFFD100" .. CONFIG.DISPLAY_NAME .. ":|r Magic Box ping: played sounds\\" .. path:match("[^\\]+$") .. played .. ".")
+        else
+            print("|cFFFFD100" .. CONFIG.DISPLAY_NAME .. ":|r Magic Box ping: this client wouldn't play its .ogg, .wav or .mp3, so the tally uses the usual sound. If you only just added the files, exit the game completely and start it again (/reload doesn't find new files).")
+        end
     elseif cmd == "journal" or cmd == "diary" then
         P.OpenJournal()
     elseif cmd == "entry" or cmd == "note" or string.find(cmd, "^entry%s") or string.find(cmd, "^note%s") then

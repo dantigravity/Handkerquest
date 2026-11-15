@@ -48,6 +48,8 @@ function methods:SetShadowOffset(x, y) self.__shadowOff = { x, y } end
 function methods:SetTexCoord(...) self.__tc = { ... } end
 function methods:SetTextColor(r, g, b, a) self.__textColor = { r, g, b, a } end
 function methods:SetRotation(r) self.__rotation = r end
+function methods:SetStartPoint(p, rel, x, y) self.__start = { p, rel, x, y } end
+function methods:SetEndPoint(p, rel, x, y) self.__end = { p, rel, x, y } end
 function methods:GetEffectiveScale() return 1 end
 function methods:GetScale() return 1 end
 function methods:SetAlpha(a) self.__alpha = a end
