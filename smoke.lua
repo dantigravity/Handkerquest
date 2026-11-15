@@ -158,6 +158,51 @@ for i = 2, #P.areas do for _, q in ipairs(P.areas[i].quests) do if q.questID == 
 check(on2, "a quest that leaves Near me moves onto an area page")
 CFQ.nearRadiusPercent = 10
 Fire("ZONE_CHANGED")
+do  -- the Near me distance on the heading: "within ——|—— 10%", drag / click / scroll
+    local s = f.nearSlider
+    check(s and s.__shown and s.label.__text == "within" and s.value.__text == "10%", "Near me heading: a distance scale reading 'within ... 10%'")
+    local cp = f.content.__points[1]
+    check(cp and cp[5] < -28 - (f.padT or 0) and f.headerExtra > 0, "Near me heading: the lines start under the scale")
+    local function markFrac() return (s.markX - s.x0) / (s.x1 - s.x0) end
+    check(math.abs(markFrac() - 9 / 49) < 1e-6 and s.x1 - s.x0 >= P.NEAR_TRACK_MIN, "Near me heading: the mark sits at 10% along the scale")
+    local saves = QRF_SavedState.nearRadiusPercent
+    s:GetScript("OnMouseWheel")(s, 1)
+    check(P.GetNearRadius() == 11 and s.value.__text == "11%" and QRF_SavedState.nearRadiusPercent == 11, "Near me heading: scrolling up widens it by 1% and saves")
+    s:GetScript("OnMouseWheel")(s, -1)
+    check(P.GetNearRadius() == 10, "Near me heading: scrolling down narrows it")
+    for _ = 1, 60 do s:GetScript("OnMouseWheel")(s, -1) end
+    check(P.GetNearRadius() == P.NEAR_MIN, "Near me heading: never below 1%")
+    -- click at the far end of the scale: everything near; the list re-sorts
+    local gc = GetCursorPosition
+    local left = s:GetLeft()
+    GetCursorPosition = function() return left + s.x1 + 30, 0 end
+    s:GetScript("OnMouseDown")(s, "LeftButton")
+    check(s.dragging and P.GetNearRadius() == P.NEAR_MAX, "Near me heading: pressing past the end = the widest")
+    GetCursorPosition = function() return left + s.x0 + (s.x1 - s.x0) * 0.5, 0 end
+    NOW = NOW + 1
+    s:GetScript("OnUpdate")(s, 0.016)
+    check(P.GetNearRadius() == 26 and s.value.__text == "26%", "Near me heading: dragging to the middle = 26%")
+    s:GetScript("OnMouseUp")(s, "LeftButton")
+    check(not s.dragging and QRF_SavedState.nearRadiusPercent == 26, "Near me heading: letting go saves it")
+    GetCursorPosition = gc
+    -- the options slider follows, and the other way round
+    CFQ.nearRadiusPercent = 1; Fire("ZONE_CHANGED")
+    check(s.value.__text == "1%", "Near me heading: follows the setting (options slider, /reload)")
+    local ids = {}
+    for _, q in ipairs(P.areas[1].quests) do ids[q.questID] = true end
+    s:GetScript("OnMouseWheel")(s, 1)
+    for _ = 1, 8 do s:GetScript("OnMouseWheel")(s, 1) end
+    ids = {}
+    for _, q in ipairs(P.areas[1].quests) do ids[q.questID] = true end
+    check(P.GetNearRadius() == 10 and ids[101], "Near me heading: widening it brings the further quest back onto Near me")
+    -- other pages: no scale, the lines start right under the heading
+    P.SelectArea(P.areas[2].key, false)
+    cp = f.content.__points[1]
+    check(not s.__shown and f.headerExtra == 0 and cp[5] == -28 - (f.padT or 0), "other pages: no distance scale")
+    P.SelectArea(P.CURRENT_KEY, false)
+    check(s.__shown, "back on Near me: the scale is back")
+    QRF_SavedState.nearRadiusPercent = saves
+end
 local dark
 for _, a in ipairs(P.areas) do if a.title and a.title:find("Darkshore") then dark = a end end
 check(dark ~= nil and dark.title == "North-western Darkshore", "Darkshore quest gets a compass-named page (" .. tostring(dark and dark.title) .. ")")
@@ -1263,6 +1308,8 @@ do
     local rows = P.SortTallyRows({ { kind = "task", itemName = "a" }, { kind = "loot", itemName = "b" },
         { kind = "slay", itemName = "c" }, { kind = "loot", itemName = "d" } })
     check(rows[1].itemName == "a" and rows[2].itemName == "b", "tasks apart off: the usual (tracker) order")
+    local sepW, sepH = f:GetWidth(), f:GetHeight()
+    f:SetSize(sepW, 230)                      -- room for both headings under Near me's distance row
     click(sb)
     rows = P.SortTallyRows({ { kind = "task", itemName = "a" }, { kind = "loot", itemName = "b" },
         { kind = "slay", itemName = "c" }, { kind = "loot", itemName = "d" } })
@@ -1278,6 +1325,7 @@ do
     check(not mixed, "...and no item comes after a task on the page")
     click(sb)
     check(not sb.on and not h[1].fs.__shown and not h[2].fs.__shown, "tasks apart off: no headings")
+    f:SetSize(sepW, sepH)
 
     click(sb)
     check(QRF_SavedState.parchmentOpts.tallySeparate == true and QRF_SavedState.tallySort == nil, "tasks apart is saved (the old order setting is dropped)")
@@ -1684,7 +1732,7 @@ do  -- "For me": your own tasks at the bottom of the "Near me" page
     -- the section stands on the page bottom: the writing line's foot is the page's foot
     local function ContentH()
         local _, padT, _, padB = P.GetPads(f)
-        return math.max(55, f:GetHeight() - 45 - padT - padB)
+        return math.max(55, f:GetHeight() - 45 - (f.headerExtra or 0) - padT - padB)   -- + Near me's distance row
     end
     local writeH = math.max(14, P.LineHeight(f)) + 7
     check(math.abs(f.forMeWrite.__py - -(ContentH() - writeH)) < 0.5,
@@ -2019,6 +2067,147 @@ do  -- Journal: longer entries, newest first, on the last page of the pile
         "Journal: the heading and footer say which place")
     f.journalRows[1].stampBtn:GetScript("OnClick")(f.journalRows[1].stampBtn)
     check(P.journalFilter == nil and f.footerFS.__text:find("^3 notes"), "Journal: click again: every note")
+
+    -- finding notes: the magnifier (search) and the calendar
+    do
+        local function shown()
+            local out = {}
+            for _, row in ipairs(f.journalRows) do if row.__shown then table.insert(out, P.PlainText(row.text.__text)) end end
+            return out
+        end
+        local tools = f.journalTools
+        check(tools and tools.search.__shown and tools.calendar.__shown, "Journal: a magnifier and a calendar on the writing line")
+        tools.search:GetScript("OnClick")(tools.search, "LeftButton")
+        local sb = f.journalSearchBox
+        check(P.journalSearching and sb and sb.__shown and not f.journalWrite.__shown and P.IsWriting(),
+            "Journal search: a box where 'write a note...' was (and the page won't turn under it)")
+        local function typeIn(s) sb:SetText(s); sb:GetScript("OnTextChanged")(sb, true) end
+        typeIn("MINE")
+        local list = shown()
+        check(P.journalSearch == "MINE" and #list == 2 and list[1] == "In the mine" and list[2] == e1.text,
+            "Journal search: as you type, only notes with the word (any capitals)")
+        local mineRow
+        for _, row in ipairs(f.journalRows) do if row.__shown and P.PlainText(row.text.__text) == "In the mine" then mineRow = row end end
+        check(mineRow and mineRow.text.__text == "In the |c" .. P.Hex(P.INK_RED) .. "mine|r", "Journal search: the word marked in red ink")
+        check(P.PlainText(f.titleFS.__text):find("\"MINE\"", 1, true) and f.footerFS.__text:find("with \"MINE\"", 1, true),
+            "Journal search: the heading and footer say what's looked for")
+        typeIn("goldshire")
+        list = shown()
+        check(#list == 1 and list[1] == "At the inn", "Journal search: finds a note by where it was written")
+        typeIn("elwynn")
+        check(#shown() == 2, "Journal search: by zone too")
+        typeIn("elwynn inn")
+        list = shown()
+        check(#list == 1 and list[1] == "At the inn", "Journal search: every word must be there")
+        typeIn("dragon")
+        check(f.journalRows[1].__shown and P.PlainText(f.journalRows[1].text.__text) == "Nothing written with \"dragon\".",
+            "Journal search: nothing found says so")
+        typeIn("inn")
+        sb:GetScript("OnEnterPressed")(sb)
+        check(not P.journalSearching and P.journalSearch == "inn" and not sb.__shown and f.journalWrite.__shown and tools.search.on,
+            "Journal search: Enter closes the box, the search stays (magnifier in full ink)")
+        P.SelectArea(P.CURRENT_KEY, false)
+        P.SelectArea(P.JOURNAL_KEY, false)
+        check(P.journalSearch == "inn" and #shown() == 1, "Journal search: kept while you turn the pages")
+        tools.search:GetScript("OnClick")(tools.search, "RightButton")
+        check(P.journalSearch == nil and #shown() == 3 and not tools.search.on, "Journal search: right-click on the magnifier: every note")
+        tools.search:GetScript("OnClick")(tools.search, "LeftButton")
+        typeIn("mine")
+        sb:GetScript("OnEscapePressed")(sb)
+        check(P.journalSearch == nil and not P.journalSearching and #shown() == 3, "Journal search: Escape stops searching")
+        local ach = { text = "Earned the achievement \"Explore Elwynn\".", t = 1794350400, when = "10 Nov 21:40",
+            auto = "achievement", achievements = { { id = 1, name = "Explore Elwynn", points = 10 } } }
+        local quest = { auto = "quest", text = "Turned in \"Wolves\".", quests = { { title = "Wolves", items = { { name = "Sturdy Boots" } } } } }
+        check(P.EntryMatches(ach, P.SearchTerms("explore")) and P.EntryMatches(quest, P.SearchTerms("boots"))
+            and not P.EntryMatches(quest, P.SearchTerms("boots dragon")), "Journal search: looks in what an auto note lists")
+        check(P.MarkMatches("Wolf wolves", { "wol", "wolf" }, "FFFF0000") == "|cFFFF0000Wolf|r |cFFFF0000wol|rves",
+            "Journal search: overlapping finds are marked once")
+
+        -- the calendar: the notes on 3 Nov and 10 Nov (today, in the mock)
+        a.when = "3 Nov 10:15"
+        check(P.Weekday(2026, 11, 10) == 3 and P.Weekday(2000, 1, 1) == 7 and P.Weekday(2024, 2, 29) == 5,
+            "calendar: weekdays")
+        check(P.DaysInMonth(2024, 2) == 29 and P.DaysInMonth(2100, 2) == 28 and P.DaysInMonth(2026, 11) == 30, "calendar: month lengths")
+        local ny = os.time({ year = 2027, month = 1, day = 1, hour = 0, min = 30 })
+        local yy, mm, dd = P.EntryDay({ when = "31 Dec 23:50", t = ny })
+        check(yy == 2026 and mm == 12 and dd == 31, "calendar: the realm's New Year's Eve stays in the old year")
+        tools.calendar:GetScript("OnClick")(tools.calendar, "LeftButton")
+        local cal = f.journalCal
+        check(P.journalCalendar and cal and cal.__shown and cal.title.__text == "November 2026" and #shown() == 0 and not f.journalWrite.__shown,
+            "calendar: the month on the page instead of the notes")
+        check(cal.wd[1].__text == "S" and cal.wd[2].__text == "M" and cal.cells[1].__points[1][4] == cal.gridX,
+            "calendar: weeks start on Sunday (the 1st of Nov 2026 is one)")
+        local c3, c4, c10 = cal.cells[3], cal.cells[4], cal.cells[10]
+        check(c3.notes and #c3.notes == 1 and c3.ring[1].main.__shown and c10.notes and #c10.notes == 2
+            and not c4.notes and not (c4.ring[1] and c4.ring[1].main.__shown),
+            "calendar: the days you wrote on are circled")
+        local red = P.INK_RED
+        check(math.abs(c10.fs.__textColor[1] - red[1]) < 1e-6 and math.abs(c10.fs.__textColor[2] - red[2]) < 1e-6, "calendar: today in red ink")
+        check(f.footerFS.__text:find("^3 notes on 2 days"), "calendar: the footer counts them: " .. tostring(f.footerFS.__text))
+        f:GetScript("OnMouseWheel")(f, 1)
+        check(cal.title.__text == "October 2026" and not cal.cells[3].notes, "calendar: wheel up = the month before")
+        f:GetScript("OnMouseWheel")(f, -1)
+        f:GetScript("OnMouseWheel")(f, -1)
+        f:GetScript("OnMouseWheel")(f, -1)
+        check(cal.title.__text == "January 2027", "calendar: ...and on into the new year")
+        cal.prev:GetScript("OnClick")(cal.prev, "LeftButton")
+        cal.prev:GetScript("OnClick")(cal.prev, "LeftButton")
+        check(cal.title.__text == "November 2026", "calendar: the < button")
+        -- "today": back to this month, then today's notes
+        local tdb = cal.todayBtn
+        check(tdb and tdb.__shown and tdb.fs.__text == "today", "calendar: a 'today' button on the month's row")
+        f:GetScript("OnMouseWheel")(f, 1)
+        f:GetScript("OnMouseWheel")(f, 1)
+        f:GetScript("OnMouseWheel")(f, 1)
+        check(cal.title.__text == "August 2026", "calendar: browsing back a few months")
+        tdb:GetScript("OnClick")(tdb, "LeftButton")
+        check(P.journalCalendar and cal.title.__text == "November 2026" and P.journalDay == nil, "calendar: today: back to this month")
+        tdb:GetScript("OnClick")(tdb, "LeftButton")
+        list = shown()
+        check(P.journalDay and P.journalDay.d == 10 and P.journalDay.m == 11 and not P.journalCalendar and #list == 2,
+            "calendar: today again: today's notes")
+        tools.calendar:GetScript("OnClick")(tools.calendar, "LeftButton")
+        tdb:GetScript("OnClick")(tdb, "LeftButton")
+        check(P.journalDay and P.journalDay.d == 10 and #shown() == 2, "calendar: today when today's picked already: stays picked")
+        P.journalDay = nil
+        tools.calendar:GetScript("OnClick")(tools.calendar, "LeftButton")
+        check(P.journalCalendar and cal.title.__text == "November 2026", "calendar: open again on this month")
+        local fw, fhh = f:GetWidth(), f:GetHeight()
+        f:SetSize(170, fhh)
+        P.JournalRefresh()
+        check(cal.title.__text == "Nov 2026", "calendar: a narrow page: the month's name short, clear of 'today'")
+        f:SetSize(fw, fhh)
+        P.JournalRefresh()
+        CALENDAR_FIRST_WEEKDAY = 2
+        P.JournalRefresh()
+        check(cal.wd[1].__text == "M" and cal.cells[1].__points[1][4] == cal.gridX + 6 * cal.cellW,
+            "calendar: weeks start on Monday where the game's calendar does")
+        CALENDAR_FIRST_WEEKDAY = nil
+        c3:GetScript("OnClick")(c3, "LeftButton")
+        list = shown()
+        check(P.journalDay and P.journalDay.d == 3 and not P.journalCalendar and #list == 1 and list[1] == "In the mine"
+            and f.footerFS.__text:find("on 3 Nov", 1, true) and tools.calendar.on,
+            "calendar: clicking a day shows only that day's notes")
+        tools.search:GetScript("OnClick")(tools.search, "LeftButton")
+        typeIn("inn")
+        check(#shown() == 1 and P.PlainText(f.journalRows[1].text.__text) == "Nothing written on 3 Nov with \"inn\".",
+            "calendar + search: both apply")
+        sb:GetScript("OnEscapePressed")(sb)
+        tools.calendar:GetScript("OnClick")(tools.calendar, "LeftButton")
+        check(cal.title.__text == "November 2026", "calendar: opens on the day picked's month")
+        cal.cells[3]:GetScript("OnClick")(cal.cells[3], "LeftButton")
+        check(P.journalDay == nil and #shown() == 3, "calendar: the picked day again: every day")
+        cal.cells[10]:GetScript("OnClick")(cal.cells[10], "LeftButton")
+        check(#shown() == 2, "calendar: 10 Nov's two notes")
+        tools.calendar:GetScript("OnClick")(tools.calendar, "RightButton")
+        check(P.journalDay == nil and #shown() == 3 and not tools.calendar.on, "calendar: right-click: every day again")
+        tools.calendar:GetScript("OnClick")(tools.calendar, "LeftButton")
+        P.SelectArea(P.CURRENT_KEY, false)
+        check(P.journalCalendar == nil and not cal.__shown, "calendar: closes when you turn away from the Journal")
+        P.SelectArea(P.JOURNAL_KEY, false)
+        check(#shown() == 3, "calendar: back on the Journal: the notes")
+        a.when = b.when
+    end
 
     -- the oldest makes room when the journal is full
     local maxE = P.NOTE_MAX_ENTRIES

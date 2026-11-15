@@ -83,6 +83,14 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
   **No other line orders** (A-Z, closest to done, presets and a mix menu were tried and removed): lines keep
   the tracker's quest order. Switching items or tasks off never puts the tally away
   (`P.ShouldHideUnfiltered`), even with "hide when nothing is nearby". Same three choices in the options panel.
+  **Exception, an experiment** (user request, Nov 2026; not yet judged in game): the Near me distance as a
+  small inked scale under the **Near me** heading's underline, "within ——|—— 10%" (`f.nearSlider`,
+  `P.CreateNearSlider` / `P.DrawNearSlider` / `P.LayoutNearSlider`): inked up to the mark, faded beyond, the
+  value in the ink (red while hovered or dragged). Drag or click along it, or scroll over it (1% a notch),
+  1-50% (`P.NEAR_MIN/MAX`); the list re-sorts every `P.NEAR_LIVE_EVERY` s while dragging, saved on letting go
+  (`P.CommitNearRadius`). Same setting as the options' "Near me distance" (`CFQ.nearRadiusPercent`). Only on
+  the Near me page; there the lines start a row lower (`f.headerExtra`, part of `P.LayoutPads`' key and of
+  the page's content height in `P.Render`), which costs about a line on the default 175px tally.
 - Rows: hand-inked box, quill tick, strike-through only over "count  name" (one strike per wrapped
   line); "(turn in)" is a separate unstruck note.
 - **Page 1 is always "Near me"** (items within the Near me distance of the player, or progressed in the
@@ -356,6 +364,32 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
   - Click an entry = write more in its place (empty = rubbed out); shift-click = rub out. **Click the place
     in a stamp** = only entries written there (`P.journalFilter`; shown after the heading as "· Fargodeep
     Mine" and in the footer); click again = all.
+  - **Search and calendar** (user request, Nov 2026, for quick look-ups): two inked glyphs at the right end
+    of the writing line, magnifier then calendar (`f.journalTools`, `P.WRITE_GLYPHS.search` / `.calendar`,
+    faded; full ink while their filter is on, `P.DrawWriteGlyph(b, kind, hover, on)`).
+    - Magnifier: a one-line box where "write a note..." was (`f.journalSearchBox`, `P.journalSearching`),
+      filtering **as you type** (`P.journalSearch`). Every word must be found, any capitals, in the note,
+      its stamp (date, place, writer) or what an auto note lists (quests, items, achievements, levels;
+      `P.EntryHaystack`). Found words are marked in red ink (`P.MarkMatches`). Enter / clicking away = box
+      closes, search stays; Escape or right-click on the magnifier = every note again. Kept while you turn
+      pages; the page never turns under the box (`P.IsWriting`).
+    - Calendar: the month **on the page** instead of the notes (`P.journalCalendar = { y, m }`,
+      `P.RenderJournalCalendar`, `f.journalCal`): "< November 2026 >" on the writing line's row, the
+      weekdays' letters (left out when the page is short), the days. Days you wrote on are circled by hand
+      (`P.DrawDayRing`), today in red ink, the picked day's ring red; hover = the day's notes. Click a day =
+      only its notes (`P.journalDay`, "· 10 Nov" in the heading, "on 10 Nov" in the footer); the same day
+      again or right-click on the calendar glyph = every day. Wheel / < > = month by month. **"today"**
+      (user request; `c.todayBtn`, `P.CalendarToday`, small sub-ink word with a quill underline, red on hover)
+      on the month's row just left of the glyphs: browsing another month = back to this one; on this month =
+      today's notes (sets the day, never clears it). The month's name goes short ("Nov 2026") when it would
+      run into "today" (it does at the default width). Weeks start on
+      the game's `CALENDAR_FIRST_WEEKDAY`. A note's day = its stamp's day and month (realm calendar) with the
+      year from its server time (`P.EntryDay`). Closes when you turn away from the Journal. Small pages
+      squeeze the day rows to `P.CAL_MIN_ROW` (8px): at the default 175px size a six-week month still runs
+      a few px over on the leaf and marble.
+    - Place, day and search all apply together (`P.JournalList`, `P.NotesByDay` for the circles;
+      `P.JournalSubtitle`, `P.JournalFilterWords`); a filter change redraws without re-reading the quests
+      (`P.JournalRefresh`).
   - Walking into a new area never turns the page while you're writing (`P.IsWriting` in `P.CheckAreaChange`).
   - Not yet: the hover map with a dot where it was written (`CFQ.ShowMapPreview` is quest-only),
     "with", the insert menu, auto entries.
@@ -464,7 +498,8 @@ the rest is not built yet: build to this, and move each part into "Design rules"
   `GetServerTime()` for sorting; `pcall`, fall back to `time()`/`date()` (PC clock) — check in game which
   this client gives. There is no separate Azeroth date. **Open:** optional Shire Reckoning month names.
 - Hovering an entry shows `CFQ.ShowMapPreview` with a dot where it was written. Clicking an entry's
-  place stamp filters the Journal to that place (click again = all). No filter buttons.
+  place stamp filters the Journal to that place (click again = all). (Built later at the user's request: a
+  search and a calendar on the writing line; see "Search and calendar" under Journal.)
 - Tasks: **Open** — "everywhere" (suggested default) or "here" (shows in "For me" only near where it was
   written); right-click switches (built: everywhere only). (`hideWhenNothingNearby` no longer applies
   while "For me" is on: decided.)

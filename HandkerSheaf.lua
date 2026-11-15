@@ -3488,7 +3488,8 @@ end
 function P.LayoutPads(f)
     if not f or not f.chrome then return end
     local l, t, r, b = P.GetPads(f)
-    local key = P.GetStyle().key .. ":" .. l .. ":" .. t .. ":" .. r .. ":" .. b
+    local extra = f.headerExtra or 0          -- the Near me page's distance row under the heading
+    local key = P.GetStyle().key .. ":" .. l .. ":" .. t .. ":" .. r .. ":" .. b .. ":" .. extra
     if f.padKey == key then return end
     f.padKey = key
     f.pad, f.padL, f.padT, f.padR, f.padB = math.min(l, t, r, b), l, t, r, b
@@ -3503,7 +3504,7 @@ function P.LayoutPads(f)
     end
     if f.content then
         f.content:ClearAllPoints()
-        f.content:SetPoint("TOPLEFT", f.chrome, "TOPLEFT", 6 + l, -28 - t)
+        f.content:SetPoint("TOPLEFT", f.chrome, "TOPLEFT", 6 + l, -28 - t - extra)
         f.content:SetPoint("BOTTOMRIGHT", f.chrome, "BOTTOMRIGHT", -6 - r, 17 + b)
     end
     if f.footerFS then
@@ -4467,6 +4468,7 @@ local function EnsureShoppingListFrame()
     f.titleFS = titleFS
     f.titleRule = P.NewStroke(chrome, "ARTWORK", 4)
     f.titleRule2 = P.NewStroke(chrome, "ARTWORK", 4)
+    P.CreateNearSlider(f, chrome, base + 19)   -- "within ——|—— 10%" under the Near me heading
 
     -- Hidden measuring string for the hand-wrapped (struck-through) lines
     f.measureFS = chrome:CreateFontString(nil, "OVERLAY")
@@ -4491,6 +4493,10 @@ local function EnsureShoppingListFrame()
     f.footerFS = footerFS
 
     f:SetScript("OnMouseWheel", function(_, delta)
+        if P.journalCalendar and P.selectedKey == P.JOURNAL_KEY then      -- the Journal's calendar: month by month
+            P.ShiftCalendar((delta or 0) > 0 and -1 or 1)
+            return
+        end
         local total = f.totalItems or 0
         local maxScroll = math.max(0, total - 1)
         shoppingScrollOffset = math.min(maxScroll, math.max(0, shoppingScrollOffset - delta))
@@ -4925,6 +4931,198 @@ function P.OnTallyChoiceChanged()
     if CFQ.RefreshOptionsPanel then pcall(CFQ.RefreshOptionsPanel) end
 end
 
+-- ----------------------------------------------------------------------------
+-- NEAR ME DISTANCE ON THE HEADING (user request, Nov 2026: an experiment). A small inked scale under
+-- the "Near me" heading's underline: "within ——|—— 10%". The part up to the mark is inked, the rest
+-- faded. Drag along it or click a spot, or scroll the wheel over it (1% a notch). The same setting as
+-- "Near me distance" in the options (CFQ.nearRadiusPercent). Only on the Near me page; the page's lines
+-- start a row lower there (f.headerExtra).
+-- ----------------------------------------------------------------------------
+P.NEAR_MIN, P.NEAR_MAX = 1, 50
+P.NEAR_SLIDER_H = 13            -- the row under the heading (taller with a bigger text size)
+P.NEAR_TRACK_MAX = 110          -- the scale's longest length (px)
+P.NEAR_TRACK_MIN = 36
+P.NEAR_LIVE_EVERY = 0.2         -- while dragging, the list follows this often (s)
+
+function P.NearSliderHeight()
+    local fs = P.EffectiveFont()
+    return math.max(P.NEAR_SLIDER_H, math.floor((fs.small or 10) * P.TextScale("small") + 3.5))
+end
+
+function P.CreateNearSlider(f, chrome, level)
+    local s = CreateFrame("Frame", nil, chrome)
+    s:SetFrameLevel(level)
+    s:SetHeight(P.NEAR_SLIDER_H)
+    s:EnableMouse(true)
+    if s.EnableMouseWheel then s:EnableMouseWheel(true) end
+    s.label = s:CreateFontString(nil, "OVERLAY")
+    s.label:SetJustifyH("LEFT")
+    s.label:SetWordWrap(false)
+    s.value = s:CreateFontString(nil, "OVERLAY")
+    s.value:SetJustifyH("LEFT")
+    s.value:SetWordWrap(false)
+    s.inked = P.NewStroke(s, "ARTWORK", 4)       -- start of the scale up to the mark
+    s.rest = P.NewStroke(s, "ARTWORK", 4)        -- the mark to the end, faded
+    s.capL = P.NewStroke(s, "ARTWORK", 4)
+    s.capR = P.NewStroke(s, "ARTWORK", 4)
+    s.mark = P.NewStroke(s, "OVERLAY", 6)
+    s:SetScript("OnEnter", function(self)
+        self.hover = true
+        P.DrawNearSlider(self)
+        P.NearSliderTooltip(self)
+    end)
+    s:SetScript("OnLeave", function(self)
+        self.hover = false
+        P.DrawNearSlider(self)
+        GameTooltip:Hide()
+    end)
+    s:SetScript("OnMouseDown", function(self, button)
+        if button and button ~= "LeftButton" then return end
+        self.dragging = true
+        self.liveAt = 0
+        P.NearSliderFromCursor(self)
+    end)
+    s:SetScript("OnMouseUp", function(self)
+        if not self.dragging then return end
+        self.dragging = false
+        P.NearSliderFromCursor(self)
+        P.CommitNearRadius(self)
+    end)
+    s:SetScript("OnUpdate", function(self)
+        if not self.dragging then return end
+        if IsMouseButtonDown and not IsMouseButtonDown("LeftButton") then    -- let go outside the scale
+            self.dragging = false
+            P.CommitNearRadius(self)
+            return
+        end
+        P.NearSliderFromCursor(self)
+        local now = GetTime()
+        if self.dirty and now - (self.liveAt or 0) >= P.NEAR_LIVE_EVERY then
+            self.liveAt = now
+            P.CommitNearRadius(self, true)
+        end
+    end)
+    s:SetScript("OnMouseWheel", function(self, delta)
+        P.SetNearRadius(self, P.GetNearRadius() + ((delta or 0) > 0 and 1 or -1))
+        P.CommitNearRadius(self)
+    end)
+    s:Hide()
+    f.nearSlider = s
+    return s
+end
+
+-- Changes the distance and the scale (not the list yet: P.CommitNearRadius)
+function P.SetNearRadius(s, v)
+    v = math.max(P.NEAR_MIN, math.min(P.NEAR_MAX, math.floor((v or 10) + 0.5)))
+    if v == P.GetNearRadius() then return false end
+    CFQ.nearRadiusPercent = v
+    if s then
+        s.dirty = true
+        P.DrawNearSlider(s)
+        if s.hover then P.NearSliderTooltip(s) end
+    end
+    return true
+end
+
+-- The value under the cursor (anywhere along the scale; past its ends = the ends)
+function P.NearSliderFromCursor(s)
+    if not s.x0 or not s.x1 or s.x1 <= s.x0 then return end
+    local cx = GetCursorPosition()
+    local left = s:GetLeft()
+    if not cx or not left then return end
+    local x = cx / (s:GetEffectiveScale() or 1) - left
+    local frac = math.max(0, math.min(1, (x - s.x0) / (s.x1 - s.x0)))
+    P.SetNearRadius(s, P.NEAR_MIN + frac * (P.NEAR_MAX - P.NEAR_MIN))
+end
+
+-- Saves it and re-sorts the pages; live = mid-drag (the list follows, saved on letting go)
+function P.CommitNearRadius(s, live)
+    if s then
+        if not s.dirty and (live or not s.unsaved) then return end    -- nothing new (a live pass already sorted it)
+        local sorted = not s.dirty
+        s.dirty = false
+        s.unsaved = live and true or nil
+        if sorted then                                                  -- let go where the last live pass left it
+            SaveState()
+            if CFQ.RefreshOptionsPanel then pcall(CFQ.RefreshOptionsPanel) end
+            return
+        end
+    end
+    if not live then SaveState() end
+    UpdateShoppingListUI()
+    if not live and CFQ.RefreshOptionsPanel then pcall(CFQ.RefreshOptionsPanel) end
+end
+
+-- Lays the scale out under the heading (maxW = room on the row) and inks it in the look's colours
+function P.DrawNearSlider(s)
+    if not s then return end
+    local st = P.GetStyle()
+    local h = P.NearSliderHeight()
+    s:SetHeight(h)
+    P.SetInkFont(s.label, "small")
+    P.SetInkFont(s.value, "small")
+    local sub = st.sub or st.faded
+    s.label:SetTextColor(sub[1], sub[2], sub[3], 1)
+    s.label:SetText("within")
+    local v = P.GetNearRadius()
+    s.value:SetText(P.NEAR_MAX .. "%")                          -- room for the widest value, so nothing jumps
+    local valueW = math.ceil(s.value:GetStringWidth() or 22)
+    s.value:SetText(v .. "%")
+    local active = s.hover or s.dragging
+    local vc = active and P.INK_RED or (st.ink or P.INK)
+    s.value:SetTextColor(vc[1], vc[2], vc[3], 1)
+    local labelW = math.ceil(s.label:GetStringWidth() or 30)
+    local maxW = s.maxW or 200
+    local x0 = labelW + 6
+    local trackW = math.max(P.NEAR_TRACK_MIN, math.min(P.NEAR_TRACK_MAX, maxW - x0 - 6 - valueW))
+    local x1 = x0 + trackW
+    s.x0, s.x1 = x0, x1
+    s:SetWidth(x1 + 6 + valueW)
+    s.label:ClearAllPoints()
+    s.label:SetPoint("LEFT", s, "LEFT", 0, 0)
+    s.value:ClearAllPoints()
+    s.value:SetPoint("LEFT", s, "LEFT", x1 + 6, 0)
+    local y = -math.floor(h / 2 + 0.5)
+    local mx = x0 + (v - P.NEAR_MIN) / (P.NEAR_MAX - P.NEAR_MIN) * trackW
+    local ink, faded = st.ink or P.INK, st.faded or P.INK
+    -- a quill line with a slight hand tilt; inked up to the mark ("within"), faded beyond it
+    P.DrawStroke(s.inked, s, x0, y + 0.3, mx, y, 1.2, 0.85, ink)
+    if mx < x1 - 0.5 then
+        P.DrawStroke(s.rest, s, mx, y, x1, y - 0.3, 1.0, 0.40, faded)
+    else
+        P.HideStroke(s.rest)
+    end
+    P.DrawStroke(s.capL, s, x0, y + 2.5, x0, y - 2.5, 1.0, 0.70, ink)
+    P.DrawStroke(s.capR, s, x1, y + 2.5, x1, y - 2.5, 1.0, 0.45, faded)
+    P.DrawStroke(s.mark, s, mx + 0.6, y + 4.5, mx - 0.6, y - 4.5, active and 2.2 or 1.8, 1,
+        active and P.INK_RED or ink)
+    s.markX = mx
+end
+
+function P.NearSliderTooltip(s)
+    GameTooltip:SetOwner(s, "ANCHOR_TOP")
+    GameTooltip:AddLine("Near me distance: " .. P.GetNearRadius() .. "%", 1, 0.82, 0)
+    GameTooltip:AddLine("This page lists quest items and tasks within this distance of where you're standing (as % of the zone map), plus anything you've progressed in the last few minutes.", 0.9, 0.9, 0.9, true)
+    GameTooltip:AddLine("Drag along it, click a spot or scroll the wheel to change.", 0.65, 0.65, 0.65, true)
+    GameTooltip:Show()
+end
+
+-- Shown on the Near me page only: under the heading's underline, as wide as the row allows
+function P.LayoutNearSlider(f, area, w, padL, padR, padT)
+    local s = f.nearSlider
+    if not s then return end
+    if not (area and area.isCurrent) then
+        s.dragging = false
+        s:Hide()
+        return
+    end
+    s:ClearAllPoints()
+    s:SetPoint("TOPLEFT", f.chrome, "TOPLEFT", 12 + padL, -28 - padT)
+    s.maxW = math.max(90, w - 24 - padL - padR)
+    P.DrawNearSlider(s)
+    s:Show()
+end
+
 -- Page radius (% of the zone map): either its own setting or the tracker's (•••) stacking slider
 function P.GetPageRadius()
     if CFQ.parchmentOpts.pagesFollowTracker then
@@ -5177,9 +5375,11 @@ function P.Render(f)
     local w = f:GetWidth() or 230
     local st = P.GetStyle()
     if f.styleKey ~= st.key then P.ApplyStyle(f) end
+    f.headerExtra = (area.isCurrent and f.nearSlider) and (P.NearSliderHeight() + 2) or 0
     P.LayoutPads(f)
     P.LayoutTabs(f)
     local padL, padT, padR, padB = P.GetPads(f)
+    local pageHeadH = 45 + f.headerExtra         -- heading (+ the Near me distance row) and footer
     for _, b in pairs(f.quickBtns or {}) do P.DrawQuickButton(b) end      -- in this look's ink
 
     -- Heading: fresh red ink for a few seconds after you arrive in a new area
@@ -5205,10 +5405,11 @@ function P.Render(f)
     local ruleW = math.min(w - 20 - padL - padR, math.max(60, (f.titleFS:GetStringWidth() or 80) + 22))
     P.DrawStroke(f.titleRule, f.chrome, 8 + padL, -25 - padT, 8 + padL + ruleW, -24 - padT, 1.2, 0.70)
     P.DrawStroke(f.titleRule2, f.chrome, 14 + padL, -27.5 - padT, 8 + padL + ruleW * 0.55, -27 - padT, 0.7, 0.40)
+    P.LayoutNearSlider(f, area, w, padL, padR, padT)
 
     if area.isJournal then
         P.RenderJournal(f, area, math.max(150, w - 12 - padL - padR),
-            math.max(55, (f:GetHeight() or 175) - 45 - padT - padB), pageStr)
+            math.max(55, (f:GetHeight() or 175) - pageHeadH - padT - padB), pageStr)
         return
     end
 
@@ -5240,7 +5441,7 @@ function P.Render(f)
         row:Show()
         f.footerFS:SetText("nothing here" .. pageStr)
         P.RenderForMe(f, area, -2 - msgH, math.max(150, w - 12 - padL - padR),
-            math.max(55, (f:GetHeight() or 175) - 45 - padT - padB))
+            math.max(55, (f:GetHeight() or 175) - pageHeadH - padT - padB))
         return
     end
 
@@ -5249,7 +5450,7 @@ function P.Render(f)
     end
 
     local contentW = math.max(150, w - 12 - padL - padR)
-    local contentH = math.max(55, (f:GetHeight() or 175) - 45 - padT - padB)
+    local contentH = math.max(55, (f:GetHeight() or 175) - pageHeadH - padT - padB)
     local questH = area.isCurrent and (contentH - P.ForMeReserve(f, contentW, contentH, true)) or contentH
     local yCursor = 0
     local shownRows = 0
@@ -6377,7 +6578,25 @@ do
         star[k + 1] = { p[1], p[2], q[1], q[2], 0.8 }
     end
     P.WRITE_GLYPHS.auto = star      -- after an auto entry's stamp: written by the addon, not by you
+    -- the Journal's search: a magnifier (a loop of 8 strokes and a thick handle)
+    local mag = {}
+    for k = 0, 7 do
+        local a, b = math.rad(45 * k + 10), math.rad(45 * (k + 1) + 10)
+        mag[k + 1] = { 5.8 + 3.9 * math.cos(a), -5.8 + 3.9 * math.sin(a), 5.8 + 3.9 * math.cos(b), -5.8 + 3.9 * math.sin(b), 0.95 }
+    end
+    mag[9] = { 8.8, -8.8, 12.8, -12.8, 1.7 }
+    P.WRITE_GLYPHS.search = mag
 end
+-- the Journal's calendar: a page with two rings, a band along the top, day marks
+P.WRITE_GLYPHS.calendar = {
+    { 1.8, -3, 12.2, -3, 1 }, { 12.2, -3, 12.2, -12.6, 1 }, { 12.2, -12.6, 1.8, -12.6, 1 }, { 1.8, -12.6, 1.8, -3, 1 },
+    { 1.8, -5.9, 12.2, -5.9, 0.9 },
+    { 4.6, -1.2, 4.6, -4.4, 1.3 }, { 9.4, -1.2, 9.4, -4.4, 1.3 },
+    { 3.9, -8.4, 5.2, -8.4, 1.4 }, { 6.4, -8.4, 7.7, -8.4, 1.4 }, { 8.9, -8.4, 10.2, -8.4, 1.4 },
+    { 3.9, -10.7, 5.2, -10.7, 1.4 }, { 6.4, -10.7, 7.7, -10.7, 1.4 },
+}
+P.WRITE_GLYPHS.prev = { { 8.5, -3, 4.5, -7, 1.2 }, { 4.5, -7, 8.5, -11, 1.2 } }       -- the month before: <
+P.WRITE_GLYPHS.next = { { 5.5, -3, 9.5, -7, 1.2 }, { 9.5, -7, 5.5, -11, 1.2 } }       -- the month after: >
 
 -- What the player wrote for an entry: several lines allowed, no "|" (colour / link escapes)
 function CFQ.CleanEntryText(s)
@@ -6627,21 +6846,28 @@ function P.WriteMode()
 end
 
 function P.IsWriting()
-    return (P.forMeEditing or P.journalEditing) and true or false
+    return (P.forMeEditing or P.journalEditing or P.journalSearching) and true or false
 end
 
 -- The Journal's page in the pile (P.areas): always the last one while "For me" is on
 function P.JournalArea()
-    return { key = P.JOURNAL_KEY, title = "Journal", isJournal = true, items = {}, subtitle = P.journalFilter }
+    return { key = P.JOURNAL_KEY, title = "Journal", isJournal = true, items = {}, subtitle = P.JournalSubtitle() }
 end
 
--- The entries shown: newest first, only those written in P.journalFilter's place if one is picked
+-- The entries shown: newest first; only those written in P.journalFilter's place, on P.journalDay and
+-- with P.journalSearch's words, when they're picked
 function P.JournalList()
     local list = {}
     local journal = CFQ.notes.journal
+    local terms = P.SearchTerms(P.journalSearch)
+    local day = P.journalDay
+    local dayKey = day and P.DayKey(day.y, day.m, day.d)
     for i = #journal, 1, -1 do
         local e = journal[i]
-        if not P.journalFilter or P.EntryPlaceName(e) == P.journalFilter then table.insert(list, e) end
+        if (not P.journalFilter or P.EntryPlaceName(e) == P.journalFilter) and P.EntryMatches(e, terms)
+            and (not dayKey or P.DayKey(P.EntryDay(e)) == dayKey) then
+            table.insert(list, e)
+        end
     end
     return list
 end
@@ -6672,17 +6898,601 @@ function P.RubOutEntry(e)
     P.ForMeChanged()
 end
 
--- The writing glyph (box / quill), drawn in faded ink; hover = red ink like the toggles
-function P.DrawWriteGlyph(b, kind, hover)
+-- ---- finding notes again: a search and a calendar (user request, Nov 2026) --------------------------
+-- Two inked glyphs at the right end of the Journal's writing line: a magnifier and a calendar.
+-- P.journalSearch = the words looked for (every word must be in the note, its stamp or what it lists;
+-- the words are marked in red ink), P.journalDay = { y, m, d } (only that day's notes),
+-- P.journalCalendar = { y, m } while a month is open on the page. They and the place filter
+-- (P.journalFilter) all apply together; the heading and footer say which.
+P.JOURNAL_TOOL = 14               -- the glyphs' size
+P.JOURNAL_TOOL_GAP = 5
+P.MONTH_NAMES = { "January", "February", "March", "April", "May", "June", "July", "August", "September",
+    "October", "November", "December" }
+P.DAY_NAMES = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" }
+P.MONTH_INDEX = {}
+for i, m in ipairs(P.MONTHS) do P.MONTH_INDEX[m] = i end
+
+function P.SearchTerms(q)
+    local terms = {}
+    for w in string.gmatch(string.lower(q or ""), "%S+") do terms[#terms + 1] = w end
+    return terms
+end
+
+-- Everything a note can be found by: its words, stamp, place, writer and what an auto entry lists
+function P.EntryHaystack(e)
+    local parts = { e.text or "", e.when or "" }
+    local pl = e.place
+    if pl then parts[#parts + 1] = pl.subzone or ""; parts[#parts + 1] = pl.zone or "" end
+    if e.owner then parts[#parts + 1] = e.owner end
+    for _, a in ipairs(e.achievements or {}) do parts[#parts + 1] = a.name or "" end
+    for _, q in ipairs(e.quests or {}) do
+        parts[#parts + 1] = q.title or ""
+        for _, it in ipairs(q.items or {}) do parts[#parts + 1] = it.name or "" end
+    end
+    for _, l in ipairs(e.levels or {}) do parts[#parts + 1] = "level " .. tostring(l.level) end
+    if e.doneTask then parts[#parts + 1] = e.doneTask.text or "" end
+    return string.lower(table.concat(parts, "\n"))
+end
+
+function P.EntryMatches(e, terms)
+    if not terms or #terms == 0 then return true end
+    local hay = P.EntryHaystack(e)
+    for _, w in ipairs(terms) do
+        if not string.find(hay, w, 1, true) then return false end
+    end
+    return true
+end
+
+-- The words looked for, marked in hex ink (overlapping finds merged; no codes inside codes)
+function P.MarkMatches(text, terms, hex)
+    if not text or text == "" or not terms or #terms == 0 then return text end
+    local low = string.lower(text)
+    local spans = {}
+    for _, w in ipairs(terms) do
+        local s = 1
+        while true do
+            local a, b = string.find(low, w, s, true)
+            if not a then break end
+            spans[#spans + 1] = { a, b }
+            s = b + 1
+        end
+    end
+    if #spans == 0 then return text end
+    table.sort(spans, function(x, y) return x[1] < y[1] end)
+    local merged = { spans[1] }
+    for i = 2, #spans do
+        local last, sp = merged[#merged], spans[i]
+        if sp[1] <= last[2] + 1 then
+            if sp[2] > last[2] then last[2] = sp[2] end
+        else
+            merged[#merged + 1] = { sp[1], sp[2] }
+        end
+    end
+    local out, pos = {}, 1
+    for _, sp in ipairs(merged) do
+        out[#out + 1] = string.sub(text, pos, sp[1] - 1)
+        out[#out + 1] = "|c" .. hex .. string.sub(text, sp[1], sp[2]) .. "|r"
+        pos = sp[2] + 1
+    end
+    out[#out + 1] = string.sub(text, pos)
+    return table.concat(out)
+end
+
+-- Dates: the stamp's day and month (the realm calendar), the year from the note's server time
+function P.DateTable(t)
+    local fn = date or (os and os.date)
+    if not (fn and t) then return nil end
+    local ok, c = pcall(fn, "*t", t)
+    return (ok and type(c) == "table") and c or nil
+end
+
+function P.Today()
+    if C_DateAndTime and C_DateAndTime.GetCurrentCalendarTime then
+        local ok, c = pcall(C_DateAndTime.GetCurrentCalendarTime)
+        if ok and type(c) == "table" and c.year and c.month and c.monthDay then
+            return { y = c.year, m = c.month, d = c.monthDay }
+        end
+    end
+    local c = P.DateTable((time and time()) or (os and os.time and os.time()))
+    if c then return { y = c.year, m = c.month, d = c.day } end
+    return { y = 2026, m = 1, d = 1 }
+end
+
+function P.EntryDay(e)
+    local c = P.DateTable(e.t)
+    local d, mon
+    if e.when then d, mon = string.match(e.when, "^(%d+) (%a+)") end
+    local m = mon and P.MONTH_INDEX[mon]
+    d = tonumber(d)
+    if m and d then
+        local y = c and c.year or P.Today().y
+        if c and m == 12 and c.month == 1 then y = y - 1 end          -- the realm's New Year's Eve, the PC's New Year
+        if c and m == 1 and c.month == 12 then y = y + 1 end
+        return y, m, d
+    end
+    if c then return c.year, c.month, c.day end
+    return nil
+end
+
+function P.DayKey(y, m, d) return (y or 0) * 10000 + (m or 0) * 100 + (d or 0) end
+
+function P.DaysInMonth(y, m)
+    local n = ({ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 })[m] or 30
+    if m == 2 and ((y % 4 == 0 and y % 100 ~= 0) or y % 400 == 0) then n = 29 end
+    return n
+end
+
+function P.Weekday(y, m, d)           -- 1 = Sunday ... 7 = Saturday (Sakamoto)
+    local t = { 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 }
+    if m < 3 then y = y - 1 end
+    return (y + math.floor(y / 4) - math.floor(y / 100) + math.floor(y / 400) + t[m] + d) % 7 + 1
+end
+
+function P.FirstWeekday()             -- the game's calendar setting (1 = weeks start on Sunday, 2 = Monday)
+    local w = tonumber(CALENDAR_FIRST_WEEKDAY)
+    return (w and w >= 1 and w <= 7) and math.floor(w) or 1
+end
+
+function P.DayLabel(day)
+    if not day then return "" end
+    local s = day.d .. " " .. (P.MONTHS[day.m] or "?")
+    if day.y ~= P.Today().y then s = s .. " " .. day.y end
+    return s
+end
+
+-- What's picked, for the heading ("Goldshire · 10 Nov · "wolf"") and the footer (" in ... on ... with ...")
+function P.JournalSubtitle()
+    local parts = {}
+    if P.journalFilter then parts[#parts + 1] = P.journalFilter end
+    if P.journalDay then parts[#parts + 1] = P.DayLabel(P.journalDay) end
+    if P.journalSearch then parts[#parts + 1] = "\"" .. P.journalSearch .. "\"" end
+    return (#parts > 0) and table.concat(parts, " · ") or nil
+end
+
+function P.JournalFilterWords()
+    local s = ""
+    if P.journalFilter then s = s .. " in " .. P.journalFilter end
+    if P.journalDay then s = s .. " on " .. P.DayLabel(P.journalDay) end
+    if P.journalSearch then s = s .. " with \"" .. P.journalSearch .. "\"" end
+    return s
+end
+
+-- A filter changed: back to the top, heading re-written, page redrawn (without re-reading the quests)
+function P.JournalRefresh()
+    shoppingScrollOffset = 0
+    for _, a in ipairs(P.areas or {}) do
+        if a.isJournal then a.subtitle = P.JournalSubtitle() end
+    end
+    local f = shoppingListFrame
+    if f and f:IsShown() then P.Render(f) end
+end
+
+-- One of the Journal's glyph buttons (magnifier, calendar, the month's < >)
+function P.NewJournalTool(parent, kind, onClick, tipFn)
+    local b = CreateFrame("Button", nil, parent)
+    b:SetSize(P.JOURNAL_TOOL, P.JOURNAL_TOOL)
+    b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    b.kind = kind
+    b:SetScript("OnClick", function(self, button) onClick(self, button) end)
+    b:SetScript("OnEnter", function(self)
+        self.hover = true
+        P.DrawWriteGlyph(self, self.kind, true, self.on)
+        if tipFn then
+            GameTooltip:SetOwner(self, "ANCHOR_TOP")
+            tipFn(self)
+            GameTooltip:Show()
+        end
+    end)
+    b:SetScript("OnLeave", function(self)
+        self.hover = false
+        P.DrawWriteGlyph(self, self.kind, false, self.on)
+        GameTooltip:Hide()
+    end)
+    return b
+end
+
+function P.EnsureJournalTools(f)
+    if f.journalTools then return f.journalTools end
+    local t = {}
+    t.search = P.NewJournalTool(f.content, "search", function(_, button)
+        if button == "RightButton" then P.ClearJournalSearch() return end
+        if P.journalSearching then P.CloseJournalSearch() else P.OpenJournalSearch() end
+    end, function()
+        if P.journalSearch then
+            GameTooltip:AddLine("Showing notes with \"" .. P.journalSearch .. "\"", 1, 0.82, 0)
+            GameTooltip:AddLine("Click: change the words  |  Right-Click: every note again", 0.65, 0.65, 0.65, true)
+        else
+            GameTooltip:AddLine("Search the Journal", 1, 0.82, 0)
+            GameTooltip:AddLine("Type a word or two: only notes with all of them stay, the words marked in red. Looks in the notes, their stamps (date, place) and what an auto note lists (quests, items, achievements).", 0.9, 0.9, 0.9, true)
+            GameTooltip:AddLine("Enter: keep it  |  Escape: stop searching", 0.65, 0.65, 0.65)
+        end
+    end)
+    t.calendar = P.NewJournalTool(f.content, "calendar", function(_, button)
+        if button == "RightButton" then
+            P.journalDay, P.journalCalendar = nil, nil
+            P.JournalRefresh()
+            return
+        end
+        P.ToggleJournalCalendar()
+    end, function()
+        if P.journalDay then
+            GameTooltip:AddLine("Showing notes from " .. P.DayLabel(P.journalDay), 1, 0.82, 0)
+            GameTooltip:AddLine("Click: the calendar  |  Right-Click: every day again", 0.65, 0.65, 0.65, true)
+        else
+            GameTooltip:AddLine(P.journalCalendar and "Close the calendar" or "Calendar", 1, 0.82, 0)
+            GameTooltip:AddLine("A month on the page: the days you wrote on are circled. Click one to see what you wrote that day.", 0.9, 0.9, 0.9, true)
+        end
+    end)
+    f.journalTools = t
+    return t
+end
+
+-- ---- the search line: one box where "write a note..." was, filtering as you type ----------------
+function P.EnsureJournalSearchBox(f)
+    if f.journalSearchBox then return f.journalSearchBox end
+    local eb = CreateFrame("EditBox", nil, f.content)
+    P.SetInkFont(eb, "item")              -- a font first: WoW won't take text into a box without one
+    eb:SetAutoFocus(false)
+    eb:EnableMouse(true)
+    eb:SetScript("OnMouseDown", function(self) self:SetFocus() end)
+    eb:SetMultiLine(false)
+    eb:SetMaxLetters(60)
+    eb:SetFrameLevel((f.baseLevel or 30) + 24)
+    eb:SetJustifyH("LEFT")
+    eb.wash = eb:CreateTexture(nil, "BACKGROUND")
+    eb.wash:SetPoint("TOPLEFT", eb, "TOPLEFT", -3, 1)
+    eb.wash:SetPoint("BOTTOMRIGHT", eb, "BOTTOMRIGHT", 3, -1)
+    eb.glyph = CreateFrame("Frame", nil, f.content)
+    eb.glyph:SetSize(14, 14)
+    eb:SetScript("OnTextChanged", function(self)
+        if not P.journalSearching then return end
+        local q = CFQ.CleanNoteText(self:GetText() or "")
+        q = (q ~= "") and q or nil
+        if q ~= P.journalSearch then
+            P.journalSearch = q
+            P.JournalRefresh()
+        end
+    end)
+    eb:SetScript("OnEnterPressed", function() P.CloseJournalSearch() end)
+    eb:SetScript("OnEscapePressed", function() P.ClearJournalSearch() end)
+    eb:SetScript("OnEditFocusLost", function(self)
+        if P.journalSearching and P.FocusGrace(self) then return end
+        if P.journalSearching then P.CloseJournalSearch(true) end
+    end)
+    eb:SetScript("OnHide", function(self) if self.HasFocus and self:HasFocus() then self:ClearFocus() end end)
+    eb:Hide()
+    eb.glyph:Hide()
+    f.journalSearchBox = eb
+    return eb
+end
+
+function P.OpenJournalSearch()
+    local f = shoppingListFrame
+    if not f then return end
+    if P.journalEditing then P.CommitJournalEdit() end
+    P.journalCalendar = nil
+    local eb = P.EnsureJournalSearchBox(f)
+    P.SetInkFont(eb, "item")
+    eb:SetText(P.journalSearch or "")
+    P.journalSearching = true
+    P.JournalRefresh()
+    P.FocusBox(eb, function() return P.journalSearching end)
+end
+
+-- Enter / clicking away: the box closes, the search stays (the magnifier in full ink says so)
+function P.CloseJournalSearch(deferRedraw)
+    if not P.journalSearching then return end
+    P.journalSearching = nil
+    local f = shoppingListFrame
+    local eb = f and f.journalSearchBox
+    if eb then eb:ClearFocus(); eb:Hide(); eb.glyph:Hide() end
+    if deferRedraw and C_Timer and C_Timer.After then
+        C_Timer.After(0, function() P.JournalRefresh() end)
+    else
+        P.JournalRefresh()
+    end
+end
+
+-- Escape / right-click on the magnifier: every note again
+function P.ClearJournalSearch()
+    P.journalSearch = nil
+    if P.journalSearching then P.CloseJournalSearch() else P.JournalRefresh() end
+end
+
+-- ---- the calendar: a month written on the page ------------------------------------------------
+function P.ToggleJournalCalendar()
+    if P.journalCalendar then
+        P.journalCalendar = nil
+    else
+        if P.journalSearching then P.CloseJournalSearch() end
+        if P.journalEditing then P.CommitJournalEdit() end
+        local d = P.journalDay or P.Today()
+        P.journalCalendar = { y = d.y, m = d.m }
+    end
+    P.JournalRefresh()
+end
+
+function P.ShiftCalendar(step)
+    local c = P.journalCalendar
+    if not c then return end
+    local m = c.m + step
+    c.y = c.y + math.floor((m - 1) / 12)
+    c.m = (m - 1) % 12 + 1
+    P.JournalRefresh()
+end
+
+-- The notes of each day in a month that pass the other filters (place, search): { [d] = { e, ... } }
+function P.NotesByDay(y, m)
+    local days, terms = {}, P.SearchTerms(P.journalSearch)
+    local journal = CFQ.notes.journal
+    for i = #journal, 1, -1 do
+        local e = journal[i]
+        if (not P.journalFilter or P.EntryPlaceName(e) == P.journalFilter) and P.EntryMatches(e, terms) then
+            local ey, em, ed = P.EntryDay(e)
+            if ey == y and em == m and ed then
+                days[ed] = days[ed] or {}
+                table.insert(days[ed], e)
+            end
+        end
+    end
+    return days
+end
+
+function P.PickJournalDay(day)
+    local cur = P.journalDay
+    if cur and cur.y == day.y and cur.m == day.m and cur.d == day.d then
+        P.journalDay = nil                                   -- the circled day again: every day
+    else
+        P.journalDay = { y = day.y, m = day.m, d = day.d }
+    end
+    P.journalCalendar = nil
+    P.JournalRefresh()
+end
+
+-- The calendar's "today" (user request): browsing another month = back to this one; on this month
+-- already = straight to today's notes (picked, never un-picked, by this button)
+function P.CalendarToday()
+    local t = P.Today()
+    local cal = P.journalCalendar
+    if cal and (cal.y ~= t.y or cal.m ~= t.m) then
+        cal.y, cal.m = t.y, t.m
+    else
+        P.journalDay = { y = t.y, m = t.m, d = t.d }
+        P.journalCalendar = nil
+    end
+    P.JournalRefresh()
+end
+
+-- "today" in the sub ink with a quill underline; red on hover
+function P.DrawTodayButton(b)
+    local st = P.GetStyle()
+    local ink = b.hover and P.INK_RED or (st.sub or st.faded)
+    b.fs:SetTextColor(ink[1], ink[2], ink[3], 1)
+    local w = math.ceil(b.fs:GetStringWidth() or 24)
+    local x0 = ((b:GetWidth() or (w + 6)) - w) / 2
+    local y = -(P.JOURNAL_TOOL + 1)
+    P.DrawStroke(b.underline, b, x0, y + 0.3, x0 + w, y - 0.2, 0.9, b.hover and 0.9 or 0.5, ink)
+end
+
+function P.EnsureJournalCalendar(f)
+    if f.journalCal then return f.journalCal end
+    local c = CreateFrame("Frame", nil, f.content)
+    c.title = c:CreateFontString(nil, "OVERLAY")
+    c.title:SetJustifyH("CENTER")
+    c.title:SetWordWrap(false)
+    c.prev = P.NewJournalTool(c, "prev", function() P.ShiftCalendar(-1) end,
+        function() GameTooltip:AddLine("Month before", 1, 0.82, 0) end)
+    c.next = P.NewJournalTool(c, "next", function() P.ShiftCalendar(1) end,
+        function() GameTooltip:AddLine("Month after", 1, 0.82, 0) end)
+    -- "today": back to this month; on this month already, today's notes
+    local tb = CreateFrame("Button", nil, c)
+    tb:RegisterForClicks("LeftButtonUp")
+    tb.fs = tb:CreateFontString(nil, "OVERLAY")
+    tb.fs:SetPoint("CENTER", tb, "CENTER", 0, 0)
+    tb.fs:SetWordWrap(false)
+    tb.underline = P.NewStroke(tb, "ARTWORK", 4)
+    tb:SetScript("OnClick", function() P.CalendarToday() end)
+    tb:SetScript("OnEnter", function(self)
+        self.hover = true
+        P.DrawTodayButton(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        local t = P.Today()
+        local cal = P.journalCalendar
+        GameTooltip:AddLine("Today: " .. P.DAY_NAMES[P.Weekday(t.y, t.m, t.d)] .. " " .. t.d .. " " .. P.MONTH_NAMES[t.m], 1, 0.82, 0)
+        if cal and (cal.y ~= t.y or cal.m ~= t.m) then
+            GameTooltip:AddLine("Click: back to this month", 0.65, 0.65, 0.65)
+        else
+            GameTooltip:AddLine("Click: today's notes", 0.65, 0.65, 0.65)
+        end
+        GameTooltip:Show()
+    end)
+    tb:SetScript("OnLeave", function(self)
+        self.hover = false
+        P.DrawTodayButton(self)
+        GameTooltip:Hide()
+    end)
+    c.todayBtn = tb
+    c.wd = {}
+    for i = 1, 7 do
+        c.wd[i] = c:CreateFontString(nil, "OVERLAY")
+        c.wd[i]:SetJustifyH("CENTER")
+    end
+    c.cells = {}
+    c:Hide()
+    f.journalCal = c
+    return c
+end
+
+function P.CalendarCell(c, k)
+    local b = c.cells[k]
+    if b then return b end
+    b = CreateFrame("Button", nil, c)
+    b:RegisterForClicks("LeftButtonUp")
+    b.fs = b:CreateFontString(nil, "OVERLAY")
+    b.fs:SetPoint("CENTER", b, "CENTER", 0, 0)
+    b.fs:SetJustifyH("CENTER")
+    b.ring = {}
+    b:SetScript("OnClick", function(self) if self.notes then P.PickJournalDay(self.day) end end)
+    b:SetScript("OnEnter", function(self)
+        if not self.notes then return end
+        P.PlaceTooltip(self)
+        local d = self.day
+        GameTooltip:AddLine(P.DAY_NAMES[P.Weekday(d.y, d.m, d.d)] .. " " .. d.d .. " " .. P.MONTH_NAMES[d.m] .. " " .. d.y, 1, 0.82, 0)
+        local n = #self.notes
+        GameTooltip:AddLine((n == 1) and "1 note" or (n .. " notes"), 0.7, 0.7, 0.7)
+        for i = 1, math.min(3, n) do
+            local s = string.gsub(self.notes[i].text or "", "\n", " ")
+            if string.len(s) > 48 then s = string.sub(s, 1, 46) .. "..." end
+            GameTooltip:AddLine(s, 0.9, 0.9, 0.9)
+        end
+        if n > 3 then GameTooltip:AddLine("and " .. (n - 3) .. " more", 0.7, 0.7, 0.7) end
+        local cur = P.journalDay
+        local picked = cur and cur.y == d.y and cur.m == d.m and cur.d == d.d
+        GameTooltip:AddLine(picked and "Click: every day again" or "Click: only this day's notes", 0.65, 0.65, 0.65)
+        GameTooltip:Show()
+    end)
+    b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    c.cells[k] = b
+    return b
+end
+
+-- A day you wrote on, circled by hand (an open loop that overshoots, like a quick pen ring)
+P.RING_SEGS = 9
+function P.DrawDayRing(b, w, h, seed, ink, alpha)
+    local cx, cy = w / 2, -h / 2
+    local rx, ry = math.min(w / 2 - 1, h * 0.85 + 2), h / 2 - 0.5     -- short rows: an oval, not a flat dash
+    local a0 = P.Hash01(seed, 1, 3) * math.pi * 2
+    local sweep = math.pi * 2 + 0.35
+    local px, py
+    for k = 0, P.RING_SEGS do
+        local a = a0 + sweep * k / P.RING_SEGS
+        local wob = 1 + (P.Hash01(seed, k, 9) - 0.5) * 0.12
+        local x, y = cx + math.cos(a) * rx * wob, cy + math.sin(a) * ry * wob
+        if k > 0 then
+            b.ring[k] = b.ring[k] or P.NewStroke(b, "ARTWORK", 4)
+            P.DrawStroke(b.ring[k], b, px, py, x, y, 1.0, alpha, ink)
+        end
+        px, py = x, y
+    end
+end
+
+function P.HideDayRing(b)
+    for _, s in ipairs(b.ring) do P.HideStroke(s) end
+end
+
+-- The month on the page: "< November 2026 >" on the writing line's row (left of the magnifier and
+-- calendar), the weekdays' letters (left out when the page is short), the days. Small pages squeeze the
+-- day rows down to P.CAL_MIN_ROW.
+P.CAL_MIN_ROW = 8
+P.CAL_WD_H = 11
+function P.RenderJournalCalendar(f, rowH, contentW, contentH, st, pageStr)
+    local c = P.EnsureJournalCalendar(f)
+    local cal = P.journalCalendar
+    local y, m = cal.y, cal.m
+    local notes = P.NotesByDay(y, m)
+    local today, picked = P.Today(), P.journalDay
+    local first = P.FirstWeekday()
+    local lead = (P.Weekday(y, m, 1) - first) % 7          -- empty cells before the 1st
+    local nDays = P.DaysInMonth(y, m)
+    local weeks = math.ceil((lead + nDays) / 7)
+    local cellW = math.floor(math.min(26, (contentW - 8) / 7))
+    local headH = rowH
+    local room = contentH - headH - 2
+    local wdH = ((room - P.CAL_WD_H) / weeks >= 10) and P.CAL_WD_H or 0
+    local cellH = math.floor(math.max(P.CAL_MIN_ROW, math.min(P.LineHeight(f) + 2, (room - wdH) / weeks)))
+    local gridW = cellW * 7
+    local x0 = math.max(0, math.floor((contentW - gridW) / 2))
+    c.gridX, c.cellW, c.cellH = x0, cellW, cellH
+    c:ClearAllPoints()
+    c:SetPoint("TOPLEFT", f.content, "TOPLEFT", 0, 0)
+    c:SetSize(contentW, headH + wdH + weeks * cellH)
+    -- heading: < Month Year >
+    local toolY = -math.floor((rowH - P.JOURNAL_TOOL) / 2)
+    c.prev:ClearAllPoints()
+    c.prev:SetPoint("TOPLEFT", c, "TOPLEFT", 2, toolY)
+    P.SetInkFont(c.title, "item")
+    c.title:SetTextColor(st.title[1], st.title[2], st.title[3], 1)
+    -- "today" on the right, just left of the magnifier and calendar glyphs
+    local tb = c.todayBtn
+    P.SetInkFont(tb.fs, "small")
+    tb.fs:SetText("today")
+    local todayW = math.ceil(tb.fs:GetStringWidth() or 26) + 6
+    tb:SetSize(todayW, P.JOURNAL_TOOL + 2)
+    tb:ClearAllPoints()
+    tb:SetPoint("TOPRIGHT", c, "TOPRIGHT", -(2 * P.JOURNAL_TOOL + P.JOURNAL_TOOL_GAP + 10), toolY + 1)
+    P.DrawTodayButton(tb)
+    tb:Show()
+    -- the month's name: in full, or short ("Nov 2026") when that would run into "today"
+    local room = contentW - (2 * P.JOURNAL_TOOL + P.JOURNAL_TOOL_GAP + 10) - todayW - 6 - (2 + P.JOURNAL_TOOL + 3) - (3 + P.JOURNAL_TOOL)
+    c.title:SetText(P.MONTH_NAMES[m] .. " " .. y)
+    if (c.title:GetStringWidth() or 0) > room then c.title:SetText(P.MONTHS[m] .. " " .. y) end
+    c.title:ClearAllPoints()
+    c.title:SetPoint("LEFT", c.prev, "RIGHT", 3, 0)
+    c.next:ClearAllPoints()
+    c.next:SetPoint("LEFT", c.title, "RIGHT", 3, 0)
+    P.DrawWriteGlyph(c.prev, "prev", c.prev.hover)
+    P.DrawWriteGlyph(c.next, "next", c.next.hover)
+    -- the weekdays' first letters
+    local sub = st.sub or st.faded
+    for i = 1, 7 do
+        local fs = c.wd[i]
+        P.SetInkFont(fs, "small")
+        fs:SetTextColor(sub[1], sub[2], sub[3], 1)
+        fs:SetText(string.sub(P.DAY_NAMES[(first + i - 2) % 7 + 1], 1, 1))
+        fs:ClearAllPoints()
+        fs:SetPoint("TOP", c, "TOPLEFT", x0 + (i - 0.5) * cellW, -headH)
+        fs:SetShown(wdH > 0)
+    end
+    -- the days: yours circled in ink (red for the one picked), today in red ink, the rest faded
+    local used, written, count = 0, 0, 0
+    for d = 1, nDays do
+        local k = lead + d
+        local col, row = (k - 1) % 7, math.floor((k - 1) / 7)
+        local b = P.CalendarCell(c, d)
+        used = d
+        b:ClearAllPoints()
+        b:SetPoint("TOPLEFT", c, "TOPLEFT", x0 + col * cellW, -(headH + wdH + row * cellH))
+        b:SetSize(cellW, cellH)
+        b.day = { y = y, m = m, d = d }
+        b.notes = notes[d]
+        P.SetInkFont(b.fs, "small")
+        local isToday = today.y == y and today.m == m and today.d == d
+        local isPicked = picked and picked.y == y and picked.m == m and picked.d == d
+        local ink = b.notes and (st.name or st.ink) or st.faded
+        if isToday then ink = P.INK_RED end
+        b.fs:SetTextColor(ink[1], ink[2], ink[3], b.notes and 1 or 0.75)
+        b.fs:SetText(tostring(d))
+        if b.notes then
+            written = written + 1
+            count = count + #b.notes
+            P.DrawDayRing(b, cellW, cellH, P.DayKey(y, m, d), isPicked and P.INK_RED or P.INK, isPicked and 1 or 0.8)
+            b:EnableMouse(true)
+        else
+            P.HideDayRing(b)
+            b:EnableMouse(false)
+        end
+        b:Show()
+    end
+    for k = used + 1, #c.cells do c.cells[k]:Hide() end
+    c:Show()
+    local s = (written == 0) and ("nothing written in " .. P.MONTH_NAMES[m])
+        or (((count == 1) and "1 note" or (count .. " notes")) .. " on " .. ((written == 1) and "1 day" or (written .. " days")))
+    f.footerFS:SetText(s .. P.JournalFilterWords() .. (pageStr or ""))
+end
+
+-- The writing glyph (box / quill), drawn in faded ink; hover = red ink like the toggles; on = full ink
+-- (the Journal's magnifier / calendar while their filter is on)
+function P.DrawWriteGlyph(b, kind, hover, on)
     local glyph = P.WRITE_GLYPHS[kind]
     b.strokes = b.strokes or {}
     local st = P.GetStyle()
-    local ink = hover and P.INK_RED or (st.faded or P.INK)
+    local ink = hover and P.INK_RED or (on and P.INK or (st.faded or P.INK))
+    local alpha = hover and 0.95 or (on and 1 or 0.85)
     for i = 1, math.max(#glyph, #b.strokes) do
         local g = glyph[i]
         if g then
             b.strokes[i] = b.strokes[i] or P.NewStroke(b, "OVERLAY", 4)
-            P.DrawStroke(b.strokes[i], b, g[1], g[2], g[3], g[4], 1.1 * (g[5] or 1), hover and 0.95 or 0.85, ink)
+            P.DrawStroke(b.strokes[i], b, g[1], g[2], g[3], g[4], (on and 1.25 or 1.1) * (g[5] or 1), alpha, ink)
         elseif b.strokes[i] then
             P.HideStroke(b.strokes[i])
         end
@@ -6734,6 +7544,8 @@ function P.BeginJournalEdit(e)
     local f = shoppingListFrame
     if not f then return end
     if P.forMeEditing then P.CommitForMeEdit() end
+    if P.journalSearching then P.CloseJournalSearch() end
+    P.journalCalendar = nil
     local eb = P.EnsureJournalEditBox(f)
     P.SetInkFont(eb, "item")
     eb:SetText(e and e.text or "")
@@ -6849,6 +7661,15 @@ end
 function P.HideJournal(f)
     for _, row in ipairs(f.journalRows or {}) do row:Hide() end
     if f.journalWrite then f.journalWrite:Hide() end
+    if f.journalTools then f.journalTools.search:Hide(); f.journalTools.calendar:Hide() end
+    if f.journalCal then f.journalCal:Hide() end
+    P.journalCalendar = nil                         -- the search and the day picked stay
+    if f.journalSearchBox then
+        P.journalSearching = nil
+        f.journalSearchBox:ClearFocus()
+        f.journalSearchBox:Hide()
+        f.journalSearchBox.glyph:Hide()
+    end
     if f.journalEdit then
         if P.journalEditing then P.CommitJournalEdit() end
         f.journalEdit:Hide()
@@ -6995,14 +7816,61 @@ function P.RenderJournal(f, area, contentW, contentH, pageStr)
     wl.fs:SetTextColor(st.faded[1], st.faded[2], st.faded[3], 1)
     local writingNew = editing and not editing.entry
     wl.fs:SetText(writingNew and "" or ((#CFQ.notes.journal == 0) and "write your first note..." or "write a note..."))
-    local wordsW = math.min(textW - P.CORNER_MAX, math.ceil(wl.fs:GetStringWidth() or 0))
+    local toolsW = 2 * P.JOURNAL_TOOL + P.JOURNAL_TOOL_GAP + 8        -- the magnifier and calendar on the right
+    local wordsW = math.min(textW - P.CORNER_MAX, contentW - toolsW - 26, math.ceil(wl.fs:GetStringWidth() or 0))
     wl.fs:SetWidth(math.max(1, wordsW))
     wl:ClearAllPoints()
     wl:SetPoint("TOPLEFT", f.content, "TOPLEFT", 0, 0)
-    wl:SetWidth(20 + wordsW + 6)
+    wl:SetWidth(20 + math.max(1, wordsW) + 6)
     wl:SetHeight(writeH)
-    wl:Show()
+    wl:SetShown(not P.journalSearching and not P.journalCalendar)   -- the month's name takes the row
     local y = writingNew and -(editH + 6) or -writeH
+
+    -- the magnifier and the calendar at the row's right end (full ink while their filter is on)
+    local tools = P.EnsureJournalTools(f)
+    local toolY = -math.floor((writeH - P.JOURNAL_TOOL) / 2)
+    tools.calendar:ClearAllPoints()
+    tools.calendar:SetPoint("TOPRIGHT", f.content, "TOPRIGHT", -2, toolY)
+    tools.search:ClearAllPoints()
+    tools.search:SetPoint("TOPRIGHT", tools.calendar, "TOPLEFT", -P.JOURNAL_TOOL_GAP, 0)
+    tools.search.on = (P.journalSearch or P.journalSearching) and true or false
+    tools.calendar.on = (P.journalDay or P.journalCalendar) and true or false
+    P.DrawWriteGlyph(tools.search, "search", tools.search.hover, tools.search.on)
+    P.DrawWriteGlyph(tools.calendar, "calendar", tools.calendar.hover, tools.calendar.on)
+    tools.search:Show()
+    tools.calendar:Show()
+
+    -- searching: the box where "write a note..." was, a magnifier in front
+    local sb = f.journalSearchBox
+    if P.journalSearching then
+        sb = P.EnsureJournalSearchBox(f)
+        P.SetInkFont(sb, "item")
+        sb:SetTextColor(P.INK[1], P.INK[2], P.INK[3], 1)
+        sb.wash:SetColorTexture(hl[1], hl[2], hl[3], (hl[4] or 0.1) * 1.5)
+        sb.glyph:ClearAllPoints()
+        sb.glyph:SetPoint("TOPLEFT", f.content, "TOPLEFT", 3, -2)
+        P.DrawWriteGlyph(sb.glyph, "search", false, true)
+        sb.glyph:Show()
+        sb:ClearAllPoints()
+        sb:SetPoint("TOPLEFT", f.content, "TOPLEFT", 20, -1)
+        sb:SetWidth(math.max(40, contentW - toolsW - 26))
+        sb:SetHeight(writeH - 2)
+        sb:Show()
+    elseif sb then
+        sb:Hide()
+        sb.glyph:Hide()
+    end
+
+    -- the calendar: a month on the page instead of the notes
+    if P.journalCalendar then
+        P.RenderJournalCalendar(f, writeH, contentW, contentH, st, pageStr)
+        if f.journalEdit then f.journalEdit:Hide() end
+        return
+    elseif f.journalCal then
+        f.journalCal:Hide()
+    end
+    local terms = P.SearchTerms(P.journalSearch)
+    local markHex = P.Hex(P.INK_RED)
 
     if #list == 0 then
         local row = P.AcquireJournalRow(f, 1)
@@ -7014,7 +7882,8 @@ function P.RenderJournal(f, area, contentW, contentH, pageStr)
         row.text:ClearAllPoints()
         row.text:SetPoint("TOPLEFT", row, "TOPLEFT", 4, -4)
         row.text:SetTextColor(st.faded[1], st.faded[2], st.faded[3], 1)
-        row.text:SetText(P.journalFilter and ("Nothing written in " .. P.journalFilter .. ".")
+        local words = P.JournalFilterWords()
+        row.text:SetText((words ~= "") and ("Nothing written" .. words .. ".")
             or "Your journal is empty. Write a note here, or with \"write a note\" under For me.")
         P.SetHalo(row.text, row.text:GetText(), st.faded)
         row.divider:Hide()
@@ -7064,7 +7933,7 @@ function P.RenderJournal(f, area, contentW, contentH, pageStr)
         local ink = faded and st.faded or (st.name or st.ink)
         row.text:SetTextColor(ink[1], ink[2], ink[3], 1)
         local beingEdited = editing and editing.entry == e
-        row.text:SetText(beingEdited and "" or e.text)
+        row.text:SetText(beingEdited and "" or P.MarkMatches(e.text, terms, markHex))   -- the words looked for, in red
         P.SetHalo(row.text, beingEdited and "" or e.text, faded and st.faded or P.INK)
         P.SetGlow(row.text, (levelUp and not beingEdited) and e.text or nil)
         local textH = beingEdited and editH or math.max(14, math.ceil(row.text:GetStringHeight() or 14))
@@ -7113,7 +7982,7 @@ function P.RenderJournal(f, area, contentW, contentH, pageStr)
 
     local n = #list
     local count = (n == 1) and "1 note" or (n .. " notes")
-    if P.journalFilter then count = count .. " in " .. P.journalFilter end
+    count = count .. P.JournalFilterWords()
     if n > shown and n > 0 then
         count = count .. string.format("  ·  %d-%d shown", shoppingScrollOffset + 1, shoppingScrollOffset + shown)
     end
