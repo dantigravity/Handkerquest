@@ -104,6 +104,12 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
     `CFQ.ExtractTaskObjectives` → `qData.taskObjectives`; `kind` = `slay` / `task`, both shown as "Tasks").
     A task of one (`single = true`) is just a box: no "0/1". (v2.2 left one-step quests off; reversed by the
     user because a new character whose only quest was one step never got a tally.)
+  - **"Speak to" quests are tasks too** (user request, Nov 2026: such quests never showed, even at 100%): a quest
+    with **no objectives at all** (ready for turn-in the moment you take it) gets one task line (`talk = true`,
+    progKey `<id>_talk`) in the game's words from `GetQuestLogCompletionText(logIndex)` ("Speak to Ezan Wildwind
+    in Thendal Village", colour codes and the final full stop stripped; `CFQ.TalkStepText`), else
+    `Turn in "<title>"`. Its box stays open until the quest is handed in (then it leaves the log). The quest's
+    map spot is its turn-in, so it counts as near there and the compass can point at it.
   - Droppers, loot scans, hunt spots and minimap pins stay items-only. A slay line burns while your target is
     one of them (`CFQ.TargetIsToSlay`).
 - **Keep the tally's controls simple** (user decision, v2.2): three inked 16px toggles left of the gear, nothing
@@ -119,7 +125,8 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
   small inked scale under the **Near me** heading's underline, "within ——|—— 10%" (`f.nearSlider`,
   `P.CreateNearSlider` / `P.DrawNearSlider` / `P.LayoutNearSlider`): inked up to the mark, faded beyond, the
   value in the ink (red while hovered or dragged). Drag or click along it, or scroll over it (1% a notch),
-  1-50% (`P.NEAR_MIN/MAX`); the list re-sorts every `P.NEAR_LIVE_EVERY` s while dragging, saved on letting go
+  1-100% (`P.NEAR_MIN/MAX`; was 1-50, raised at the user's request; the options slider and the saved-value clamp
+  use the same range); the list re-sorts every `P.NEAR_LIVE_EVERY` s while dragging, saved on letting go
   (`P.CommitNearRadius`). Same setting as the options' "Near me distance" (`CFQ.nearRadiusPercent`). Only on
   the Near me page; there the lines start a row lower (`f.headerExtra`, part of `P.LayoutPads`' key and of
   the page's content height in `P.Render`), which costs about a line on the default 175px tally.

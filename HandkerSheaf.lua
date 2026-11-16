@@ -467,7 +467,7 @@ local function LoadState()
         end
         if not CFQ.inkColors.ARCANE then CFQ.inkColors.ARCANE = CFQ.ValidColor(QRF_SavedState.arcaneInkColor) end
         if type(QRF_SavedState.nearRadiusPercent) == "number" then
-            CFQ.nearRadiusPercent = math.max(1, math.min(50, math.floor(QRF_SavedState.nearRadiusPercent + 0.5)))
+            CFQ.nearRadiusPercent = math.max(1, math.min(100, math.floor(QRF_SavedState.nearRadiusPercent + 0.5)))   -- P.NEAR_MIN/MAX
         end
         if type(QRF_SavedState.pageRadiusPercent) == "number" then
             CFQ.pageRadiusPercent = math.max(1, math.min(50, math.floor(QRF_SavedState.pageRadiusPercent + 0.5)))
@@ -669,7 +669,23 @@ end
 -- ("Sit by the fire", user decision: a new character's only quest must still bring the tally up).
 -- A step of one is just a box to tick (no "0/1"); a count above one keeps it ("0/6 Gnarlpine Ambusher slain").
 -- qtyObjs = the counted objectives already parsed for this quest.
-function CFQ.ExtractTaskObjectives(questID, logIndex, isComplete, qtyObjs)
+-- A quest with no objectives at all ("speak to" / delivery quests: done the moment you take them, then you go and
+-- talk to someone): what to do, in the game's words if it has them ("Speak to Ezan Wildwind in Thendal Village."),
+-- else "Turn in <title>"
+function CFQ.TalkStepText(logIndex, title)
+    local text
+    if type(GetQuestLogCompletionText) == "function" and logIndex and logIndex > 0 then
+        local ok, t = pcall(GetQuestLogCompletionText, logIndex)
+        if ok and type(t) == "string" then text = t end
+    end
+    text = text and strtrim(string.gsub(string.gsub(text, "|c%x%x%x%x%x%x%x%x", ""), "|r", "")) or ""
+    text = string.gsub(text, "%s+", " ")
+    text = string.gsub(text, "%.$", "")
+    if text == "" then text = "Turn in " .. (title and title ~= "" and ("\"" .. title .. "\"") or "the quest") end
+    return text
+end
+
+function CFQ.ExtractTaskObjectives(questID, logIndex, isComplete, qtyObjs, title)
     local raw = {}
     if C_QuestLog and C_QuestLog.GetQuestObjectives then
         local ok, objs = pcall(C_QuestLog.GetQuestObjectives, questID)
@@ -705,6 +721,15 @@ function CFQ.ExtractTaskObjectives(questID, logIndex, isComplete, qtyObjs)
                     finished = done, isItem = false, single = true, kind = CFQ.ObjectiveKind(r.type, name) })
             end
         end
+    end
+    -- no objectives at all (user request: "'speak to' quests as tasks"): one task, to go and speak to whoever
+    -- takes it; its box stays open until the quest is handed in (the quest's map spot is the turn-in, so the line
+    -- counts as near there and the compass points at it)
+    if #raw == 0 then
+        local text = CFQ.TalkStepText(logIndex, title)
+        table.insert(list, { index = 1, progKey = tostring(questID) .. "_talk", text = text, itemName = text,
+            objType = "talk", numFulfilled = 0, numRequired = 1, finished = false, isItem = false, single = true,
+            kind = "task", talk = true })
     end
     return list
 end
@@ -1486,7 +1511,7 @@ ScanQuestLogRewards = function()
                 if o.isItem then o.kind = "loot"; table.insert(itemObjs, o) end
             end
             -- kill / other check-offs (shown when the tally's tasks toggle is on)
-            local taskObjs = (not isFromMap) and CFQ.ExtractTaskObjectives(questID, logIndex, isComplete, qtyObjs) or {}
+            local taskObjs = (not isFromMap) and CFQ.ExtractTaskObjectives(questID, logIndex, isComplete, qtyObjs, cleanTitle) or {}
 
             local entry = {
                 questID = questID,
@@ -5256,7 +5281,7 @@ end
 -- "Near me distance" in the options (CFQ.nearRadiusPercent). Only on the Near me page; the page's lines
 -- start a row lower there (f.headerExtra).
 -- ----------------------------------------------------------------------------
-P.NEAR_MIN, P.NEAR_MAX = 1, 50
+P.NEAR_MIN, P.NEAR_MAX = 1, 100     -- % of the zone map (user request: up to 100%, was 50)
 P.NEAR_SLIDER_H = 13            -- the row under the heading (taller with a bigger text size)
 P.NEAR_TRACK_MAX = 110          -- the scale's longest length (px)
 P.NEAR_TRACK_MIN = 36
@@ -13296,7 +13321,7 @@ function CFQ.BuildOptionsPanel()
     CFQ.nearRadiusRow = RadiusSlider("Near me distance", "Near me distance",
         "Page 1 lists quest items and tasks within this distance of where you're standing (as % of the zone map), plus anything you've progressed in the last few minutes.",
         function() return P.GetNearRadius() end,
-        function(v) CFQ.nearRadiusPercent = v; SaveState(); RefreshParchment() end)
+        function(v) CFQ.nearRadiusPercent = v; SaveState(); RefreshParchment() end, nil, nil, P.NEAR_MIN, P.NEAR_MAX)
 
     Check("Glowing & burning ink",
         "An item's line glows when you walk into its hunting grounds, and catches fire while your target is a mob that may drop it.",

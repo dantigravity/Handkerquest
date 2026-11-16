@@ -170,7 +170,8 @@ do  -- the Near me distance on the heading: "within ——|—— 10%", drag / c
     local cp = f.content.__points[1]
     check(cp and cp[5] < -28 - (f.padT or 0) and f.headerExtra > 0, "Near me heading: the lines start under the scale")
     local function markFrac() return (s.markX - s.x0) / (s.x1 - s.x0) end
-    check(math.abs(markFrac() - 9 / 49) < 1e-6 and s.x1 - s.x0 >= P.NEAR_TRACK_MIN, "Near me heading: the mark sits at 10% along the scale")
+    check(math.abs(markFrac() - (10 - P.NEAR_MIN) / (P.NEAR_MAX - P.NEAR_MIN)) < 1e-6 and s.x1 - s.x0 >= P.NEAR_TRACK_MIN, "Near me heading: the mark sits at 10% along the scale")
+    check(P.NEAR_MIN == 1 and P.NEAR_MAX == 100, "Near me distance: 1% to 100% of the zone map")
     local saves = QRF_SavedState.nearRadiusPercent
     s:GetScript("OnMouseWheel")(s, 1)
     check(P.GetNearRadius() == 11 and s.value.__text == "11%" and QRF_SavedState.nearRadiusPercent == 11, "Near me heading: scrolling up widens it by 1% and saves")
@@ -187,9 +188,10 @@ do  -- the Near me distance on the heading: "within ——|—— 10%", drag / c
     GetCursorPosition = function() return left + s.x0 + (s.x1 - s.x0) * 0.5, 0 end
     NOW = NOW + 1
     s:GetScript("OnUpdate")(s, 0.016)
-    check(P.GetNearRadius() == 26 and s.value.__text == "26%", "Near me heading: dragging to the middle = 26%")
+    local mid = math.floor(P.NEAR_MIN + 0.5 * (P.NEAR_MAX - P.NEAR_MIN) + 0.5)
+    check(P.GetNearRadius() == mid and s.value.__text == mid .. "%", "Near me heading: dragging to the middle = " .. mid .. "%")
     s:GetScript("OnMouseUp")(s, "LeftButton")
-    check(not s.dragging and QRF_SavedState.nearRadiusPercent == 26, "Near me heading: letting go saves it")
+    check(not s.dragging and QRF_SavedState.nearRadiusPercent == mid, "Near me heading: letting go saves it")
     GetCursorPosition = gc
     -- the options slider follows, and the other way round
     CFQ.nearRadiusPercent = 1; Fire("ZONE_CHANGED")
@@ -1566,6 +1568,14 @@ check(CFQ.nearRadiusRow ~= nil, "options panel has the Near me distance slider")
 if CFQ.nearRadiusRow then
     CFQ.nearRadiusRow.slider:GetScript("OnValueChanged")(CFQ.nearRadiusRow.slider, 14)
     check(CFQ.nearRadiusPercent == 14 and P.GetNearRadius() == 14, "Near me slider sets the proximity radius")
+    local lo, hi = CFQ.nearRadiusRow.slider:GetMinMaxValues()
+    check(lo == 1 and hi == 100, "the options' Near me distance slider goes from 1% to 100%")
+    local keepSaved = QRF_SavedState.nearRadiusPercent
+    QRF_SavedState.nearRadiusPercent = 100; Fire("ADDON_LOADED", "Handkerquest")
+    check(CFQ.nearRadiusPercent == 100, "a saved 100% loads as 100%")
+    QRF_SavedState.nearRadiusPercent = 140; Fire("ADDON_LOADED", "Handkerquest")
+    check(CFQ.nearRadiusPercent == 100, "a saved value past 100% loads as 100%")
+    QRF_SavedState.nearRadiusPercent = keepSaved; CFQ.nearRadiusPercent = 14
 end
 if prr then
     CFQ.parchmentOpts.pagesFollowTracker = false
@@ -1619,6 +1629,32 @@ do
         { index = 3, isItem = false, objType = "monster", itemName = "Wolf slain", numRequired = 6, numFulfilled = 0 } })
     check(#three == 3 and three[1].single and three[2].single and not three[3].single,
         "counted steps of one ('0/1 Darnassus Bank') are a plain box, no '0/1'; 'slay 6' keeps its count")
+    -- "speak to" quests: no objectives at all, ready for turn-in the moment you take them (user request)
+    With({})
+    local oldCT = GetQuestLogCompletionText
+    GetQuestLogCompletionText = function(i) return (i == 7) and "Speak to |cFFFFFFFFEzan Wildwind|r in Thendal Village." or "" end
+    local talk = CFQ.ExtractTaskObjectives(905, 7, true, {}, "The Adventurer")
+    check(#talk == 1 and talk[1].talk and talk[1].single and talk[1].kind == "task" and not talk[1].finished
+        and talk[1].itemName == "Speak to Ezan Wildwind in Thendal Village" and talk[1].progKey == "905_talk",
+        "a 'speak to' quest gets one task in the game's words, its box open until it's handed in")
+    local talk2 = CFQ.ExtractTaskObjectives(906, 8, true, {}, "The Next Step")
+    check(#talk2 == 1 and talk2[1].itemName == "Turn in \"The Next Step\"", "...and \"Turn in <title>\" when the game gives no words")
+    GetQuestLogCompletionText = nil
+    check(CFQ.ExtractTaskObjectives(906, 8, true, {}, "The Next Step")[1].itemName == "Turn in \"The Next Step\"",
+        "...also on a client without GetQuestLogCompletionText")
+    GetQuestLogCompletionText = oldCT
+    do
+        local qTalk = { questID = 905, title = "The Adventurer", isComplete = true, itemObjectives = {}, taskObjectives = talk }
+        local rows, done = P.FlattenQuests({ qTalk })
+        check(#rows == 1 and done == 0 and P.LineGroup(rows[1]) == "tasks" and not rows[1].finished,
+            "a 'speak to' quest is a line on the tally (a task, not yet done)")
+        CFQ.parchmentOpts.tallyTasks = false; CFQ.parchmentOpts.tallyLoot = true
+        check(#P.FlattenQuests({ qTalk }) == 0, "...hidden with the other tasks when the tally shows items only")
+        CFQ.parchmentOpts.tallyTasks = true
+        P.BuildCompassTargets({ { questID = 905, title = "The Adventurer", mapID = 57, x = 0.4, y = 0.3, itemObjectives = {}, taskObjectives = talk } })
+        check(#P.cmpTargets == 1 and P.cmpTargets[1].questID == 905, "...and the compass can point at its turn-in")
+        P.cmpTargets = {}
+    end
     C_QuestLog.GetQuestObjectives = real
 
     Fire("ZONE_CHANGED")
