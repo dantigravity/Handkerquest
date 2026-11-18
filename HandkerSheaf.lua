@@ -158,7 +158,7 @@ local shoppingScrollOffset = 0
 local dropdownSearchText = ""
 
 -- EDIT: list limits (quest log rows, filter-menu rows, quests per tracker stack, tally rows)
-local MAX_CUSTOM_ROWS = 11
+local MAX_CUSTOM_ROWS = 20          -- rows made for the quest log list; only as many as fit its height show
 local MAX_DROPDOWN_ROWS = 12
 local MAX_CARDS_PER_STACK = 8
 local MAX_SHOPPING_ROWS = 18
@@ -11664,6 +11664,52 @@ local function FindLowestQuestAnchor(button)
     return bestAnchor, bestDepth, textLeftX
 end
 
+-- The filtered quest list fits the quest log it covers (bug fix: a fixed 11 rows of 47 px ran past the bottom
+-- of a shorter quest log, over whatever sat below the map). Rows are CFQ.LIST_ROW_H apart from CFQ.LIST_TOP
+-- (CFQ.LIST_TOP_2 when the click hint needs its own line), with CFQ.LIST_FOOT kept for "Showing 1-9 of 14".
+CFQ.LIST_ROW_H, CFQ.LIST_TOP, CFQ.LIST_TOP_2, CFQ.LIST_FOOT, CFQ.LIST_FALLBACK = 47, 26, 38, 18, 11
+
+-- How many rows fit a list `h` px tall showing `total` quests, rows starting `top` px down
+function CFQ.CustomListRows(h, total, top)
+    if not h or h <= 0 then return math.min(CFQ.LIST_FALLBACK, MAX_CUSTOM_ROWS) end   -- not laid out yet
+    local n = math.floor((h - top) / CFQ.LIST_ROW_H)
+    if (total or 0) > n then n = math.floor((h - top - CFQ.LIST_FOOT) / CFQ.LIST_ROW_H) end
+    return math.max(1, math.min(MAX_CUSTOM_ROWS, n))
+end
+
+-- Puts the click hint beside the heading, or on its own line under it when they'd run into each other, the
+-- rows under the divider, and returns how many rows fit (also kept as listFrame.visibleRows)
+function CFQ.LayoutCustomList(listFrame, total)
+    local hint, head = listFrame.subHint, listFrame.headerText
+    local w = listFrame:GetWidth() or 0
+    local headW = head and head.GetStringWidth and head:GetStringWidth() or 0
+    local hintW = hint and hint.GetStringWidth and hint:GetStringWidth() or 0
+    local twoLines = w > 0 and (10 + headW + 12 + hintW + 10) > w
+    local top = twoLines and CFQ.LIST_TOP_2 or CFQ.LIST_TOP
+    if hint then
+        hint:ClearAllPoints()
+        if twoLines then hint:SetPoint("TOPLEFT", listFrame, "TOPLEFT", 10, -21)
+        else hint:SetPoint("TOPRIGHT", listFrame, "TOPRIGHT", -10, -8) end
+    end
+    if listFrame.divider then
+        listFrame.divider:ClearAllPoints()
+        listFrame.divider:SetPoint("TOPLEFT", listFrame, "TOPLEFT", 8, -(top - 2))
+        listFrame.divider:SetPoint("TOPRIGHT", listFrame, "TOPRIGHT", -8, -(top - 2))
+    end
+    for i = 1, MAX_CUSTOM_ROWS do
+        local row = customListRowPool[i]
+        if row then
+            local y = -top - (i - 1) * CFQ.LIST_ROW_H
+            row:ClearAllPoints()
+            row:SetPoint("TOPLEFT", listFrame, "TOPLEFT", 8, y)
+            row:SetPoint("TOPRIGHT", listFrame, "TOPRIGHT", -8, y)
+        end
+    end
+    local n = CFQ.CustomListRows(listFrame:GetHeight(), total, top)
+    listFrame.visibleRows, listFrame.twoLines = n, twoLines
+    return n
+end
+
 local function RenderCustomFilteredList()
     if not QuestScrollFrame or not QuestScrollFrame.qrfCustomList then return end
     local listFrame = QuestScrollFrame.qrfCustomList
@@ -11690,13 +11736,14 @@ local function RenderCustomFilteredList()
         listFrame.headerText:SetText(string.format("|cFFFFD100Filtered Quests (%d)%s|r", totalRows, sortDesc))
     end
 
-    if customScrollOffset > math.max(0, totalRows - MAX_CUSTOM_ROWS) then
-        customScrollOffset = math.max(0, totalRows - MAX_CUSTOM_ROWS)
+    local shown = CFQ.LayoutCustomList(listFrame, totalRows)
+    if customScrollOffset > math.max(0, totalRows - shown) then
+        customScrollOffset = math.max(0, totalRows - shown)
     end
 
     for i = 1, MAX_CUSTOM_ROWS do
         local row = customListRowPool[i]
-        local qData = matchingQuestsList[i + customScrollOffset]
+        local qData = i <= shown and matchingQuestsList[i + customScrollOffset]
 
         if qData then
             local badgeStr = GetLeftAlignedLogRewardString(qData, 3)
@@ -11735,11 +11782,11 @@ local function RenderCustomFilteredList()
         end
     end
 
-    if totalRows > MAX_CUSTOM_ROWS then
+    if totalRows > shown then
         listFrame.scrollHint:SetText(string.format(
             "Showing %d-%d of %d (Scroll wheel)",
             customScrollOffset + 1,
-            math.min(totalRows, customScrollOffset + MAX_CUSTOM_ROWS),
+            math.min(totalRows, customScrollOffset + shown),
             totalRows
         ))
         listFrame.scrollHint:Show()
@@ -12665,6 +12712,7 @@ local function CreateQuestLogUI()
     customList:SetFrameLevel(QuestScrollFrame:GetFrameLevel() + 15)
     customList:EnableMouse(true)
     customList:EnableMouseWheel(true)
+    if customList.SetClipsChildren then customList:SetClipsChildren(true) end   -- nothing spills past the log
     customList:Hide()
 
     local listBg = customList:CreateTexture(nil, "BACKGROUND")
@@ -12677,12 +12725,14 @@ local function CreateQuestLogUI()
     local subHint = customList:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     subHint:SetPoint("TOPRIGHT", customList, "TOPRIGHT", -10, -8)
     subHint:SetText("Left-Click: Details | Shift + Left-Click: Track")
+    customList.subHint = subHint
 
     local listDivider = customList:CreateTexture(nil, "ARTWORK")
     listDivider:SetHeight(1)
     listDivider:SetPoint("TOPLEFT", customList, "TOPLEFT", 8, -24)
     listDivider:SetPoint("TOPRIGHT", customList, "TOPRIGHT", -8, -24)
     listDivider:SetColorTexture(0.35, 0.35, 0.4, 0.8)
+    customList.divider = listDivider
 
     for i = 1, MAX_CUSTOM_ROWS do
         local row = CreateFrame("Button", nil, customList)
@@ -12723,13 +12773,18 @@ local function CreateQuestLogUI()
     customList.scrollHint = customList:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     customList.scrollHint:SetPoint("BOTTOM", customList, "BOTTOM", 0, 6)
 
-    customList:SetScript("OnMouseWheel", function(_, delta)
-        local maxOffset = math.max(0, #matchingQuestsList - MAX_CUSTOM_ROWS)
+    customList:SetScript("OnMouseWheel", function(self, delta)
+        local maxOffset = math.max(0, #matchingQuestsList - (self.visibleRows or MAX_CUSTOM_ROWS))
         customScrollOffset = math.min(maxOffset, math.max(0, customScrollOffset - delta))
         RenderCustomFilteredList()
     end)
+    -- the map window resized (or laid out after the list first drew): fit the rows again
+    customList:SetScript("OnSizeChanged", function(self)
+        if self:IsShown() then pcall(RenderCustomFilteredList) end
+    end)
 
     QuestScrollFrame.qrfCustomList = customList
+    CFQ.customListRowPool = customListRowPool       -- for smoke.lua
 
     QuestScrollFrame:HookScript("OnHide", function()
         if sharedMenuFrame and (sharedMenuFrame.anchorOwner == rewardBtn or sharedMenuFrame.anchorOwner == levelBtn) then

@@ -86,6 +86,13 @@ players' settings. Slash: `/hanky`, `/handkerquest`, legacy `/cfq`.
 - The user tests in game; say plainly what was and wasn't verified there.
 
 ## Design rules (each was a bug fix or a user decision — don't undo)
+- **The filtered quest log list fits the quest log** (bug fix, Nov 2026: a fixed 11 rows of 47 px ran past the
+  bottom of this client's shorter quest log, over the tally). `QRF_CustomQuestList` (shown over the quest log
+  while a Rewards / Levels filter or a sort is on) makes `MAX_CUSTOM_ROWS` (20) rows but shows only what fits
+  its height (`CFQ.CustomListRows`, `CFQ.LayoutCustomList`, re-fitted on `OnSizeChanged`; 11 before it's laid
+  out), keeps room for "Showing 1-9 of 14" only when it scrolls, and clips its children. The click hint sits
+  beside the heading, or on its own line under it when they'd collide (`listFrame.twoLines`, rows then start
+  at 38 px instead of 26).
 - **Stacking is visual only.** A deck holds only quests that already have a native tracker block;
   toggling stacks never adds/removes quest watches. Toggles call `CFQ.RequestNativeTrackerUpdate()`
   so Blizzard re-shows its blocks. `/hanky debug` dumps the tracker for in-game diagnosis.

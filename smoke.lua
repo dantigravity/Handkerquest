@@ -3315,6 +3315,43 @@ do  -- feedback link: copy box in the options panel, /hanky feedback, .toc websi
     end
     check(site, "Handkerquest.toc has the X-Website line")
 end
+-- The filtered quest log list fits the quest log it covers (bug fix: a fixed 11 rows ran past a short log)
+do
+    check(CFQ.CustomListRows(520, 30, 26) == 10 and CFQ.CustomListRows(520, 30, 38) == 9 and CFQ.CustomListRows(600, 5, 26) == 12,
+        "quest log list: as many rows as fit, room kept for the scroll hint only when needed")
+    check(CFQ.CustomListRows(0, 30, 26) == 11 and CFQ.CustomListRows(20, 30, 26) == 1 and CFQ.CustomListRows(5000, 99, 26) == 20,
+        "quest log list: 11 rows before it's laid out, never under 1 or over the rows made")
+    local L = QRF_CustomQuestList
+    check(L ~= nil and CFQ.customListRowPool and #CFQ.customListRowPool == 20, "quest log list is built with its row pool")
+    if L then
+        L:Hide()                                       -- hidden: resizing doesn't redraw (and re-head) it
+        L:SetSize(800, 520)
+        L.headerText:SetText("Filtered Quests (11)")
+        local n = CFQ.LayoutCustomList(L, 30)
+        local hp = L.subHint:GetPoint(1)
+        local _, _, _, _, ry = CFQ.customListRowPool[1]:GetPoint(1)
+        check(n == 10 and not L.twoLines and hp == "TOPRIGHT" and ry == -26, "wide quest log: click hint beside the heading, rows from 26 px, 10 fit 520 px")
+        L:SetSize(360, 520)
+        n = CFQ.LayoutCustomList(L, 30)
+        hp = L.subHint:GetPoint(1)
+        _, _, _, _, ry = CFQ.customListRowPool[1]:GetPoint(1)
+        check(n == 9 and L.twoLines and hp == "TOPLEFT" and ry == -38, "narrow quest log: click hint on its own line under the heading, rows from 38 px")
+        local okR = pcall(L.GetScript and L:GetScript("OnMouseWheel") or L.__scripts.OnMouseWheel, L, 0)
+        L:Show()
+        L:SetSize(360, 150)                            -- OnSizeChanged re-fits while shown
+        local shown, lowest = 0, 0
+        for i, row in ipairs(CFQ.customListRowPool) do
+            if row:IsShown() then
+                shown = shown + 1
+                local _, _, _, _, y = row:GetPoint(1)
+                lowest = math.min(lowest, y - CFQ.LIST_ROW_H)
+            end
+        end
+        check(okR and L.visibleRows == 2 and shown == 2 and L.scrollHint:IsShown() and lowest >= -150,
+            "a short quest log shows only the rows that fit (" .. tostring(L.visibleRows) .. " fit, " .. shown .. " shown, lowest " .. lowest .. ")")
+        L:Hide()
+    end
+end
 check(#ERRORS == 0, "no Lua errors reported (" .. #ERRORS .. ")")
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)
